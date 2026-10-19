@@ -335,6 +335,13 @@ impl Gui {
         setter.end_set_parameter(p);
     }
 
+    fn set_float(&self, p: &FloatParam, v: f32) {
+        let setter = self.ctx.nice_context.param_setter();
+        setter.begin_set_parameter(p);
+        setter.set_parameter(p, v);
+        setter.end_set_parameter(p);
+    }
+
     fn set_enum<T: Enum + PartialEq + 'static>(&self, p: &EnumParam<T>, v: T) {
         let setter = self.ctx.nice_context.param_setter();
         setter.begin_set_parameter(p);
@@ -496,6 +503,15 @@ impl Gui {
                     let v = self.roll_seed();
                     let params = self.data.params.clone();
                     self.set_int(&params.sound_seed, v);
+                    // Bass: the roll draws a new voice you can see on the
+                    // sound knobs, then shape by hand.
+                    if params.mode.value() == Mode::Bass {
+                        for p in [&params.intensity, &params.shape, &params.morph] {
+                            // MUSICAL: away from the extremes.
+                            let x = 0.1 + 0.8 * (self.next_rand() % 1000) as f32 / 1000.0;
+                            self.set_float(p, x);
+                        }
+                    }
                 }
             }
             Message::RollPattern => {

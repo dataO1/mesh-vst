@@ -143,17 +143,18 @@ const S_VOICE: u32 = 0xC50;
 /// act on top.
 fn seeded_voice(p: &mut LaneSamplerParams, sound_seed: u32) {
     let r = |k: u8, lo: f32, hi: f32| rng::range_f32(rng::hash(sound_seed, k, 0, 0, S_VOICE), lo, hi);
-    // Cutoff 200 Hz .. 1 kHz, an octave and more around the designed 400 Hz.
-    p.cutoff_hz *= 2f32.powf(r(0, -1.0, 1.3));
-    p.resonance = (p.resonance + r(1, -0.2, 0.3)).clamp(0.05, 0.9);
+    // Cutoff 160 Hz .. 1.4 kHz around the designed 400 Hz.
+    p.cutoff_hz *= 2f32.powf(r(0, -1.3, 1.8));
+    p.resonance = (p.resonance + r(1, -0.25, 0.45)).clamp(0.05, 0.9);
     let m = &mut p.modulation;
-    m.env.decay *= 2f32.powf(r(2, -1.3, 1.0));
-    m.env.to_cutoff *= r(3, 0.5, 1.6);
+    m.env.decay *= 2f32.powf(r(2, -1.6, 1.3));
+    // A closed, dark voice .. a wide-open sweep.
+    m.env.to_cutoff *= r(3, 0.2, 2.0);
     // A pitch blip on some voices, none on others.
-    m.env.to_pitch = if r(4, 0.0, 1.0) < 0.4 { 0.0 } else { r(5, 60.0, 450.0) };
+    m.env.to_pitch = if r(4, 0.0, 1.0) < 0.4 { 0.0 } else { r(5, 60.0, 600.0) };
     // A slow drift .. a fast wobble, light .. deep.
-    m.lfo.rate = 2f32.powf(r(6, -1.5, 2.8));
-    m.lfo.to_cutoff = r(7, 0.0, 1600.0);
+    m.lfo.rate = 2f32.powf(r(6, -1.5, 3.0));
+    m.lfo.to_cutoff = r(7, 0.0, 2800.0);
     p.decay *= 2f32.powf(r(8, -0.8, 0.8));
     p.release *= 2f32.powf(r(9, -0.7, 1.2));
 }
@@ -353,7 +354,7 @@ mod style_tests {
         let voices: Vec<_> = (0..20).map(voice).collect();
         assert_eq!(voice(3), voice(3), "seeded");
         for v in &voices {
-            assert!((150.0..1100.0).contains(&v.0) && (0.05..=0.9).contains(&v.1), "{v:?}");
+            assert!((100.0..1600.0).contains(&v.0) && (0.05..=0.9).contains(&v.1), "{v:?}");
         }
         let cutoffs: Vec<f32> = voices.iter().map(|v| v.0).collect();
         let (lo, hi) = cutoffs.iter().fold((f32::MAX, 0.0f32), |(a, b), &c| (a.min(c), b.max(c)));
