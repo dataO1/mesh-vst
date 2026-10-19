@@ -146,10 +146,14 @@ drive external effects.
     loads as the mudpie. A full-window overlay shows while dragging, and the bottom-left slot
     shows the result. The footer holds the mudpie slot, the step row with velocity, and the
     mod-out meters.
-  - **Drums:** the visual is a grid of scanline subcubes, one row per kit slot and one column
-    per 16th. Lit subcubes show velocity, and a hit bursts its cubes outward. The footer is the
-    slot strip: name, file, drop target, dice. Slots the seed leaves off (break or perc, one
-    cymbal) are dimmed.
+  - **Drums:** the same point field and behavior as Bass, but each point is a short line, not
+    a dot. The field is split into one subgrid per loaded sample (kick, snare, hats, cymbals,
+    perc or break), and each subgrid moves with its own sample's spectrum. Movement and
+    effects bleed a little into the neighboring subgrids. While a file is dragged, the center
+    shows the subgrid layout labeled with each sound type, so the user sees where a drop lands.
+    Dropping on a subgrid loads that slot. Dropping elsewhere classifies the file (D17) into
+    its pool's slot, and an unsure file goes to the unsorted bin with a message. The footer
+    slot strip stays. Slots the seed leaves off are dimmed.
 - **D34** Mod-out default sources, each channel reassignable:
   - Bass: 1 velocity, 2 stab, 3 amp env, 4 filter env, 5 LFO, 6 scrub position, 7 glide,
     8 note pitch.
@@ -258,9 +262,7 @@ drive external effects.
 
 ## 4. Open questions
 
-- **Q17** Drums: what a drop anywhere on the window does.
 - **Q18** The full parameter list (draft in section 6).
-- **Q19** v1 milestone order.
 
 ## 5. Todo after v1
 
@@ -269,16 +271,40 @@ drive external effects.
 - Velocity as timbre (R3).
 - Generic DAW key read via the VST3 chord and scale context (D11).
 
-## 6. Parameter list (draft, Q18)
+## 6. Parameters (proposal, Q18)
 
-Automatable unless marked *state*. *State* values are saved with the project but are not DAW
-parameters.
+Broad meta parameters, like Mesh live's lane controls. Each one moves a group of related
+internal parameters along a curve that has been tuned once. No fine-tuning parameters are
+exposed. Every meta parameter is automatable. Seeds, locks, mode, samples and the mod-out
+assignment are project state, not DAW parameters.
 
-- **Shared:** Density, Intensity, Swing, Phrase (4/8/16), Phase (continuous/retrigger), Form
-  (one of the default forms; a custom form string is *state*), Scale, Bend range, Output gain.
-  Mode, both seeds and their locks, and the mod-out source assignments are *state*.
-- **Drums:** Choke, Ghost notes, Loop gate, Velocity range, Fills, plus a level per slot (×7).
-  Slot samples are *state*.
-- **Bass:** Cutoff, Resonance, Filter env depth, Filter env decay, Stab drive, Scrub, LFO rate,
-  LFO depth, Vibrato, Glide time, New root (glide/retrigger), Amp attack, Amp release. The
-  mudpie is *state*.
+| Group | Parameter | Moves (from Mesh live) |
+|---|---|---|
+| Shared | Density | Hits or notes in importance order, loop gating to the 4th/8th/16th grid, softer added off-beats |
+| Shared | Intensity | Accent depth, velocity range, stab drive, filter envelope depth. The mod wheel drives it too |
+| Shared | Variation | Seeded rewrites (Mesh `mutate`, `variation`), fills at phrase ends, ghost notes |
+| Shared | Swing | Swing |
+| Shared | Rate | Half, normal or double speed (Mesh rate pads) |
+| Shared | Form | One of the default forms (a custom string is state) |
+| Shared | Phrase, Phase, Scale, Bend range, Gain | As in D8, D11, D24, D25 |
+| Bass | Complexity | Syncopation and rhythm freedom (Mesh `complexity`) |
+| Bass | Shape | Stabby and accented to sustained and calm: note length, expression, stabs, filter bite (Mesh `shape`) |
+| Bass | Morph | Mudpie scrub position, or crossfade between layers (Mesh `morph`) |
+| Bass | Spread | Weak notes lifted an octave, interval jump size (Mesh `spread`) |
+| Bass | Slide | Slides between notes and glide time (Mesh `slide`) |
+| Drums | Style | Moves along the backbone archetypes (Mesh `style`) |
+| Drums | Chop | Break chop and slice rate (Mesh `chop`) |
+| Drums | Tops | Cymbal and shaker overlay amounts (Mesh `overlay_*`) |
+| Drums | Choke | Choke amount (D27) |
+
+## 7. Build order (D36)
+
+Each step is tested before the next one starts.
+
+1. **M1** Core crate: the generator and sampler copied from Mesh, deterministic from song position, with headless render tests.
+2. **M2** nice-plug CLAP and VST3 wrapper: note gate, transport, parameters, state, built-in test samples.
+3. **M3** Library: scan, cache, pools, hash relink, imports folder.
+4. **M4** iced GUI: top bar, parameters, slot strip, drop anywhere, undo history, favorites, library panel.
+5. **M5** Visuals: point field (dots for Bass, lines in subgrids for Drums) and the low-power mode.
+6. **M6** Mod-out aux channels.
+7. **M7** Linux and Windows builds and a release.
