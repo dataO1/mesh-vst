@@ -1,3 +1,4 @@
 /target
 *.wav
 !crates/*/tests/data/*.wav
+/.direnv
