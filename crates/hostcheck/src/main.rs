@@ -408,6 +408,15 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
         rep.healthy(&format!("drum style {i} plays"), &a);
         styles.push(a);
     }
+    // Swing and Morph are heard: their extremes differ by more than a trace.
+    let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt();
+    for knob in ["Swing", "Morph"] {
+        let lo = render(entry, &Render { params: vec![(knob.into(), 0.0)], ..base.clone() })?;
+        let hi = render(entry, &Render { params: vec![(knob.into(), 1.0)], ..base.clone() })?;
+        let diff: Vec<f32> = lo.samples.iter().zip(&hi.samples).map(|(a, b)| a - b).collect();
+        let db = 20.0 * (rms(&diff) / rms(&lo.samples).max(1e-9)).log10();
+        rep.check(&format!("{knob} changes the drums"), db > -20.0, format!("difference {db:.1} dB below the drums"));
+    }
     let distinct = (0..styles.len()).all(|i| (i + 1..styles.len()).all(|j| styles[i].samples != styles[j].samples));
     rep.check("the drum styles differ", distinct, format!("{} styles", styles.len()));
 

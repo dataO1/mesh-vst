@@ -164,7 +164,7 @@ const GHOST_HARDCORE: [u8; 16] = [0, 50, 90, 110, 0, 60, 100, 160, 0, 60, 100, 1
 
 // MUSICAL: first draft, tune by ear. Top loop and percussion.
 /// Chop mutation probability of the top loop per step at `chop = 1`.
-const TOP_MUT_MAX: f32 = 0.25;
+const TOP_MUT_MAX: f32 = 0.5;
 /// Share of top-loop mutations that repeat the previous chop.
 const TOP_STUTTER_SHARE: f32 = 0.5;
 const TOP_VEL: u8 = 100;
@@ -186,7 +186,7 @@ const LOCK_LEVEL_MIN: f32 = 128.0;
 /// `chop` at or above this chops in 16ths, below in 8ths.
 const CHOP_RATE_SPLIT: f32 = 0.5;
 /// Mutation probability per chop at `chop = 1`.
-const BREAK_MUT_MAX: f32 = 0.35;
+const BREAK_MUT_MAX: f32 = 0.5;
 /// Extra mutation probability in the variation bar at `variation = 1`.
 const BREAK_MUT_VARIATION: f32 = 0.35;
 /// Share of mutations that repeat the previous chop (stutter).

@@ -159,7 +159,6 @@ pub enum Message {
     ToggleLibrary,
     LowPower,
     RollSlot(Slot),
-    RollAllSlots,
     ClearSlot(Slot),
     RollMudpie,
     ShowPool(Pool),
@@ -554,22 +553,6 @@ impl Gui {
                     None => self.toast = format!("no {} files in the library", pool.name()),
                 }
             }
-            Message::RollAllSlots => {
-                self.record();
-                let mut missing = Vec::new();
-                for (slot, _) in DRUM_SLOTS {
-                    let (pool, prefer) = slot.source();
-                    let seed = self.next_rand() as u32;
-                    match self.library().pick(pool, seed, 0, prefer).map(|e| e.path.clone()) {
-                        Some(p) => self.pin(Some(slot), &p),
-                        None => missing.push(pool.name()),
-                    }
-                }
-                if !missing.is_empty() {
-                    missing.dedup();
-                    self.toast = format!("no {} files in the library", missing.join(", "));
-                }
-            }
             Message::ClearSlot(slot) => {
                 self.record();
                 let kit = self.kit();
@@ -713,7 +696,7 @@ impl Gui {
         let step = shared.step.load(Ordering::Relaxed);
         if step != self.last_step && (step as usize) < STEPS_PER_BAR {
             let hits = shared.hits();
-            for (row, e) in self.slot_env.iter_mut().enumerate() {
+            for (e, (_, _, row)) in self.slot_env.iter_mut().zip(SUBGRIDS) {
                 let v = hits[row][step as usize];
                 if v > 0 {
                     *e = e.max(v as f32 / 127.0);
@@ -866,10 +849,6 @@ impl Gui {
         let mut right = column![small(if drums { "KIT" } else { "MUDPIE VOICE" })].spacing(12);
         if drums {
             right = right.push(column![small("STYLE"), pick(DrumStyle::variants_list(), p.style.value(), Message::Style)].spacing(6));
-            right = right.push(column![
-                small("SAMPLES"),
-                button(text("roll all").font(DATA_FONT).size(12)).on_press(Message::RollAllSlots).padding([6, 8]).style(|_, s| btn(false, s)),
-            ].spacing(6));
             for k in [Knob::Shape, Knob::Morph] {
                 right = right.push(knob(p, k));
             }
@@ -1328,17 +1307,18 @@ struct StepView {
     letter: u8,
 }
 
-/// The drum field's subgrids, in the shader's order (top row first), and the
-/// slot a file dropped on one loads.
-const SUBGRIDS: [(&str, Slot); 8] = [
-    ("KICK", Slot::Kick),
-    ("SNARE", Slot::Snare),
-    ("HATS", Slot::HatClosed),
-    ("RIDE", Slot::CymbalA),
-    ("SHAKER", Slot::Shaker),
-    ("PERC", Slot::Perc),
-    ("TOP", Slot::Break),
-    ("BREAK", Slot::Break),
+/// The drum field's subgrids, in the shader's order (top row first): the
+/// slot a file dropped on one loads, and the hit row (of [`DRUM_ROWS`]) that
+/// moves it. Hats and the other tops above, kick, snare, break, perc below.
+const SUBGRIDS: [(&str, Slot, usize); 8] = [
+    ("HATS", Slot::HatClosed, 2),
+    ("RIDE", Slot::CymbalA, 3),
+    ("SHAKER", Slot::Shaker, 4),
+    ("TOP", Slot::Break, 6),
+    ("KICK", Slot::Kick, 0),
+    ("SNARE", Slot::Snare, 1),
+    ("BREAK", Slot::Break, 7),
+    ("PERC", Slot::Perc, 5),
 ];
 
 /// The field's square inside `bounds` (as the shader lays it out).
@@ -1370,7 +1350,7 @@ impl canvas::Program<Message> for SubgridLabels {
         let sq = field_square(bounds.size());
         let hover = cursor.position_in(bounds).or(self.hover).and_then(|p| subgrid_at(sq, p));
         let (w, h) = (sq.width / 4.0, sq.height / 2.0);
-        for (i, (name, _)) in SUBGRIDS.iter().enumerate() {
+        for (i, (name, _, _)) in SUBGRIDS.iter().enumerate() {
             let x = sq.x + (i % 4) as f32 * w;
             let y = sq.y + (i / 4) as f32 * h;
             let on = hover == Some(i);

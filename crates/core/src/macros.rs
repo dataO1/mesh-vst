@@ -165,8 +165,8 @@ fn apply_drums(v: &Knobs, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
     lane.set_param("overlay_ghost", lerp(0.1, 0.6, v.variation));
     lane.set_param("swing", v.swing);
     // Morph: straight .. chopped, inside the style the Style setting picks.
-    lane.set_param("chop", lerp(0.15, 0.85, v.morph));
-    lane.set_param("mutate", (0.6 * v.variation + 0.25 * v.morph).min(1.0));
+    lane.set_param("chop", v.morph);
+    lane.set_param("mutate", (0.6 * v.variation + 0.4 * v.morph).min(1.0));
     lane.set_param("overlay_ride", 0.5);
     lane.set_param("overlay_shaker", 0.5);
     lane.set_param("overlay_top", 0.6);
@@ -317,4 +317,36 @@ mod style_tests {
         let picks: std::collections::BTreeSet<u8> = (0..200).map(seeded_style).collect();
         assert_eq!(picks.len(), DRUM_STYLES.len());
     }
+
+    /// Eight bars of drums at style `style` with `knobs`, as (bar, tick, target).
+    fn bars(style: u8, seed: u32, knobs: Knobs) -> Vec<(u64, u16, u8)> {
+        let mut lane = PatternLane::drums(DrumLayout::standard(), seed, seed);
+        let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: 1, rate: 0, mode: 0, style: Some(style), unison: Default::default() };
+        configure(&mut lane, LaneSamplerParams::default(), &s);
+        let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+        (0..8u64)
+            .flat_map(|b| {
+                lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
+                out.events.as_slice().iter().map(|e| (b, e.tick, e.target)).collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn swing_and_morph_audibly_change_every_style() {
+        let c = Knobs::CENTERED;
+        for seed in [7, 21] {
+            for style in 0..DRUM_STYLES.len() as u8 {
+                let changed = |a: &[(u64, u16, u8)], b: &[(u64, u16, u8)]| b.iter().filter(|e| !a.contains(e)).count() as f32 / b.len() as f32;
+                let straight = bars(style, seed, Knobs { swing: 0.0, ..c });
+                let swung = bars(style, seed, Knobs { swing: 1.0, ..c });
+                // Every off 16th swings, breaks and ghosts included.
+                assert!(changed(&straight, &swung) > 0.2, "seed {seed} style {style}: swing moves {}", changed(&straight, &swung));
+                let calm = bars(style, seed, Knobs { morph: 0.0, ..c });
+                let chopped = bars(style, seed, Knobs { morph: 1.0, ..c });
+                assert!(changed(&calm, &chopped) > 0.15, "seed {seed} style {style}: morph changes {}", changed(&calm, &chopped));
+            }
+        }
+    }
 }
+

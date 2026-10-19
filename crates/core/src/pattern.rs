@@ -188,6 +188,13 @@ impl PatternLane {
         if class == SeedClass::Filler {
             boost_filler(names, &mut params);
         }
+        // Drums: the Swing knob swings every off 16th of the bar (breaks,
+        // ghosts, percussion and tops too), on top of the letter's feel, so
+        // the generator itself plays straight.
+        let knob_swing = match names.iter().position(|n| *n == "swing") {
+            Some(i) if self.role == Role::Drums => std::mem::take(&mut params[i]),
+            _ => 0.0,
+        };
         // The drum lane fills the last bar of a filler segment, and the last
         // bar of every phrase (D25).
         let phrase_end = self.phrase_bars > 1 && (c.bar + 1) % self.phrase_bars as u64 == 0;
@@ -226,7 +233,9 @@ impl PatternLane {
             scratch.sort();
             splice_second_half(out, scratch);
         }
-        Feel::of(seed, c.lane, class).apply(out, seed, c.lane);
+        let mut feel = Feel::of(seed, c.lane, class);
+        feel.swing = (feel.swing + knob_swing).min(1.0);
+        feel.apply(out, seed, c.lane);
         if self.role != Role::Drums {
             let block = if self.role == Role::Bass { block_rate(seed, c.lane, class) } else { 0 };
             apply_speed(out, self.rate + block, c.bar, scratch);
