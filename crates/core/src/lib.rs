@@ -12,6 +12,7 @@ pub mod generator;
 pub mod harmony;
 pub mod key;
 pub mod kit;
+pub mod macros;
 pub mod motif;
 pub mod pattern;
 pub mod player;

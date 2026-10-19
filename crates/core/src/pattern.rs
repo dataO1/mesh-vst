@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use crate::event::{flags, BarEvents, EventKind};
 use crate::form::{
     form_chord, letter_offset, letter_seed, prime_seed, splice_second_half, Feel, Form, FormPos, Letter, Play, SeedClass,
-    FILLER_BOOSTS, LETTER_OFFSETS, NOTE_JITTER_SHARE,
+    DEFAULT_FORMS, FILLER_BOOSTS, LETTER_OFFSETS, NOTE_JITTER_SHARE,
 };
 use crate::generator::bass::{self, BassGenerator, BassRules};
 use crate::generator::blocks::defaults_from_spec;
@@ -61,7 +61,9 @@ pub struct PatternLane {
     role: Role,
     generator: Box<dyn LaneGenerator>,
     layout: DrumLayout,
-    form: Form,
+    /// Index 0: one bar of A forever (or a custom form), then the default forms.
+    forms: Vec<Form>,
+    form: usize,
     /// Seed of the groove (letters, rhythm, pitch).
     pub pattern_seed: u32,
     /// Seed of the sample picks.
@@ -100,7 +102,9 @@ impl PatternLane {
         sound_seed: u32,
         params: [f32; MAX_GEN_PARAMS],
     ) -> Self {
-        Self { role, generator, layout, form: Form::single(), pattern_seed, sound_seed, rate: 0, mode: 0, params }
+        let mut forms = vec![Form::single()];
+        forms.extend(DEFAULT_FORMS.iter().map(|f| Form::parse(f).expect("built-in form parses")));
+        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, params }
     }
 
     pub fn role(&self) -> Role {
@@ -123,11 +127,19 @@ impl PatternLane {
     }
 
     pub fn form(&self) -> &Form {
-        &self.form
+        &self.forms[self.form]
     }
 
+    /// Play `form` (it takes slot 0).
     pub fn set_form(&mut self, form: Form) {
-        self.form = form;
+        self.forms[0] = form;
+        self.form = 0;
+    }
+
+    /// Play form `index`: 0 = slot 0 (one bar of A unless [`Self::set_form`]
+    /// put a form there), 1..=10 = [`DEFAULT_FORMS`]. RT-safe.
+    pub fn select_form(&mut self, index: usize) {
+        self.form = index.min(self.forms.len() - 1);
     }
 
     /// Render `bar` (0 = the first bar of the song, or of the note in
@@ -135,7 +147,7 @@ impl PatternLane {
     /// family) into `out`.
     pub fn render(&self, bar: u64, key: MusicalKey, out: &mut RenderedBar, scratch: &mut Scratch) {
         let lane = lane_index(self.role);
-        let (parts, n_parts) = self.form.parts(bar, self.pattern_seed, lane);
+        let (parts, n_parts) = self.forms[self.form].parts(bar, self.pattern_seed, lane);
         let pos = parts[0].pos;
         let seed = letter_seed(self.pattern_seed, lane, pos.letter);
         let mut harmony = HarmonyCtx { key, chord_degree: 0, progression: 0, mode: self.mode };
@@ -349,7 +361,6 @@ fn apply_speed(out: &mut BarEvents, exponent: i8, bar: u64, scratch: &mut BarEve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::form::DEFAULT_FORMS;
 
     fn render_all(lane: &PatternLane, bars: u64) -> Vec<Vec<crate::event::LiveEvent>> {
         let key = MusicalKey::new(5, true);

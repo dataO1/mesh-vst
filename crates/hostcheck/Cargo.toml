@@ -1,0 +1,12 @@
+[package]
+name = "hostcheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Headless CLAP host: plays the bundled plugin with a held note against a host transport, writes a WAV"
+
+[dependencies]
+clack-host = { git = "https://github.com/prokopyl/clack.git", rev = "27ca283" }
+clack-extensions = { git = "https://github.com/prokopyl/clack.git", rev = "27ca283", features = ["params", "clack-host"] }
+hound = "3.5"

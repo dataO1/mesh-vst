@@ -341,3 +341,22 @@ Each step is tested before the next one starts.
   - **G3** A bass instance does not hear the drums. Mesh's bass followed the drum lane's kicks,
     so its kick-follow behavior is off here.
   - **G4** Break slice types are an amen template until onset slicing exists (todo).
+- **M2 done (2026-10-19).** The `mesh-vst` plugin crate (nice-plug 0.4.2) builds CLAP and VST3
+  bundles.
+  - **Parameters.** The eight knobs are automatable. Mode, seeds, form, phase, scale, rate and
+    bend range are non-automatable settings, plus gain.
+  - **Knob centers.** The seed sets each knob's middle (`macros`), using the Mesh lane-control
+    mappings.
+  - **Playing.** A held note gates the pattern. A stopped transport runs a free clock from the
+    note-on. Mod wheel adds to Intensity, pitch bend bends, and other CCs reach the sampler.
+  - **Sounds.** A built-in synthesized kit and mudpie play until the library exists.
+  - **Checks.** The CLAP bundle passes clap-validator (36 passed, 0 failed).
+    `crates/hostcheck` is a headless clack host that plays a held note against a host
+    transport and writes a WAV. Runs repeat byte for byte, seeds differ, a stopped transport
+    plays, and a release goes silent after the tails.
+
+  Gaps:
+  - **G5** Loudness varies a lot between seeds: drum RMS ranges from −21 to −15 dBFS over five
+    seeds.
+  - **G6** The choke amount (D27) and unison (D38) are not built yet.
+  - **G7** Windows builds need a mingw cross toolchain in the devshell (M7).
