@@ -51,6 +51,8 @@ pub enum Request {
 pub enum Ready {
     Drums { lane: Box<PatternLane>, bank: Shared<SampleBank>, loop_bpm: Option<f64>, gain: f32, settings: LaneSettings, generation: u32 },
     Bass { bank: Shared<SampleBank>, gain: f32, settings: LaneSettings, generation: u32 },
+    /// A file to preview, on target 0 (D35).
+    Audition { bank: Shared<SampleBank> },
 }
 
 /// What the audio thread hands back to be dropped here.
@@ -121,7 +123,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn spawn(sample_rate: u32, state: Arc<Mutex<KitState>>) -> Self {
+    pub fn spawn(sample_rate: u32, state: Arc<Mutex<KitState>>, ui: Arc<crate::ui::UiShared>) -> Self {
         let (requests, mut req_rx) = rtrb::RingBuffer::new(16);
         let (mut ready_tx, ready) = rtrb::RingBuffer::new(4);
         let (garbage, mut garbage_rx) = rtrb::RingBuffer::new(16);
@@ -133,6 +135,15 @@ impl Worker {
                 let mut job = Job::new(sample_rate, state);
                 while !stop_thread.load(Ordering::Acquire) {
                     while garbage_rx.pop().is_ok() {}
+                    let audition = ui.audition.lock().ok().and_then(|mut a| a.take());
+                    if let Some(path) = audition {
+                        let root = 60;
+                        if let Ok(data) = loader::load_sample(&path, root, sample_rate, 0.0) {
+                            let mut bank = SampleBank::new();
+                            bank.set(0, mesh_vst_core::sampler::SlotDef::whole(share(data)).unpitched());
+                            let _ = ready_tx.push(Ready::Audition { bank: Shared::new(&gc_handle(), bank) });
+                        }
+                    }
                     // Only the newest request of a burst matters.
                     let mut latest = None;
                     while let Ok(r) = req_rx.pop() {

@@ -84,7 +84,7 @@
         capture = pkgs.writeShellScript "mesh-vst-capture" ''
           MESH_VST_DEMO=1 ${standalone}/bin/mesh-vst --backend dummy >"$1.log" 2>&1 &
           pid=$!
-          sleep 6
+          sleep "''${MESH_VST_SHOT_WAIT:-6}"
           ${pkgs.imagemagick}/bin/import -window root "$1"
           kill $pid || true
         '';

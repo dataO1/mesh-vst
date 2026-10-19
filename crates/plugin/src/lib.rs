@@ -110,6 +110,9 @@ pub struct MeshVst {
     free_beat: f64,
     free_running: bool,
     worker: Option<Worker>,
+    /// The library preview voice and its buffer (D35).
+    audition: Option<Sampler>,
+    abuf: Vec<StereoSample>,
     ui: Arc<ui::UiShared>,
     editor_state: Arc<nice_plug_iced::IcedEditorState>,
     /// Last bar render published to the editor.
@@ -135,6 +138,8 @@ impl Default for MeshVst {
             free_beat: 0.0,
             free_running: false,
             worker: None,
+            audition: None,
+            abuf: Vec::new(),
             ui: Arc::new(ui::UiShared::default()),
             editor_state: nice_plug_iced::IcedEditorState::from_size(editor::WINDOW, 1.0),
             published: (u64::MAX, u64::MAX),
@@ -215,6 +220,14 @@ impl MeshVst {
                         l.loaded = Some((settings, generation));
                     }
                     let _ = w.garbage.push(Garbage::Lane(lane));
+                }
+                Ready::Audition { bank } => {
+                    if let Some(a) = self.audition.as_mut() {
+                        a.reset_voices();
+                        a.set_bank(bank);
+                        let ev = LiveEvent { kind: EventKind::Trigger, target: 0, vel: 110, ..Default::default() };
+                        a.handle_event(&ev, 0);
+                    }
                 }
                 Ready::Bass { bank, gain, settings, generation } => {
                     if let Some(l) = self.bass.as_mut() {
@@ -429,6 +442,14 @@ impl MeshVst {
                 self.modout.render(role, fired, &info, &mut chans);
             }
         }
+        if let Some(a) = self.audition.as_mut() {
+            let abuf = &mut self.abuf[..n];
+            a.process(abuf, 1000.0);
+            for (s, x) in self.buf[..n].iter_mut().zip(abuf.iter()) {
+                // MUSICAL: previews sit below the lane (samples are at "12 LUFS).
+                *s += *x * 0.5;
+            }
+        }
         let feed = self.editor_state.is_open();
         for (i, s) in self.buf[..n].iter().enumerate() {
             let g = gain.next();
@@ -507,7 +528,9 @@ impl Plugin for MeshVst {
         }
         self.ui.sample_rate.store(sr, std::sync::atomic::Ordering::Relaxed);
         // The built-in sounds play until the library kit is loaded.
-        self.worker = Some(Worker::spawn(sr, self.params.kit.clone()));
+        self.worker = Some(Worker::spawn(sr, self.params.kit.clone(), self.ui.clone()));
+        self.audition = Some(Sampler::new(sr, 8));
+        self.abuf = vec![StereoSample::silence(); config.max_buffer_size as usize];
         // Demo for screenshots and checks: hold a note from the start.
         if std::env::var_os(DEMO_ENV).is_some() {
             for lane in [self.drums.as_mut(), self.bass.as_mut()].into_iter().flatten() {

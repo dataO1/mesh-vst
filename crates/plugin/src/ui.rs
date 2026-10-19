@@ -33,6 +33,8 @@ pub struct UiShared {
     /// The plugin's mono output for the visual, while the editor is open.
     pub audio: std::sync::Mutex<Option<rtrb::Consumer<f32>>>,
     pub sample_rate: AtomicU32,
+    /// A library file the editor wants to hear (D35); the loader takes it.
+    pub audition: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// Mod-out source per channel (index into `Source::ALL`), bass then drums.
     pub mod_map: [[AtomicU8; mesh_vst_core::modout::CHANNELS]; 2],
 }
@@ -51,6 +53,7 @@ impl Default for UiShared {
             notifier: PollSubNotifier::new(),
             audio: std::sync::Mutex::new(None),
             sample_rate: AtomicU32::new(48_000),
+            audition: std::sync::Mutex::new(None),
             mod_map: [
                 std::array::from_fn(|c| AtomicU8::new(source_index(mesh_vst_core::modout::DEFAULT_BASS[c]))),
                 std::array::from_fn(|c| AtomicU8::new(source_index(mesh_vst_core::modout::DEFAULT_DRUMS[c]))),

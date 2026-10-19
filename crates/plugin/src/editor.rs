@@ -176,6 +176,7 @@ pub enum Message {
     UnisonDetuneReleased,
     UnisonMode(UnisonSpread),
     MoveFile(PathBuf, Pool),
+    Audition(PathBuf),
 }
 
 pub struct Gui {
@@ -200,6 +201,8 @@ pub struct Gui {
     last_step: u32,
     started: std::time::Instant,
     samples: Vec<f32>,
+    /// Kit generation the editor's library copy belongs to.
+    seen_generation: u32,
 }
 
 fn now_seed() -> u64 {
@@ -239,6 +242,7 @@ impl Gui {
             last_step: u32::MAX,
             started: std::time::Instant::now(),
             samples: Vec::new(),
+            seen_generation: 0,
         }
     }
 
@@ -259,11 +263,9 @@ impl Gui {
 
     fn library(&mut self) -> &mut Library {
         self.library.get_or_insert_with(|| {
+            // The loader scans; the editor reads its cache and never blocks on a scan.
             let mut lib = worker::cache_file().as_deref().map(Library::load).unwrap_or_default();
             lib.folders = worker::library_folders();
-            if lib.is_empty() && !lib.folders.is_empty() {
-                lib.scan();
-            }
             lib
         })
     }
@@ -624,11 +626,8 @@ impl Gui {
                 }
             }
             Message::Rescan => {
-                self.library = None;
-                self.library().scan();
-                self.save_library();
-                self.data.shared.bump_kit();
-                self.toast = format!("{} files in the library", self.library.as_ref().map_or(0, |l| l.len()));
+                self.scan_in_background();
+                self.toast = "scanning the library…".into();
             }
             Message::UnisonVoices(v) => {
                 let params = self.data.params.clone();
@@ -648,6 +647,11 @@ impl Gui {
                 self.set_enum(&params.unison_mode, m);
             }
             Message::ShowPool(p) => self.pool = p,
+            Message::Audition(path) => {
+                if let Ok(mut a) = self.data.shared.audition.lock() {
+                    *a = Some(path);
+                }
+            }
             Message::MoveFile(path, pool) => {
                 self.library().set_override(&path, Some(pool));
                 self.save_library();
@@ -659,6 +663,17 @@ impl Gui {
     /// Advance the visual: read the output, decay the slot envelopes, light
     /// the slots that hit on a new step.
     fn animate(&mut self) {
+        // Read the cache again when a scan finished (the kit generation moved)
+        // or while the panel waits for the loader's first scan.
+        let generation = self.data.shared.kit_generation.load(Ordering::Relaxed);
+        let waiting = self.library.as_ref().is_some_and(|l| l.is_empty() && !l.folders.is_empty()) && self.started.elapsed().as_millis() % 1000 < 40;
+        if generation != self.seen_generation || waiting {
+            self.seen_generation = generation;
+            self.library = None;
+        }
+        if (self.show_library || self.show_settings) && self.library.is_none() {
+            self.library();
+        }
         let shared = self.data.shared.clone();
         let sr = shared.sample_rate.load(Ordering::Relaxed) as f32;
         if self.analyser.as_ref().is_none_or(|a| a.sample_rate() != sr) {
@@ -710,10 +725,24 @@ impl Gui {
             self.toast = format!("could not save the settings: {e}");
             return;
         }
+        self.scan_in_background();
+    }
+
+    /// Scan the library folders on a thread, save the cache, then make the
+    /// loader and the editor read it again.
+    fn scan_in_background(&mut self) {
         self.library = None;
-        self.library().scan();
-        self.save_library();
-        self.data.shared.bump_kit();
+        let shared = self.data.shared.clone();
+        let _ = std::thread::Builder::new().name("mesh-vst-scan".into()).spawn(move || {
+            let cache = worker::cache_file();
+            let mut lib = cache.as_deref().map(Library::load).unwrap_or_default();
+            lib.folders = worker::library_folders();
+            lib.scan();
+            if let Some(c) = &cache {
+                let _ = lib.save(c);
+            }
+            shared.bump_kit();
+        });
     }
 
     fn locks(&self) -> UiState {
@@ -1019,10 +1048,19 @@ impl Gui {
     }
 
     fn library_panel(&self) -> Element<'_, Message> {
+        let header = row![
+            text("LIBRARY").font(DISPLAY_FONT).size(18).color(DIM),
+            Space::new().width(Length::Fill),
+            button(text("close").font(DATA_FONT).size(12)).on_press(Message::ToggleLibrary).style(|_, s| btn(false, s)),
+        ]
+        .padding([12, 24]);
         let Some(lib) = self.library.as_ref() else {
-            return text("no library").font(DATA_FONT).into();
+            return column![header, text("loading the library…").font(DATA_FONT).size(13).color(DIM)].into();
         };
         let counts = lib.counts();
+        if lib.is_empty() && !lib.folders.is_empty() {
+            return column![header, text("scanning the library folders… (the first scan reads every file once)").font(DATA_FONT).size(13).color(DIM)].padding([0, 24]).into();
+        }
         let mut pools = column![small("POOLS")].spacing(6);
         for pool in Pool::ALL {
             let n = counts.get(&pool).copied().unwrap_or(0);
@@ -1040,8 +1078,10 @@ impl Gui {
         let mut files = column![small("FILES · move a file to another pool for good")].spacing(4);
         for e in lib.pool(self.pool).into_iter().take(400) {
             let path = e.path.clone();
+            let play = e.path.clone();
             files = files.push(
                 row![
+                    button(text("play").font(DATA_FONT).size(11)).on_press(Message::Audition(play)).padding([2, 6]).style(|_, s| btn(false, s)),
                     text(lib.relative(&e.path)).font(DATA_FONT).size(12).color(INK).width(Length::Fill),
                     pick_list(Pool::ALL.map(PoolItem).to_vec(), Some(PoolItem(lib.pool_of(e))), move |p: PoolItem| Message::MoveFile(path.clone(), p.0))
                         .text_size(11)
