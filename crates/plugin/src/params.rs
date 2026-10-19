@@ -135,6 +135,9 @@ pub struct MeshParams {
     /// The samples the project plays (D18).
     #[persist = "kit"]
     pub kit: std::sync::Arc<std::sync::Mutex<crate::worker::KitState>>,
+    /// Seed locks (D20).
+    #[persist = "ui"]
+    pub ui: std::sync::Arc<std::sync::Mutex<crate::ui::UiState>>,
 }
 
 fn knob(name: &str) -> FloatParam {
@@ -185,6 +188,7 @@ impl Default for MeshParams {
             .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
             .with_string_to_value(formatters::s2v_f32_gain_to_db()),
             kit: Default::default(),
+            ui: Default::default(),
         }
     }
 }

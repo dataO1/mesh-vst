@@ -1,0 +1,128 @@
+use iced_baseview::{
+    Center, Fill, Font, IcedWindowSettings, Pixels, PollSubNotifier, Task, Theme, application,
+    baseview::dpi::LogicalSize,
+    widget::{Column, checkbox, column, text, text_input},
+};
+
+fn main() {
+    // Used as a workaround for https://github.com/RustAudio/baseview/issues/321
+    //
+    // # Safety
+    //
+    // ONLY call this when running the application in standalone mode. Do *NOT* call this
+    // when running as a plugin that is loaded into a host. For more information, see:
+    // https://docs.rs/baseview/0.3.4/baseview/fn.assume_standalone_in_process.html
+    unsafe { baseview::assume_standalone_in_process() };
+
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::FmtSubscriber::builder()
+            .with_max_level(tracing::Level::DEBUG)
+            .finish(),
+    )
+    .unwrap();
+
+    let (window, _message_sender) = iced_baseview::create_window(
+        IcedWindowSettings::new()
+            .with_title("iced_baseview text input")
+            .with_size(LogicalSize::new(550.0, 450.0)),
+        PollSubNotifier::new(),
+        |_window_size_sub| {
+            Ok(
+                application(MyProgram::default, MyProgram::update, MyProgram::view)
+                    .theme(MyProgram::theme)
+                    .run(),
+            )
+        },
+        None,
+    )
+    .unwrap();
+
+    window.run_until_closed().unwrap();
+}
+
+#[derive(Debug, Clone)]
+enum Message {
+    InputChanged(String),
+    ToggleSecureInput(bool),
+    ToggleTextInputIcon(bool),
+}
+
+#[derive(Default)]
+struct MyProgram {
+    input_value: String,
+    input_is_secure: bool,
+    input_is_showing_icon: bool,
+}
+
+impl MyProgram {
+    pub fn theme(&self) -> Option<Theme> {
+        Some(iced_baseview::Theme::Dark)
+    }
+
+    pub fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::InputChanged(input_value) => {
+                self.input_value = input_value;
+            }
+            Message::ToggleSecureInput(is_secure) => {
+                self.input_is_secure = is_secure;
+            }
+            Message::ToggleTextInputIcon(show_icon) => {
+                self.input_is_showing_icon = show_icon;
+            }
+        }
+
+        Task::none()
+    }
+
+    pub fn view(&self) -> Column<'_, Message> {
+        let value = &self.input_value;
+        let is_secure = self.input_is_secure;
+        let is_showing_icon = self.input_is_showing_icon;
+
+        let mut text_input = text_input("Type something to continue...", value)
+            .on_input(Message::InputChanged)
+            .padding(10)
+            .size(30);
+
+        if is_showing_icon {
+            text_input = text_input.icon(text_input::Icon {
+                font: Font::default(),
+                code_point: '🚀',
+                size: Some(Pixels(28.0)),
+                spacing: 10.0,
+                side: text_input::Side::Right,
+            });
+        }
+
+        let container = column![text("Text Input").size(50)].padding(20).spacing(20);
+
+        container
+            .push("Use a text input to ask for different kinds of information.")
+            .push(text_input.secure(is_secure))
+            .push(
+                checkbox(is_secure)
+                    .label("Enable password mode")
+                    .on_toggle(Message::ToggleSecureInput),
+            )
+            .push(
+                checkbox(is_showing_icon)
+                    .label("Show icon")
+                    .on_toggle(Message::ToggleTextInputIcon),
+            )
+            .push(
+                "A text input produces a message every time it changes. It is very easy to keep \
+                 track of its contents:",
+            )
+            .push(
+                text(if value.is_empty() {
+                    "You have not typed anything yet..."
+                } else {
+                    value
+                })
+                .width(Fill)
+                .align_x(Center),
+            )
+            .into()
+    }
+}

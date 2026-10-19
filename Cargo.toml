@@ -10,3 +10,7 @@ repository = "https://github.com/dataO1/mesh-vst"
 
 [profile.release]
 debug = 1
+
+# iced_baseview with file drag and drop forwarded to iced (vendor/iced_baseview, MIT/Apache).
+[patch.crates-io]
+iced_baseview = { path = "vendor/iced_baseview" }

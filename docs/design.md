@@ -413,3 +413,46 @@ Each step is tested before the next one starts.
   The knobs then change loudness as they should, but a new seed or sample does not. The e2e
   suite checks four seeds per mode, built-in and library, and all land at −14.0 LUFS. Peaks
   above 0 dBFS are left alone: the output is float, and the DAW mix does the gain staging.
+- **M4 (2026-10-19, first version).** The iced 0.14 editor runs through nice-plug-iced, on wgpu
+  with a tiny-skia fallback, in the Mesh live palette and fonts.
+  - **Top bar.** Mode, key from the held note with scale, host tempo, both seeds with roll and
+    lock, favorite save and recall, undo/redo, library.
+  - **Pattern knobs (left).** The four pattern knobs, phase, form roll, gain.
+  - **Mode knobs (right).** Drums: Style, Shape, Morph. Bass: Shape, Morph, Spread, Slide, Rate.
+  - **Center.** A live step view of the playing bar. M5 replaces it with the point field.
+  - **Footer.** Slot cards with the file, roll and back-to-seed.
+  - **Library panel.** Pools with counts, and a file list with a pool chooser per file
+    (overrides).
+  - **Drag and drop.** A file dropped anywhere is imported, classified and pinned to its pool's
+    slot; one dropped on a slot card goes to that card (Q17). Unsure files stay unsorted, with a
+    message.
+  - **Drop events.** iced_baseview 0.6 does not forward baseview's drop events, so it is vendored
+    with a ~40-line patch (`vendor/README.md`). The user accepted this for now. To do: fork and
+    offer the patch upstream.
+  - **Undo.** Snapshots cover every parameter and the pins (D26).
+  - **Favorites.** Stored in `~/.config/mesh-vst/favorites.json`.
+  - **Locks.** Saved with the project.
+  - **Checks.** `nix run .#screenshot -- out.png` captures the editor on a virtual X server, with
+    a demo note held. `checks.gui` asserts that it draws.
+
+## 9. Research R5: automation in the host (2026-10-19)
+
+No CLAP (1.2.10), VST3 (3.8.1) or ARA API lets a plugin write automation points or clips into a
+host's timeline.
+- **Recording.** The portable route is recording. The plugin moves its own parameters inside
+  begin/end gestures while the track is in write, latch or touch mode. That records as
+  editable automation in Live, Bitwig, FL, Cubase and Logic (with gestures), and probably
+  Reaper and Studio One. It only works in realtime, at block or GUI rate: long form ramps
+  survive, per-hit moves smear.
+- **REAPER.** Only REAPER allows direct envelope writes, through its host API: exact curves,
+  offline.
+- **nice-plug.** It has no audio-thread parameter setter. Plugin-initiated changes go through
+  the editor's GuiContext.
+
+**Proposal (D40, not decided):**
+- Generate seeded, form-aware parameter movement inside the plugin, sample accurate and visible
+  in the UI: exponential ramps into the form's breaking points, moves on hits.
+- Add an optional "record to host" mode that sends the movement as gestures while the DAW
+  records.
+- Stop the internal movement for a parameter once host automation exists, read via CLAP
+  param-indication.

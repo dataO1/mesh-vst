@@ -35,7 +35,7 @@
 
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
-          filter = path: type: (craneLib.filterCargoSources path type) || (builtins.match ".*bundler\\.toml$" path != null);
+          filter = path: type: (craneLib.filterCargoSources path type) || (builtins.match ".*bundler\\.toml$" path != null) || (builtins.match ".*/assets/.*" path != null);
         };
         common = {
           inherit src;
@@ -45,7 +45,17 @@
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = libs;
         };
-        cargoArtifacts = craneLib.buildDepsOnly common;
+        # The dependency build keeps the real vendored crates (crane stubs
+        # local crates out otherwise).
+        dummySrc = craneLib.mkDummySrc {
+          inherit src;
+          extraDummyScript = ''
+            rm -rf $out/vendor
+            cp -r ${./vendor} $out/vendor
+            chmod -R u+w $out/vendor
+          '';
+        };
+        cargoArtifacts = craneLib.buildDepsOnly (common // { inherit dummySrc; });
 
         # The CLAP and VST3 bundles, built by the nice-plug bundler.
         plugin = craneLib.mkCargoDerivation (common // {
@@ -58,6 +68,33 @@
             cp -r "target/bundled/mesh vst.vst3" $out/lib/vst3/
           '';
         });
+
+        # The standalone build, for the editor screenshot.
+        standalone = craneLib.buildPackage (common // {
+          inherit cargoArtifacts;
+          pname = "mesh-vst-standalone";
+          cargoExtraArgs = "-p mesh-vst --bin mesh-vst";
+          doCheck = false;
+        });
+
+        # Run the standalone editor on a virtual X server and capture it.
+        # Inside the virtual X server: start the editor, wait, capture.
+        capture = pkgs.writeShellScript "mesh-vst-capture" ''
+          MESH_VST_DEMO=1 ${standalone}/bin/mesh-vst --backend dummy >"$1.log" 2>&1 &
+          pid=$!
+          sleep 6
+          ${pkgs.imagemagick}/bin/import -window root "$1"
+          kill $pid || true
+        '';
+        screenshot = pkgs.writeShellScript "mesh-vst-screenshot" ''
+          set -eu
+          out="$(realpath -m "''${1:-mesh-vst.png}")"
+          export HOME="$(mktemp -d)" XDG_CACHE_HOME="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)"
+          export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (libs ++ [ pkgs.mesa ])}"
+          export LIBGL_ALWAYS_SOFTWARE=1
+          ${pkgs.xvfb-run}/bin/xvfb-run -a -s "-screen 0 1280x800x24" ${capture} "$out"
+          echo "$out"
+        '';
 
         hostcheck = craneLib.buildPackage (common // {
           inherit cargoArtifacts;
@@ -77,14 +114,14 @@
         packages = {
           default = plugin;
           mesh-vst = plugin;
-          inherit hostcheck clap-validator;
+          inherit hostcheck clap-validator standalone;
         };
 
         checks = {
           # Debug profile: the RT tests count allocations, which needs debug assertions.
           tests = craneLib.cargoTest (common // {
             CARGO_PROFILE = "dev";
-            cargoArtifacts = craneLib.buildDepsOnly (common // { CARGO_PROFILE = "dev"; });
+            cargoArtifacts = craneLib.buildDepsOnly (common // { inherit dummySrc; CARGO_PROFILE = "dev"; });
             cargoTestExtraArgs = "-p mesh-vst-core";
           });
           clippy = craneLib.cargoClippy (common // { inherit cargoArtifacts; cargoClippyExtraArgs = "-p mesh-vst-core -p mesh-vst -- -D clippy::correctness"; });
@@ -93,6 +130,13 @@
             ${clap-validator}/bin/clap-validator validate "${plugin}/lib/clap/mesh vst.clap" | sed "s/\x1b\[[0-9;]*m//g" > $out
             tail -1 $out
             grep -q " 0 failed" $out
+          '';
+          # The editor opens and draws (on a virtual X server, software rendering).
+          gui = pkgs.runCommand "mesh-vst-gui" { } ''
+            ${screenshot} $TMPDIR/editor.png
+            mean=$(${pkgs.imagemagick}/bin/magick $TMPDIR/editor.png -format "%[fx:mean]" info:)
+            echo "editor screenshot mean $mean" | tee $out
+            awk -v m="$mean" 'BEGIN { exit !(m > 0.02) }'
           '';
           # End to end through a CLAP host: every scenario of `hostcheck suite`,
           # with the built-in sounds and a synthesized library.
@@ -104,6 +148,8 @@
         };
 
         apps = {
+          # A screenshot of the editor: nix run .#screenshot -- out.png
+          screenshot = { type = "app"; program = toString screenshot; };
           # The same scenarios against a real library folder (read only):
           #   nix run .#e2e -- ~/Music/samples [out dir]
           e2e = {

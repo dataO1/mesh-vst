@@ -10,7 +10,8 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 mesh-vst-core = { path = "../core" }
-nice-plug = { version = "0.4.2", features = ["assert_process_allocs"] }
+nice-plug = { version = "0.4.2", features = ["assert_process_allocs", "standalone"] }
+nice-plug-iced = { version = "0.5", features = ["wgpu", "tiny-skia", "canvas"] }
 basedrop = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

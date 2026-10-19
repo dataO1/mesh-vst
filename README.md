@@ -6,8 +6,8 @@ Hold one note in your DAW and the plugin plays a pattern generated from a seed, 
 host tempo and in the key of the note. Roll seeds until a groove fits, drag samples onto slots,
 and automate intensity and density for the arrangement.
 
-**Status:** early. The CLAP and VST3 plugin plays a seeded drum or bass pattern with built-in
-sounds; the library, GUI and visuals are next. Design and progress: [docs/design.md](docs/design.md).
+**Status:** early. The CLAP and VST3 plugin plays seeded drum and bass patterns from a sample library
+(or built-in sounds) with a first editor; the visuals are next. Design and progress: [docs/design.md](docs/design.md).
 
 ## Planned
 
@@ -31,6 +31,7 @@ With Nix:
 nix build                # result/lib/clap/mesh vst.clap, result/lib/vst3/mesh vst.vst3
 nix flake check          # unit tests, clippy, clap-validator, end-to-end suite in a headless host
 nix run .#e2e -- ~/Music/samples   # the end-to-end suite against a real library (read only)
+nix run .#screenshot -- editor.png   # the editor on a virtual X server, playing a demo note
 ```
 
 Inside the devshell (`nix develop`):

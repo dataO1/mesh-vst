@@ -73,6 +73,10 @@ pub struct Player {
     /// Tempo the break and top loops were recorded at: they play faster or
     /// slower with the host, the pitch following (design D29).
     pub loop_bpm: Option<f64>,
+    /// Bar renders so far (the editor redraws its view on a new one).
+    renders: u64,
+    /// Pattern bar and 16th step at the end of the last block.
+    position: Option<(u64, u32)>,
 }
 
 impl Player {
@@ -91,6 +95,8 @@ impl Player {
             cached: None,
             version: 0,
             loop_bpm: None,
+            renders: 0,
+            position: None,
         }
     }
 
@@ -148,6 +154,21 @@ impl Player {
         }
     }
 
+    /// The held note's key.
+    pub fn gate_key(&self) -> Option<u8> {
+        self.gate.filter(|g| g.close_at.is_infinite()).map(|g| g.key)
+    }
+
+    /// Bar renders so far.
+    pub fn render_count(&self) -> u64 {
+        self.renders
+    }
+
+    /// Pattern bar and 16th step the last block ended in, while a note plays.
+    pub fn position(&self) -> Option<(u64, u32)> {
+        self.position
+    }
+
     /// Whether a note holds the gate open.
     pub fn is_gated(&self) -> bool {
         self.gate.is_some_and(|g| g.close_at.is_infinite())
@@ -167,6 +188,11 @@ impl Player {
             };
             self.fire_range(start, t1, t0, samples_per_tick, n);
             self.until = Some(t1);
+            self.position = self.gate.map(|g| {
+                let local = (t1 - g.origin).max(0.0);
+                let bar = (local / TICKS_PER_BAR as f64) as u64;
+                (bar, ((local % TICKS_PER_BAR as f64) / TICKS_PER_STEP as f64) as u32)
+            });
             if self.gate.is_some_and(|g| g.close_at <= t1) {
                 self.gate = None;
             }
@@ -194,6 +220,7 @@ impl Player {
             if self.cached != Some(want) {
                 self.lane.render(bar, key, &mut self.bar, &mut self.scratch);
                 self.cached = Some(want);
+                self.renders = self.renders.wrapping_add(1);
             }
             let bar_start = gate.origin + bar as f64 * bar_ticks;
             let drums = self.lane.role() == Role::Drums;
