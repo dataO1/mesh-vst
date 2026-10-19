@@ -147,6 +147,30 @@
           strictDeps = true;
           doCheck = false;
         };
+        # Manual testing without a DAW, and with a FOSS one. PipeWire's JACK so
+        # it plays on this desktop.
+        jackLibs = "${pkgs.pipewire.jack}/lib:${pkgs.lib.makeLibraryPath libs}";
+        play = pkgs.writeShellScript "mesh-vst-play" ''
+          # The standalone editor (outputs go to the speakers), a virtual
+          # keyboard (VMPK) and a patchbay (qpwgraph) to wire the keyboard's
+          # MIDI out to mesh vst. Without MIDI: MESH_VST_DEMO=1 nix run .#play
+          export LD_LIBRARY_PATH="${jackLibs}"
+          ${pkgs.vmpk}/bin/vmpk >/dev/null 2>&1 &
+          kb=$!
+          ${pkgs.qpwgraph}/bin/qpwgraph >/dev/null 2>&1 &
+          pb=$!
+          trap 'kill $kb $pb 2>/dev/null' EXIT
+          ${standalone}/bin/mesh-vst --backend jack "$@"
+        '';
+        qtractor = pkgs.writeShellScript "mesh-vst-qtractor" ''
+          # Qtractor (FOSS DAW, CLAP and VST3) with the bundles built by this
+          # flake on its plugin paths.
+          export CLAP_PATH="${plugin}/lib/clap''${CLAP_PATH:+:$CLAP_PATH}"
+          export VST3_PATH="${plugin}/lib/vst3''${VST3_PATH:+:$VST3_PATH}"
+          export LD_LIBRARY_PATH="${jackLibs}"
+          exec ${pkgs.qtractor}/bin/qtractor "$@"
+        '';
+
       in {
         packages = {
           default = plugin;
@@ -186,6 +210,10 @@
         };
 
         apps = {
+          # The editor with sound, no DAW: nix run .#play
+          play = { type = "app"; program = toString play; };
+          # A FOSS DAW with mesh vst on its plugin paths: nix run .#qtractor
+          qtractor = { type = "app"; program = toString qtractor; };
           # A screenshot of the editor: nix run .#screenshot -- out.png [drums|bass] [drag|settings|library]
           screenshot = { type = "app"; program = toString screenshot; };
           # The same scenarios against a real library folder (read only):
@@ -207,6 +235,34 @@
           packages = [ pkgs.pkg-config clap-validator ] ++ libs;
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath libs;
           RUST_BACKTRACE = "1";
+          shellHook = ''
+            cat <<'EOF'
+          mesh vst devshell
+
+          Try it
+            nix run .#play                 editor with sound, no DAW (JACK via PipeWire); VMPK keyboard +
+                                           qpwgraph open too: wire "VMPK Output" to "mesh vst" MIDI in
+            MESH_VST_DEMO=1 nix run .#play  same, holding a note from the start (no keyboard needed)
+            nix run .#qtractor             Qtractor (FOSS DAW, CLAP + VST3) with this build on its plugin
+                                           paths; add an instrument track, insert "mesh vst", draw one long note
+            nix run .#screenshot -- out.png [drums|bass] [drag|settings|library]
+                                           the editor on a virtual X server, playing a demo note
+
+          Test
+            nix flake check                unit tests, clippy, clap-validator, e2e suite, gui, Windows build
+            nix run .#e2e -- ~/Music/x     end-to-end suite against a real sample folder (read only)
+            cargo test -p mesh-vst-core    core tests (here in the devshell)
+
+          Build
+            nix build                      result/lib/clap, result/lib/vst3 (Linux)
+            nix build .#windows            Windows bundles (mingw-w64)
+            nix build .#release            zips of both
+            cargo xtask bundle mesh-vst --release   target/bundled (devshell)
+
+          Library folders: ~/.config/mesh-vst/settings.json, the SET panel, or MESH_VST_LIBRARY=dir
+          Design and progress: docs/design.md
+          EOF
+          '';
         };
       });
 }

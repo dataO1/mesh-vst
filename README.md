@@ -55,6 +55,16 @@ nix run .#hostcheck -- render "result/lib/clap/mesh vst.clap" --mode bass --seed
 cargo run -p mesh-vst-core --release --example render -- --mode drums --kick k.wav --snare s.wav --break amen.wav --out drums.wav
 ```
 
+## Trying it without a DAW, or with a FOSS one
+
+```sh
+nix run .#play              # the standalone editor with sound (JACK via PipeWire), a VMPK keyboard and qpwgraph
+MESH_VST_DEMO=1 nix run .#play   # the same, holding a note from the start
+nix run .#qtractor          # Qtractor with this build on its CLAP and VST3 paths
+```
+
+`nix develop` prints every run, test and build command.
+
 ## Library
 
 Set the folders in `~/.config/mesh-vst/settings.json`:
