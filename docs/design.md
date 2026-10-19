@@ -360,3 +360,28 @@ Each step is tested before the next one starts.
     seeds.
   - **G6** The choke amount (D27) and unison (D38) are not built yet.
   - **G7** Windows builds need a mingw cross toolchain in the devshell (M7).
+- **M3 done (2026-10-19).**
+  - **Library module.** `library` handles the scan, the cache keyed by path, size and
+    modification time, the classifier ported from S1, pools, tags, overrides, the content hash
+    and imports.
+  - **Loader module.** `loader` makes the seeded slot picks with pins. It normalizes each
+    sample to −12 LUFS and resamples it to the host rate. Break tempo comes from the file name
+    or the loop length, and the player follows the host tempo by pitch (G1 fixed). A mudpie's
+    root comes from a note name or its detected pitch.
+  - **Plugin wiring.** The plugin loads kits on a worker thread and swaps them in without
+    allocating. The project saves the files it plays and finds them again by hash (D18).
+  - **Settings.** Library folders live in `~/.config/mesh-vst/settings.json` or come from
+    `MESH_VST_LIBRARY`.
+  - **Accuracy on the dev library.** With folder names hidden: 81.4 % right, 14.9 % unsure,
+    95.6 % of answers right, the same as the spike. A full scan of 1288 files takes 6.9 s, a
+    cached rescan 0.01 s.
+  - **Tests.** They are declarative in the flake:
+    - `nix flake check` runs the unit tests (dev profile), clippy, clap-validator, and the e2e
+      suite. The suite (`hostcheck suite`) runs 12 scenarios with assertions in a headless CLAP
+      host, with the built-in sounds and a synthesized library.
+    - `nix run .#e2e -- <folder>` runs the same suite against a real library. Every scenario
+      passes on both.
+  - **Gaps.**
+    - **G8** No UI for pins and overrides yet (M4).
+    - **G9** Mudpies vary a lot in level after normalization. Seed 7's dev mudpie renders at
+      −35 dBFS RMS.

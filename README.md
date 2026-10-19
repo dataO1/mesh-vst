@@ -29,8 +29,8 @@ With Nix:
 
 ```sh
 nix build                # result/lib/clap/mesh vst.clap, result/lib/vst3/mesh vst.vst3
-nix flake check          # tests, clippy, clap-validator, a headless host playing both modes
-nix run .#hostcheck -- "result/lib/clap/mesh vst.clap" --mode bass --out bass.wav
+nix flake check          # unit tests, clippy, clap-validator, end-to-end suite in a headless host
+nix run .#e2e -- ~/Music/samples   # the end-to-end suite against a real library (read only)
 ```
 
 Inside the devshell (`nix develop`):
@@ -43,12 +43,24 @@ cargo test -p mesh-vst-core             # generator, sampler and player tests
 Copy the bundles to `~/.clap` and `~/.vst3` (Linux) or `%COMMONPROGRAMFILES%\CLAP` and
 `%COMMONPROGRAMFILES%\VST3` (Windows).
 
-Checks without a DAW:
+Single renders without a DAW:
 
 ```sh
-cargo run -p hostcheck --release -- "target/bundled/mesh vst.clap" --mode bass --seed 7 --bars 8 --out bass.wav
+nix run .#hostcheck -- render "result/lib/clap/mesh vst.clap" --mode bass --seed 7 --bars 8 --out bass.wav
 cargo run -p mesh-vst-core --release --example render -- --mode drums --kick k.wav --snare s.wav --break amen.wav --out drums.wav
 ```
+
+## Library
+
+Set the folders in `~/.config/mesh-vst/settings.json`:
+
+```json
+{ "library_folders": ["/home/me/Music/Samples"] }
+```
+
+(or the `MESH_VST_LIBRARY` environment variable, separated like `PATH`). The first load scans the
+folders, later loads read the cache in `~/.cache/mesh-vst/`. Without a library the plugin plays
+built-in synthesized sounds.
 
 ## Playing it
 

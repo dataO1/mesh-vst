@@ -10,7 +10,7 @@
 //! RT contract: after [`Player::new`] nothing here allocates, locks or blocks.
 
 use crate::event::{EventKind, LiveEvent};
-use crate::generator::layout::DrumVoice;
+use crate::generator::layout::{DrumVoice, BREAK_BASE};
 use crate::key::MusicalKey;
 use crate::pattern::{PatternLane, RenderedBar, Scratch};
 use crate::role::Role;
@@ -70,6 +70,9 @@ pub struct Player {
     /// What `bar` was rendered for: pattern bar, lane version, root key.
     cached: Option<(u64, u64, u8)>,
     version: u64,
+    /// Tempo the break and top loops were recorded at: they play faster or
+    /// slower with the host, the pitch following (design D29).
+    pub loop_bpm: Option<f64>,
 }
 
 impl Player {
@@ -87,6 +90,7 @@ impl Player {
             scratch: Scratch::default(),
             cached: None,
             version: 0,
+            loop_bpm: None,
         }
     }
 
@@ -99,6 +103,14 @@ impl Player {
     pub fn lane_mut(&mut self) -> &mut PatternLane {
         self.version = self.version.wrapping_add(1);
         &mut self.lane
+    }
+
+    /// Swap the lane with `lane` (a new kit layout). `lane` then holds the
+    /// old one, for the caller to drop off the audio thread. RT-safe.
+    pub fn swap_lane(&mut self, lane: &mut PatternLane) {
+        self.version = self.version.wrapping_add(1);
+        self.cached = None;
+        std::mem::swap(&mut self.lane, lane);
     }
 
     pub fn sampler(&self) -> &Sampler {
@@ -167,6 +179,8 @@ impl Player {
     /// Fire the events of song ticks `from..to` (block starts at `t0`).
     fn fire_range(&mut self, from: f64, to: f64, t0: f64, samples_per_tick: f64, frames: usize) {
         let Some(gate) = self.gate else { return };
+        let bpm = self.sample_rate * 60.0 / (samples_per_tick * TICKS_PER_BEAT);
+        let loop_cents = self.loop_bpm.filter(|b| *b > 0.0).map_or(0, |b| (1200.0 * (bpm / b).log2()).round().clamp(-2400.0, 2400.0) as i16);
         let to = to.min(gate.close_at);
         if to <= from {
             return;
@@ -193,7 +207,10 @@ impl Player {
                     continue;
                 }
                 let offset = (((at - t0) * samples_per_tick).round().max(0.0) as usize).min(frames - 1) as u32;
-                let fired = LiveEvent { vel: scale_vel(ev.vel, gate.vel), ..*ev };
+                let mut fired = LiveEvent { vel: scale_vel(ev.vel, gate.vel), ..*ev };
+                if drums && ev.target >= BREAK_BASE {
+                    fired.cents = fired.cents.saturating_add(loop_cents);
+                }
                 self.sampler.handle_event(&fired, offset);
             }
         }

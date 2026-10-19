@@ -19,8 +19,10 @@ use nice_plug::prelude::*;
 
 pub mod builtin;
 pub mod params;
+pub mod worker;
 
 use params::{MeshParams, Mode, PhaseMode, BEND_RANGES};
+use worker::{Garbage, Ready, Request, Worker};
 
 /// Tempo when the host gives none.
 const DEFAULT_BPM: f64 = 120.0;
@@ -31,6 +33,9 @@ const BASS_VOICES: usize = 16;
 // (the library samples get loudness-normalized at load, M3).
 const BUILTIN_DRUM_GAIN: f32 = 0.4;
 const BUILTIN_BASS_GAIN: f32 = 0.8;
+// MUSICAL: output trims of library kits (every sample at −12 LUFS), first draft.
+const LIBRARY_DRUM_GAIN: f32 = 0.35;
+const LIBRARY_BASS_GAIN: f32 = 0.6;
 
 /// Everything the knobs and settings resolve to; a change re-applies them.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,6 +54,9 @@ struct Settings {
 struct Lane {
     player: Player,
     base: LaneSamplerParams,
+    /// Sound seed of the kit playing, and of the kit asked for.
+    loaded: Option<u32>,
+    requested: Option<u32>,
 }
 
 pub struct MeshVst {
@@ -63,6 +71,7 @@ pub struct MeshVst {
     /// Position of the free clock in beats, while the transport is stopped.
     free_beat: f64,
     free_running: bool,
+    worker: Option<Worker>,
 }
 
 impl Default for MeshVst {
@@ -77,6 +86,7 @@ impl Default for MeshVst {
             mod_wheel: 0.0,
             free_beat: 0.0,
             free_running: false,
+            worker: None,
         }
     }
 }
@@ -114,6 +124,55 @@ impl MeshVst {
         match mode {
             Mode::Drums => self.drums.as_mut(),
             Mode::Bass => self.bass.as_mut(),
+        }
+    }
+
+    /// Swap in kits the worker finished. The replaced lane goes back to it.
+    fn take_kits(&mut self) {
+        let Some(w) = self.worker.as_mut() else { return };
+        while let Ok(ready) = w.ready.pop() {
+            match ready {
+                Ready::Drums { mut lane, bank, loop_bpm, sound_seed, builtin } => {
+                    if let Some(l) = self.drums.as_mut() {
+                        l.player.swap_lane(&mut lane);
+                        l.player.sampler_mut().set_bank(bank);
+                        l.player.loop_bpm = loop_bpm;
+                        l.base.gain = if builtin { BUILTIN_DRUM_GAIN } else { LIBRARY_DRUM_GAIN };
+                        l.loaded = Some(sound_seed);
+                    }
+                    let _ = w.garbage.push(Garbage::Lane(lane));
+                }
+                Ready::Bass { bank, sound_seed, builtin } => {
+                    if let Some(l) = self.bass.as_mut() {
+                        l.player.sampler_mut().set_bank(bank);
+                        l.base.gain = if builtin { BUILTIN_BASS_GAIN } else { LIBRARY_BASS_GAIN };
+                        l.loaded = Some(sound_seed);
+                    }
+                }
+            }
+            self.applied = None;
+        }
+    }
+
+    /// Ask the worker for the kit of the sound seed when it is not the one
+    /// playing or already asked for.
+    fn ask_kit(&mut self, mode: Mode) {
+        let seed = self.params.sound_seed.value() as u32;
+        let Some(w) = self.worker.as_mut() else { return };
+        let lane = match mode {
+            Mode::Drums => self.drums.as_mut(),
+            Mode::Bass => self.bass.as_mut(),
+        };
+        let Some(l) = lane else { return };
+        if l.loaded == Some(seed) || l.requested == Some(seed) {
+            return;
+        }
+        let req = match mode {
+            Mode::Drums => Request::Drums { sound_seed: seed },
+            Mode::Bass => Request::Bass { sound_seed: seed },
+        };
+        if w.requests.push(req).is_ok() {
+            l.requested = Some(seed);
         }
     }
 
@@ -232,12 +291,14 @@ impl Plugin for MeshVst {
         let (layout, bank) = builtin::drum_kit(sr).build();
         let mut sampler = Sampler::new(sr, DRUM_VOICES);
         sampler.set_bank(basedrop::Shared::new(&gc_handle(), bank));
-        self.drums = Some(Lane { player: Player::new(PatternLane::drums(layout, 1, 1), sampler), base: LaneSamplerParams { gain: BUILTIN_DRUM_GAIN, ..macros::drum_params() } });
+        self.drums = Some(Lane { player: Player::new(PatternLane::drums(layout, 1, 1), sampler), base: LaneSamplerParams { gain: BUILTIN_DRUM_GAIN, ..macros::drum_params() }, loaded: None, requested: None });
 
         let mut sampler = Sampler::new(sr, BASS_VOICES);
         sampler.set_bank(basedrop::Shared::new(&gc_handle(), mudpie_bank(share(builtin::mudpie(sr)))));
-        self.bass = Some(Lane { player: Player::new(PatternLane::bass(1, 1), sampler), base: LaneSamplerParams { gain: BUILTIN_BASS_GAIN, ..macros::mudpie_params() } });
+        self.bass = Some(Lane { player: Player::new(PatternLane::bass(1, 1), sampler), base: LaneSamplerParams { gain: BUILTIN_BASS_GAIN, ..macros::mudpie_params() }, loaded: None, requested: None });
         self.applied = None;
+        // The built-in sounds play until the library kit is loaded.
+        self.worker = Some(Worker::spawn(sr, self.params.kit.clone()));
         true
     }
 
@@ -250,6 +311,8 @@ impl Plugin for MeshVst {
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &mut impl ProcessContext<Self>) -> ProcessStatus {
         let mode = self.params.mode.value();
+        self.take_kits();
+        self.ask_kit(mode);
         self.sync(mode);
         let (bpm, host_playing, block_beat) = {
             let t = context.transport();

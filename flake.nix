@@ -88,18 +88,33 @@
             cargoTestExtraArgs = "-p mesh-vst-core";
           });
           clippy = craneLib.cargoClippy (common // { inherit cargoArtifacts; cargoClippyExtraArgs = "-p mesh-vst-core -p mesh-vst -- -D clippy::correctness"; });
-          # The bundle passes the CLAP conformance tests and plays through a host.
+          # The bundle passes the CLAP conformance tests.
           validate = pkgs.runCommand "mesh-vst-validate" { } ''
             ${clap-validator}/bin/clap-validator validate "${plugin}/lib/clap/mesh vst.clap" | sed "s/\x1b\[[0-9;]*m//g" > $out
             tail -1 $out
             grep -q " 0 failed" $out
-            ${hostcheck}/bin/hostcheck "${plugin}/lib/clap/mesh vst.clap" --mode drums --seed 7 --bars 2 --out drums.wav >> $out
-            ${hostcheck}/bin/hostcheck "${plugin}/lib/clap/mesh vst.clap" --mode bass --seed 7 --bars 2 --out bass.wav >> $out
-            if grep -q "NON-FINITE" $out; then exit 1; fi
+          '';
+          # End to end through a CLAP host: every scenario of `hostcheck suite`,
+          # with the built-in sounds and a synthesized library.
+          e2e = pkgs.runCommand "mesh-vst-e2e" { } ''
+            set -o pipefail
+            export HOME=$TMPDIR XDG_CACHE_HOME=$TMPDIR/cache
+            ${hostcheck}/bin/hostcheck suite "${plugin}/lib/clap/mesh vst.clap" --out $TMPDIR/e2e | tee $out
           '';
         };
 
         apps = {
+          # The same scenarios against a real library folder (read only):
+          #   nix run .#e2e -- ~/Music/samples [out dir]
+          e2e = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "mesh-vst-e2e" ''
+              if [ $# -lt 1 ]; then echo "usage: nix run .#e2e -- <library folder> [out dir]"; exit 2; fi
+              out="''${2:-./e2e-out}"
+              export XDG_CACHE_HOME="$(mktemp -d)"
+              exec ${hostcheck}/bin/hostcheck suite "${plugin}/lib/clap/mesh vst.clap" --library "$1" --out "$out"
+            '');
+          };
           hostcheck = { type = "app"; program = "${hostcheck}/bin/hostcheck"; };
           clap-validator = { type = "app"; program = "${clap-validator}/bin/clap-validator"; };
         };
