@@ -20,4 +20,4 @@ and automate intensity and density for the arrangement.
 
 ## License
 
-FOSS, funded by donations. License to be decided (see design Q1).
+FOSS, pay what you want. GPL-3.0-or-later, see [LICENSE](LICENSE).

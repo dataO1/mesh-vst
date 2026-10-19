@@ -1,6 +1,6 @@
 # mesh vst: design
 
-Status: design in progress (grilling rounds 1–4, 2026-10-19). Kept up to date as decisions land.
+Status: design in progress (grilling rounds 1–5, 2026-10-19). Kept up to date as decisions land.
 Each decision has a code (D1 …) so issues and commits can cite it. Open items are under
 [Open questions](#open-questions) and [Research](#research).
 
@@ -29,7 +29,7 @@ drive external effects.
 - **D2** Formats: CLAP and VST3. Platforms: Linux and Windows first, macOS later (signing,
   notarization). No AU, so no Logic for now. A standalone JACK build exists for development.
 - **D3** FOSS, pay what you want. Mainly for personal use. No AGPL needed: the AGPL in Mesh comes
-  from its analysis and time-stretch dependencies, which mesh vst does not use. License per Q1.
+  from its analysis and time-stretch dependencies, which mesh vst does not use. License: GPL-3.0-or-later.
 - **D4** Framework: [nice-plug](https://codeberg.org/RustAudio/nice-plug) (ISC, the maintained
   NIH-plug successor; VST3 through the MIT `vst3` crate since the VST3 SDK went MIT in Oct 2025).
   GUI: `nice-plug-iced` (iced 0.13 on baseview) with the wgpu renderer for shader visuals.
@@ -117,6 +117,33 @@ drive external effects.
   detected onsets is a v2 todo. v1 keeps Mesh's step-grid chops and density gating.
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
+- **D31** Hat, cymbal and shaker pools. The name decides when it carries a keyword: 97% of
+  this library's Cymbals folder does. Otherwise the audio decides, and it only separates
+  hats and crashes. Measured with a leave-one-out 3-NN on S1 features, which is optimistic:
+  hats 90%, crashes 89%, rides 22%, shakers 13%. So hats keep their own pool. Rides, crashes,
+  shakers and other tops share one cymbal pool, and the name label is a tag the seed can prefer
+  (for example rides for an 8th ride pattern). The two cymbal slots draw from that pool.
+- **D32** Modulation outputs. Up to 16 mod-out channels on aux audio outputs. Each channel
+  carries a DC level from one internal value, not just envelopes: any generator or voice
+  state. The first four are velocity, accent/stab, amp envelope and filter envelope; the full
+  list is to be discussed. The user maps a channel once through the DAW's own follower (R4).
+  Live needs one audio track per used channel plus a Max for Live Envelope Follower (Suite or
+  the add-on). Studio One has no path. Proven by test spike S2 before it is built in. The
+  bass voice keeps its own filter and drive, and there are no other built-in effects.
+- **D33** UI layout (artifact "mesh vst UI"): a fixed global top bar (logo, mode, key from note,
+  host tempo, sound and pattern seed with dice and lock, favorite, undo/redo, library,
+  play). It is visually modulated by the hits (chromatic aberration ghosts in red and blue as
+  in Mesh live). Shared pattern controls on the left, mode controls on the right, a square
+  visual in the middle, and a footer strip. Font: Share Tech Mono, display font Major Mono
+  Display, Mesh live palette.
+  - **Bass:** the visual is a 100×100 point cloud. Rows are 100 frequency bins (low at the
+    bottom). Each row lights dots from the left in proportion to that bin's level. Hits shake
+    the dots and split the colors. The footer holds the mudpie drop slot, the step row with
+    velocity, and the mod-out meters.
+  - **Drums:** the visual is a grid of scanline subcubes, one row per kit slot and one column
+    per 16th. Lit subcubes show velocity, and a hit bursts its cubes outward. The footer is the
+    slot strip: name, file, drop target, dice. Slots the seed leaves off (break or perc, one
+    cymbal) are dimmed.
 
 ## 3. Research
 
@@ -216,13 +243,9 @@ drive external effects.
 
 ## 4. Open questions
 
-- **Q1** License: GPL-3.0-or-later (forks stay open) or MIT (anything goes)? The copied Mesh code
-  is relicensed by its author.
-- **Q7** UI layout per mode, top bar contents, visualizer.
-- **Q11** Post-processing after R4: an aux control output (4 envelope channels) as the main path, the
-  bass voice keeps its own filter and drive, no further built-in processing?
-- **Q13** The two cymbal slots: ride and crash, or two picks from one cymbal pool? Where do shaker
-  and top loops go: hats, perc, or break?
+- **Q14** The internal values offered as mod-out sources, beyond the first four.
+- **Q15** S2 test plugin: DC on an aux output, mapped in Live, Bitwig, FL and Reaper on your PC.
+- **Q16** Library browser panel and shader-visual cost (Q7b, Q7c in the chat).
 
 ## 5. Todo after v1
 
