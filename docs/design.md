@@ -128,12 +128,46 @@ arrangement engine, ML models.
     most errors. The thresholds still need a second, differently named library to validate them.
     Spike code: scratchpad `classify-spike/` (Rust, hound + realfft), to be moved into
     `spikes/` here.
-- **R1** Post-processing chain (running): can an instrument drive parameters of plugins after it
-  through a native CLAP/VST3 mechanism, without hand wiring (a parameter contract such as "knob 1
-  = filter, knob 2 = drive")? Options: built-in hand-picked processing, hosting third-party
-  plugins inside mesh vst, host routing. Decides D15 and the velocity/stab/accent targets.
-- **R2** DAW key and scale (running): which hosts expose key/scale to plugins (VST3 chord context,
-  ARA 2, Reaper host API, others) and at what cost.
+- **R1** Post-processing chain (done 2026-10-19). No plugin format lets one plugin drive another
+  plugin's parameters.
+  - **The plugin formats.** CLAP's `remote-controls` and `param-indication` only run between a
+    plugin and its host. VST3 has nothing for this. The CLAP `cv` draft was removed in 2024.
+  - **Hosts.**
+    - Reaper is the only host where the plugin can create the links itself: it finds the
+      effects after it through the Reaper API and writes their parameter links.
+    - Bitwig, Cubase 14+ and FL need one manual mapping per knob, through a control-audio output
+      or modulators.
+    - Live does not pass MIDI from an instrument to the effects after it.
+    - Logic is not possible.
+  - **Hosting plugins inside mesh vst.** This is possible for CLAP by reusing Mesh's clack host
+    (about 4.4k lines).
+    - On Linux, the hosted plugins' GUIs need timer and fd plumbing that nice-plug does not
+      offer.
+    - Wayland embedding is unsolved.
+    - A crashing hosted plugin takes the DAW session down.
+    - Their latency and state become ours, so a project breaks on a machine missing those
+      plugins.
+    - VST3 hosting would mean writing a whole host layer.
+  - **Ranked by effort and coverage.**
+    1. Built-in fixed processing: low to moderate effort, works the same in every host, and
+       changes land per note at the exact sample.
+    2. Hosted CLAP chain with a parameter contract: high effort, with crash and GUI risk.
+    3. Host routing: automatic in Reaper only, manual in the others.
+- **R2** DAW key and scale (done 2026-10-19). None of the eight hosts checked sends its project
+  key to a third-party VST3 or CLAP plugin through a documented channel. CLAP has no key
+  extension, not even a draft.
+  - **Reaper.** The plugin can read the MIDI take or editor scale through the Reaper API. This
+    is a small effort, but nice-plug must be patched to expose host extensions.
+  - **Cubase.** It may fill the VST3 chord and scale fields. Unconfirmed: a logging test plugin
+    would settle it.
+  - **Live 12.** Only through a companion Max for Live device that writes the song scale into
+    mesh vst's parameters.
+  - **No route.** Bitwig 6, Studio One / Fender Studio Pro, Logic, FL and Reason.
+  - **ARA 2.** It carries key signatures, but it is built for audio regions and is not usable
+    for an instrument.
+  - Commercial tools (Captain, Scaler) set or detect the key themselves.
+  - **Consequence.** D11 stands: the root comes from the held note and the scale from a
+    parameter.
 - **R3** Velocity timbre: how to make velocity sound like a different hit (filter tracking,
   transient shaping, round robin, layer crossfade) from one sample. Not started.
 
@@ -154,3 +188,8 @@ arrangement engine, ML models.
   (Mesh's loop gating, tempo-matched to the host).
 - **Q10** Pools after S1: keep 8 fine pools, or use coarse pools (kick, snare, top = hat+cymbal,
   loop, other = perc+fx+tonal) with the fine label as a sorting hint?
+- **Q11** Post-processing (after R1). D15 and the "no effects chain" scope line depend on it.
+  Options: built-in fixed processing (filter, drive, transient), a hosted CLAP chain with a
+  parameter contract, or host routing.
+- **Q12** DAW key integrations (after R2): add Reaper's scale read, and a Cubase test, after v1?
+  Or keep the scale parameter only?
