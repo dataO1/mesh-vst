@@ -169,14 +169,57 @@ struct Uniforms {
     a: [f32; 4],
     /// mode (0 bass, 1 drums), env, punch, scale
     b: [f32; 4],
+    /// fade per frame (trails)
+    c: [f32; 4],
     levels: [[f32; 4]; BINS / 4],
     slots: [[f32; 4]; SLOTS / 4],
 }
 
+/// How much of the last frame stays each frame: short trails (D33).
+// MUSICAL: trail length, tune by eye.
+const TRAIL_KEEP: f32 = 0.62;
+
+/// The field's own texture: points draw into it over a faded copy of the last
+/// frame, then it is added onto the editor.
+struct Trails {
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    size: (u32, u32),
+    /// Cleared on the first frame after creation.
+    fresh: bool,
+}
+
 pub struct FieldPipeline {
-    pipeline: wgpu::RenderPipeline,
+    points: wgpu::RenderPipeline,
+    fade: wgpu::RenderPipeline,
+    blit: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    blit_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    format: wgpu::TextureFormat,
+    trails: Option<Trails>,
+    /// Where the field sits in the target, physical pixels.
+    rect: (f32, f32, f32, f32),
+}
+
+fn fullscreen(device: &wgpu::Device, layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, fs: &str, format: wgpu::TextureFormat, blend: wgpu::BlendState) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(fs),
+        layout: Some(layout),
+        vertex: wgpu::VertexState { module, entry_point: Some("vs_full"), buffers: &[], compilation_options: Default::default() },
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fs),
+            targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    })
 }
 
 impl shader::Pipeline for FieldPipeline {
@@ -205,15 +248,37 @@ impl shader::Pipeline for FieldPipeline {
             layout: &layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() }],
         });
-        let pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&layout], push_constant_ranges: &[] });
+        let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let main_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&layout], push_constant_ranges: &[] });
+        let blit_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&blit_layout], push_constant_ranges: &[] });
         let additive = wgpu::BlendState {
             color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
             alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
         };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let points = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("mesh vst field"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&main_layout),
             vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
@@ -227,31 +292,114 @@ impl shader::Pipeline for FieldPipeline {
             multiview: None,
             cache: None,
         });
-        Self { pipeline, uniforms, bind_group }
+        // Fade: the last frame times (1 − alpha).
+        let fade_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
+            alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
+        };
+        let fade = fullscreen(device, &main_layout, &module, "fs_fade", format, fade_blend);
+        let add = wgpu::BlendState {
+            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+            alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+        };
+        let blit = fullscreen(device, &blit_pipeline_layout, &module, "fs_blit", format, add);
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
+        Self { points, fade, blit, uniforms, bind_group, blit_layout, sampler, format, trails: None, rect: (0.0, 0.0, 1.0, 1.0) }
+    }
+}
+
+impl FieldPipeline {
+    fn ensure_trails(&mut self, device: &wgpu::Device, w: u32, h: u32) {
+        if let Some(t) = self.trails.as_mut().filter(|t| t.size == (w, h)) {
+            // Kept from the last frame: fade it instead of clearing.
+            t.fresh = false;
+            return;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mesh vst trails"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.blit_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        self.trails = Some(Trails { view, bind_group, size: (w, h), fresh: true });
     }
 }
 
 impl shader::Primitive for FieldPrimitive {
     type Pipeline = FieldPipeline;
 
-    fn prepare(&self, pipeline: &mut FieldPipeline, _device: &wgpu::Device, queue: &wgpu::Queue, bounds: &Rectangle, viewport: &Viewport) {
+    fn prepare(&self, pipeline: &mut FieldPipeline, device: &wgpu::Device, queue: &wgpu::Queue, bounds: &Rectangle, viewport: &Viewport) {
         let f = &self.frame;
         let scale = viewport.scale_factor() as f32;
+        let (w, h) = ((bounds.width * scale).max(1.0), (bounds.height * scale).max(1.0));
+        pipeline.rect = (bounds.x * scale, bounds.y * scale, w, h);
+        pipeline.ensure_trails(device, w as u32, h as u32);
         let u = Uniforms {
-            a: [bounds.width * scale, bounds.height * scale, f.time, f.aberration],
+            a: [w, h, f.time, f.aberration],
             b: [if f.drums { 1.0 } else { 0.0 }, f.env, f.punch, scale],
+            c: [1.0 - TRAIL_KEEP, 0.0, 0.0, 0.0],
             levels: std::array::from_fn(|r| std::array::from_fn(|c| f.levels[r * 4 + c])),
             slots: std::array::from_fn(|r| std::array::from_fn(|c| f.slots[r * 4 + c])),
         };
         queue.write_buffer(&pipeline.uniforms, 0, bytemuck::bytes_of(&u));
     }
 
-    fn draw(&self, pipeline: &FieldPipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
-        pass.set_pipeline(&pipeline.pipeline);
-        pass.set_bind_group(0, &pipeline.bind_group, &[]);
-        // Six vertices per point, three passes (red, blue, ink).
-        pass.draw(0..6, 0..3 * N * N);
-        true
+    fn render(&self, pipeline: &FieldPipeline, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, clip_bounds: &Rectangle<u32>) {
+        let Some(trails) = pipeline.trails.as_ref() else { return };
+        {
+            // Into the trails: fade the last frame, add this one's points.
+            let load = if trails.fresh { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) } else { wgpu::LoadOp::Load };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mesh vst trails"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &trails.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_bind_group(0, &pipeline.bind_group, &[]);
+            pass.set_pipeline(&pipeline.fade);
+            pass.draw(0..3, 0..1);
+            pass.set_pipeline(&pipeline.points);
+            // Six vertices per point, three passes (red, blue, ink).
+            pass.draw(0..6, 0..3 * N * N);
+        }
+        // The trails onto the editor.
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("mesh vst field"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        let (x, y, w, h) = pipeline.rect;
+        pass.set_viewport(x, y, w, h, 0.0, 1.0);
+        pass.set_scissor_rect(clip_bounds.x, clip_bounds.y, clip_bounds.width.max(1), clip_bounds.height.max(1));
+        pass.set_pipeline(&pipeline.blit);
+        pass.set_bind_group(0, &trails.bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
 }
 
@@ -259,6 +407,7 @@ const SHADER: &str = r#"
 struct U {
     a: vec4<f32>,
     b: vec4<f32>,
+    c: vec4<f32>,
     levels: array<vec4<f32>, 25>,
     slots: array<vec4<f32>, 2>,
 };
@@ -331,16 +480,17 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> Out {
 
     // The red/blue split, per point by its level.
     var tint = vec3<f32>((150.0 + 80.0 * fb / 99.0) / 255.0, (190.0 - 20.0 * fb / 99.0) / 255.0, (200.0 + 30.0 * fb / 99.0) / 255.0);
-    var alpha = 0.16 + 0.7 * lv;
+    // The trails add up about 2.6 frames: lighter per frame than without them.
+    var alpha = 0.05 + 0.45 * lv;
     let split = ab * lv * (1.5 + 9.0 * punch + 3.0 * env) * scale;
     if pass_id == 0u {
         center.x += split;
         tint = vec3<f32>(0.95, 0.35, 0.32);
-        alpha = select(0.0, 0.5 * lv, lv >= 0.12);
+        alpha = select(0.0, 0.32 * lv, lv >= 0.12);
     } else if pass_id == 1u {
         center.x -= split;
         tint = vec3<f32>(0.35, 0.55, 0.98);
-        alpha = select(0.0, 0.5 * lv, lv >= 0.12);
+        alpha = select(0.0, 0.32 * lv, lv >= 0.12);
     }
 
     // A dot (bass) or a short line along the flow (drums).
@@ -368,5 +518,32 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> Out {
 @fragment
 fn fs(i: Out) -> @location(0) vec4<f32> {
     return i.color;
+}
+
+struct Full {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_full(@builtin(vertex_index) vi: u32) -> Full {
+    let p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    var o: Full;
+    o.pos = vec4<f32>(p[vi], 0.0, 1.0);
+    o.uv = vec2<f32>((p[vi].x + 1.0) * 0.5, (1.0 - p[vi].y) * 0.5);
+    return o;
+}
+
+@fragment
+fn fs_fade(i: Full) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, u.c.x);
+}
+
+@group(0) @binding(0) var trail_tex: texture_2d<f32>;
+@group(0) @binding(1) var trail_samp: sampler;
+
+@fragment
+fn fs_blit(i: Full) -> @location(0) vec4<f32> {
+    return textureSample(trail_tex, trail_samp, i.uv);
 }
 "#;

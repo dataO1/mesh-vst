@@ -778,6 +778,7 @@ impl Gui {
         let shared = &self.data.shared;
 
         // Top bar.
+        let split = self.analyser.as_ref().map_or(0.0, |a| 1.5 * a.env() + 6.0 * a.punch());
         let root = shared.root.load(Ordering::Relaxed);
         let key = if root == 255 { "—".to_string() } else { note_name(root) };
         let bpm = f32::from_bits(shared.bpm.load(Ordering::Relaxed));
@@ -787,7 +788,7 @@ impl Gui {
         };
         let seed_box = |label: &'static str, v: i32, roll: Message, lock: Message, locked: bool| {
             row![
-                column![small(label), text(format!("{v:04}")).font(DATA_FONT).size(16).color(INK)].spacing(2),
+                column![small(label), ghost(format!("{v:04}"), 16.0, DATA_FONT, INK, split)].spacing(2),
                 button(text("roll").font(DATA_FONT).size(12)).on_press(roll).padding([6, 8]).style(|_, s| btn(false, s)),
                 button(text(if locked { "locked" } else { "lock" }).font(DATA_FONT).size(12))
                     .on_press(lock)
@@ -798,9 +799,9 @@ impl Gui {
             .align_y(Alignment::Center)
         };
         let top = row![
-            text("mesh//vst").font(DISPLAY_FONT).size(15).color(DIM),
+            ghost("mesh//vst".into(), 15.0, DISPLAY_FONT, DIM, split),
             row![mode_button(Mode::Drums, "DRUMS"), mode_button(Mode::Bass, "BASS")],
-            column![small("KEY · from note"), row![text(key).font(DATA_FONT).size(16).color(INK), pick_w(Scale::variants_list(), p.scale.value(), Message::Scale, 104.0)].spacing(6).align_y(Alignment::Center)].spacing(2),
+            column![small("KEY · from note"), row![ghost(key, 16.0, DATA_FONT, INK, split), pick_w(Scale::variants_list(), p.scale.value(), Message::Scale, 104.0)].spacing(6).align_y(Alignment::Center)].spacing(2),
             column![small("HOST"), text(format!("{bpm:.1} bpm")).font(DATA_FONT).size(16).color(INK)].spacing(2),
             seed_box("SOUND", p.sound_seed.value(), Message::RollSound, Message::LockSound, locks.sound_locked),
             seed_box("PATTERN", p.pattern_seed.value(), Message::RollPattern, Message::LockPattern, locks.pattern_locked),
@@ -1143,6 +1144,21 @@ fn file_name(p: &std::path::Path) -> String {
 fn note_name(key: u8) -> String {
     const N: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
     format!("{}{}", N[key as usize % 12], key as i32 / 12 - 1)
+}
+
+/// Text with the red/blue ghost split of Mesh live's screen, `split` px apart
+/// (D33: the top bar moves with the hits).
+fn ghost<'a>(s: String, size: f32, font: Font, color: Color, split: f32) -> Element<'a, Message> {
+    if split < 0.2 {
+        return text(s).font(font).size(size).color(color).into();
+    }
+    let t = |c: Color| text(s.clone()).font(font).size(size).color(c);
+    iced::widget::stack![
+        container(t(Color::from_rgba(0.95, 0.35, 0.32, 0.5))).padding(iced::Padding { left: split, ..Default::default() }),
+        container(t(Color::from_rgba(0.35, 0.55, 0.98, 0.5))).padding(iced::Padding { right: split, ..Default::default() }),
+        container(t(color)).padding(iced::Padding { left: split * 0.5, ..Default::default() }),
+    ]
+    .into()
 }
 
 fn small(s: &str) -> iced::widget::Text<'_> {

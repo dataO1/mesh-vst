@@ -495,6 +495,15 @@ Each step is tested before the next one starts.
     mapping is saved with the project and read lock-free on the audio thread.
   - **Settings panel.** Phrase, new root, bend range, the 16 mod-out sources, and the library
     folders (add, remove, rescan, written to `settings.json`).
+  - **Audition (D35).** A play button per file in the library panel; the loader decodes it and a
+    preview voice plays it over the lane. The editor never scans: it reads the loader's cache,
+    and rescans run on a thread.
+  - **Trails (D33).** The field draws into its own texture, which keeps 62 % of the last frame,
+    and is added onto the editor.
+  - **Top bar (D33).** The logo, the key and the seeds split red/blue with the hits, as in Mesh
+    live.
+  - **Every decision D1–D39 is built.** D40 (seeded automation) is still undecided. Nothing has
+    run in a real DAW yet.
 
 ## 9. Research R5: automation in the host (2026-10-19)
 

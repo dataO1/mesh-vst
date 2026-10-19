@@ -6,8 +6,9 @@ Hold one note in your DAW and the plugin plays a pattern generated from a seed, 
 host tempo and in the key of the note. Roll seeds until a groove fits, drag samples onto slots,
 and automate intensity and density for the arrangement.
 
-**Status:** early. The CLAP and VST3 plugin plays seeded drum and bass patterns from a sample library
-(or built-in sounds) with a first editor; the visuals are next. Design and progress: [docs/design.md](docs/design.md).
+**Status:** alpha. Every design decision (docs/design.md D1–D39) is built: seeded drum and bass
+patterns, the sample library with automatic pools, loudness calibration, unison, the editor with
+the point-field visuals, and 16 mod-out channels. Not yet tested in a real DAW. Design and progress: [docs/design.md](docs/design.md).
 
 ## Planned
 
