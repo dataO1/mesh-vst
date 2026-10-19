@@ -297,6 +297,12 @@ pub(super) fn root_octave(key: MusicalKey, min_midi: i32) -> i32 {
     (min_midi - key.root as i32 + 11).div_euclid(12) - 1
 }
 
+/// The root's MIDI note the generator plays for `key` at the centre
+/// register (E1..D#2). The held note's octave moves it (D7).
+pub fn home_root(key: MusicalKey) -> i32 {
+    key.root as i32 + 12 * (root_octave(key, BASS_ROOT_MIN) + 1)
+}
+
 /// Register parameter as an octave shift: −1, 0 or +1.
 pub(super) fn register_shift(v: f32) -> i32 {
     (v * 2.0).round() as i32 - 1

@@ -54,6 +54,8 @@ struct Render {
     playing: bool,
     /// The note ends at this bar.
     release_at: Option<f64>,
+    /// At this bar the held note changes to this key (note-off, then note-on).
+    switch: Option<(f64, u16)>,
     /// Wall-clock seconds of silence first, for background loading.
     warmup: f64,
     params: Vec<(String, f64)>,
@@ -61,7 +63,7 @@ struct Render {
 
 impl Default for Render {
     fn default() -> Self {
-        Self { mode: "drums", seed: None, bars: 4.0, bpm: 172.0, key: 41, playing: true, release_at: None, warmup: 0.0, params: Vec::new() }
+        Self { mode: "drums", seed: None, bars: 4.0, bpm: 172.0, key: 29, playing: true, release_at: None, switch: None, warmup: 0.0, params: Vec::new() }
     }
 }
 
@@ -224,6 +226,7 @@ fn render(entry: &PluginEntry, r: &Render) -> Result<Audio, Error> {
 
     let total = (r.bars * 4.0 * 60.0 / r.bpm * SR) as usize;
     let release = r.release_at.map(|b| (b * 4.0 * 60.0 / r.bpm * SR) as usize);
+    let switch = r.switch.map(|(b, k)| ((b * 4.0 * 60.0 / r.bpm * SR) as usize, k));
     let mut samples = Vec::with_capacity(total * 2);
     let mut mods: Vec<Vec<f32>> = bufs.iter().skip(1).flatten().map(|_| Vec::with_capacity(total)).collect();
     let mut pos = 0usize;
@@ -237,6 +240,11 @@ fn render(entry: &PluginEntry, r: &Render) -> Result<Audio, Error> {
                 events.push(e);
             }
             events.push(&NoteOnEvent::new(0, Pckn::new(0u16, 0u16, r.key, 0u32), 1.0));
+        }
+        if let Some((at, key)) = switch.filter(|(at, _)| *at >= pos && *at < pos + n) {
+            let at = (at - pos) as u32;
+            events.push(&NoteOffEvent::new(at, Pckn::new(0u16, 0u16, r.key, 0u32), 0.0));
+            events.push(&NoteOnEvent::new(at, Pckn::new(0u16, 0u16, key, 0u32), 1.0));
         }
         if let Some(at) = release.filter(|&at| at >= pos && at < pos + n) {
             events.push(&NoteOffEvent::new((at - pos) as u32, Pckn::new(0u16, 0u16, r.key, 0u32), 0.0));
@@ -355,6 +363,17 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     save("builtin-bass", &bass)?;
     rep.healthy("built-in bass plays", &bass);
 
+    // The held note moves the bass (D7): another key after bar 2, an octave up.
+    let half = bass.samples.len() / 2;
+    let switched = render(entry, &Render { mode: "bass", switch: Some((2.0, 36)), ..base.clone() })?;
+    rep.check(
+        "a new key changes the bass from the switch on",
+        switched.samples[..half - 2048] == bass.samples[..half - 2048] && switched.samples[half..] != bass.samples[half..],
+        String::new(),
+    );
+    let octave = render(entry, &Render { mode: "bass", key: base.key + 12, ..base.clone() })?;
+    rep.check("an octave up plays other notes", octave.samples != bass.samples, String::new());
+
     // The mod outputs (D32): 16 channels, levels 0..1, following the hits.
     let range = |a: &Audio| a.mods.iter().flatten().all(|v| (0.0..=1.0).contains(v));
     let peak = |a: &Audio, ch: usize| a.mods.get(ch).map_or(0.0, |c| c.iter().cloned().fold(0.0, f32::max));
@@ -468,9 +487,15 @@ fn main() -> Result<(), Error> {
                 seed: get("seed").map(|s| s.parse()).transpose()?,
                 bars: get("bars").map_or(Ok(4.0), |s| s.parse())?,
                 bpm: get("bpm").map_or(Ok(172.0), |s| s.parse())?,
-                key: get("key").map_or(Ok(41), |s| s.parse())?,
+                key: get("key").map_or(Ok(29), |s| s.parse())?,
                 playing: !opt.contains_key("stopped"),
                 release_at: get("release-at").map(|s| s.parse()).transpose()?,
+                switch: get("switch")
+                    .map(|s| -> Result<(f64, u16), Error> {
+                        let (b, k) = s.split_once(':').ok_or("--switch bar:key")?;
+                        Ok((b.parse()?, k.parse()?))
+                    })
+                    .transpose()?,
                 warmup: get("warmup").map_or(Ok(0.0), |s| s.parse())?,
                 params,
             };

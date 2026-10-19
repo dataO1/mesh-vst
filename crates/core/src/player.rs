@@ -10,6 +10,7 @@
 //! RT contract: after [`Player::new`] nothing here allocates, locks or blocks.
 
 use crate::event::{EventKind, LiveEvent};
+use crate::generator::bass::home_root;
 use crate::generator::layout::{DrumVoice, BREAK_BASE};
 use crate::key::MusicalKey;
 use crate::pattern::{PatternLane, RenderedBar, Scratch};
@@ -159,8 +160,16 @@ impl Player {
             (Phase::Continuous, _) => 0.0,
             // Legato into a new note keeps the running pattern.
             (Phase::Retrigger, Some(g)) if g.close_at.is_infinite() => g.origin,
-            (Phase::Retrigger, _) => (tick / TICKS_PER_STEP as f64).round() * TICKS_PER_STEP as f64,
+            // Exactly at the note, so the first step always fires.
+            (Phase::Retrigger, _) => tick,
         };
+        if !self.is_gated() {
+            // A fresh note plays the same sounds each time.
+            self.sampler.reset_round_robin();
+            // The block cursor can sit a rounding error past the note; a step
+            // exactly at the note still fires.
+            self.until = self.until.map(|u| u.min(tick));
+        }
         let changed = self.gate.is_some_and(|g| g.close_at.is_infinite() && g.key % 12 != key % 12);
         if changed && self.new_root == NewRoot::Retrigger && self.lane.role() != Role::Drums {
             self.sampler.handle_event(&LiveEvent { kind: EventKind::Choke, ..Default::default() }, 0);
@@ -245,6 +254,8 @@ impl Player {
         let first = ((from - gate.origin) / bar_ticks).floor().max(0.0) as u64;
         let last = ((to - gate.origin) / bar_ticks).floor().max(0.0) as u64;
         let key = MusicalKey::new(gate.key % 12, self.minor);
+        // Pitched lanes play in the held note's octave (D7).
+        let octave_shift = if self.lane.role() == Role::Drums { 0 } else { gate.key as i32 - home_root(key) };
         for bar in first..=last {
             let want = (bar, self.version, key.root);
             if self.cached != Some(want) {
@@ -265,6 +276,9 @@ impl Player {
                 }
                 let offset = (((at - t0) * samples_per_tick).round().max(0.0) as usize).min(frames - 1) as u32;
                 let mut fired = LiveEvent { vel: scale_vel(ev.vel, gate.vel), ..*ev };
+                if octave_shift != 0 && ev.key != 0 {
+                    fired.key = (ev.key as i32 + octave_shift).clamp(1, 127) as u8;
+                }
                 if drums && ev.target >= BREAK_BASE {
                     fired.cents = fired.cents.saturating_add(loop_cents);
                 }
@@ -486,6 +500,65 @@ mod tests {
         }
     }
 
+    /// Press `key` at each beat of `presses`, release 6 beats later; the fired
+    /// events of each press as (tick from the press, target, key, velocity).
+    fn presses(p: &mut Player, key: u8, presses: &[f64]) -> Vec<Vec<(i64, u8, u8, u8)>> {
+        let bpm = 175.0;
+        let spb = 60.0 / bpm * SR as f64;
+        let block = 64usize;
+        let mut logs = vec![Vec::new(); presses.len()];
+        let mut buf = vec![StereoSample::silence(); block];
+        let mut pos = 0usize;
+        let mut cur = None;
+        let end = presses.last().map_or(0.0, |b| b + 8.0);
+        while (pos as f64) < spb * end {
+            let beat = pos as f64 / spb;
+            let next = (pos + block) as f64 / spb;
+            for (i, &b) in presses.iter().enumerate() {
+                if (beat..next).contains(&b) {
+                    p.note_on(key, 1.0, beat * TICKS_PER_BEAT);
+                    cur = Some((i, beat * TICKS_PER_BEAT));
+                }
+                if (beat..next).contains(&(b + 6.0)) {
+                    p.note_off(key, beat * TICKS_PER_BEAT);
+                }
+            }
+            p.process(&mut buf, &Transport { playing: true, beat, bpm });
+            if let Some((i, origin)) = cur {
+                for (off, e) in p.fired() {
+                    let at = ((pos as f64 + *off as f64) / spb * TICKS_PER_BEAT - origin).round() as i64;
+                    logs[i].push((at, e.target, e.key, e.vel));
+                }
+            }
+            pos += block;
+        }
+        logs
+    }
+
+    #[test]
+    fn every_retrigger_plays_the_same_from_its_first_step() {
+        let mut p = drum_player(5);
+        p.phase = Phase::Retrigger;
+        // Off the 16th grid both ways, so no rounding can drop the downbeat.
+        let logs = presses(&mut p, 36, &[3.3, 13.7, 21.05, 30.5]);
+        assert!(logs[0].first().is_some_and(|e| e.0 == 0), "the first step fires: {:?}", &logs[0][..3]);
+        for l in &logs[1..] {
+            assert_eq!(l, &logs[0]);
+        }
+    }
+
+    #[test]
+    fn the_held_octave_moves_the_bass() {
+        let low = presses(&mut bass_player(6), 29, &[0.0]);
+        let high = presses(&mut bass_player(6), 41, &[0.0]);
+        let keys = |l: &Vec<(i64, u8, u8, u8)>| l.iter().filter(|e| e.2 != 0).map(|e| e.2 as i32).collect::<Vec<_>>();
+        let (lo, hi) = (keys(&low[0]), keys(&high[0]));
+        assert!(!lo.is_empty() && lo.len() == hi.len());
+        assert!(lo.iter().zip(&hi).all(|(a, b)| b - a == 12), "{lo:?} {hi:?}");
+        // The held F1 plays the home register: its root is F1.
+        assert!(lo.contains(&29), "{lo:?}");
+    }
+
     #[test]
     fn processing_does_not_allocate() {
         let mut p = drum_player(5);
@@ -502,3 +575,4 @@ mod tests {
         let _ = DrumLayout::standard();
     }
 }
+

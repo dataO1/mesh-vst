@@ -534,7 +534,7 @@ impl Plugin for MeshVst {
         // Demo for screenshots and checks: hold a note from the start.
         if std::env::var_os(DEMO_ENV).is_some() {
             for lane in [self.drums.as_mut(), self.bass.as_mut()].into_iter().flatten() {
-                lane.player.note_on(41, 1.0, 0.0);
+                lane.player.note_on(29, 1.0, 0.0);
             }
             self.free_beat = 0.0;
             self.free_running = true;

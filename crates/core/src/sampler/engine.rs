@@ -219,6 +219,11 @@ impl Sampler {
 
     /// Stop every voice at once and drop queued events (off-RT: calibration
     /// and tests measure each sound from silence).
+    /// Start every round robin from its first sample again.
+    pub fn reset_round_robin(&mut self) {
+        self.rr.fill(0);
+    }
+
     pub fn reset_voices(&mut self) {
         for v in self.voices.iter_mut() {
             v.st.active = false;

@@ -32,7 +32,7 @@ pub fn target_lufs(role: Role) -> f64 {
 /// Bars rendered for a measurement, its tempo and the held key.
 const BARS: u32 = 16;
 const BPM: f64 = 172.0;
-const KEY: u8 = 41;
+const KEY: u8 = 29;
 const BLOCK: usize = 512;
 /// Largest cut and boost of a trim.
 const TRIM_RANGE_DB: (f64, f64) = (-24.0, 24.0);

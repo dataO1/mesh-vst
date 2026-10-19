@@ -42,12 +42,14 @@ drive external effects.
   index). Loops, scrubbing and bounces always render the same. No random state carries between
   bars.
 - **D7** Note gate. Sound plays only while an incoming MIDI note is held. The usual use is one long
-  note over the whole clip. In Bass mode the note pitch is the root. In Drums mode the pitch is
+  note over the whole clip. In Bass mode the note is the root, octave included (2026-10-19):
+  notes E1..D#2 (MIDI 28 to 39) play the home register, each octave up or down moves the line
+  an octave. In Drums mode the pitch is
   ignored in v1. v2: tonal drums (kick, toms, perc, not hats or cymbals) are pitched to the
   nearest note of the key, using a pitch detected at scan time.
 - **D8** Pattern phase, a toggle: **continuous** (default; the pattern is locked to song
   position, so a note from bar 9 plays what bar 9 would play) or **retrigger** (the pattern
-  restarts at note-on).
+  restarts exactly at the note-on, and the round robins start over, so every press plays the same).
 - **D9** Note-off closes the gate on the next 16th step; sounding samples finish their release.
 - **D10** Overlapping notes: the last note wins; a new root glides or retriggers per a parameter.
 - **D11** Key: the root comes from the note, the scale from a parameter (minor default, phrygian,

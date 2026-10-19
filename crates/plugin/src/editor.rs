@@ -159,6 +159,7 @@ pub enum Message {
     ToggleLibrary,
     LowPower,
     RollSlot(Slot),
+    RollAllSlots,
     ClearSlot(Slot),
     RollMudpie,
     ShowPool(Pool),
@@ -553,6 +554,22 @@ impl Gui {
                     None => self.toast = format!("no {} files in the library", pool.name()),
                 }
             }
+            Message::RollAllSlots => {
+                self.record();
+                let mut missing = Vec::new();
+                for (slot, _) in DRUM_SLOTS {
+                    let (pool, prefer) = slot.source();
+                    let seed = self.next_rand() as u32;
+                    match self.library().pick(pool, seed, 0, prefer).map(|e| e.path.clone()) {
+                        Some(p) => self.pin(Some(slot), &p),
+                        None => missing.push(pool.name()),
+                    }
+                }
+                if !missing.is_empty() {
+                    missing.dedup();
+                    self.toast = format!("no {} files in the library", missing.join(", "));
+                }
+            }
             Message::ClearSlot(slot) => {
                 self.record();
                 let kit = self.kit();
@@ -849,6 +866,10 @@ impl Gui {
         let mut right = column![small(if drums { "KIT" } else { "MUDPIE VOICE" })].spacing(12);
         if drums {
             right = right.push(column![small("STYLE"), pick(DrumStyle::variants_list(), p.style.value(), Message::Style)].spacing(6));
+            right = right.push(column![
+                small("SAMPLES"),
+                button(text("roll all").font(DATA_FONT).size(12)).on_press(Message::RollAllSlots).padding([6, 8]).style(|_, s| btn(false, s)),
+            ].spacing(6));
             for k in [Knob::Shape, Knob::Morph] {
                 right = right.push(knob(p, k));
             }
