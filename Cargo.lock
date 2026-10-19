@@ -1916,10 +1916,13 @@ name = "mesh-vst"
 version = "0.1.0"
 dependencies = [
  "basedrop",
+ "bytemuck",
  "dirs",
+ "iced_widget",
  "mesh-vst-core",
  "nice-plug",
  "nice-plug-iced",
+ "realfft",
  "rtrb 0.3.5",
  "serde",
  "serde_json",

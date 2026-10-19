@@ -156,6 +156,7 @@ pub enum Message {
     Undo,
     Redo,
     ToggleLibrary,
+    LowPower,
     RollSlot(Slot),
     ClearSlot(Slot),
     RollMudpie,
@@ -178,6 +179,11 @@ pub struct Gui {
     dragging: bool,
     toast: String,
     rng: u64,
+    analyser: Option<crate::visual::Analyser>,
+    slot_env: [f32; crate::visual::SLOTS],
+    last_step: u32,
+    started: std::time::Instant,
+    samples: Vec<f32>,
 }
 
 fn now_seed() -> u64 {
@@ -186,6 +192,14 @@ fn now_seed() -> u64 {
 
 impl Gui {
     fn new(data: PersistentState<EditorData>, ctx: IcedNiceContext) -> Self {
+        // Screenshot demos (`nix run .#screenshot -- out.png bass drag`).
+        if std::env::var("MESH_VST_DEMO_MODE").is_ok_and(|m| m == "bass") {
+            let setter = ctx.nice_context.param_setter();
+            setter.begin_set_parameter(&data.params.mode);
+            setter.set_parameter(&data.params.mode, Mode::Bass);
+            setter.end_set_parameter(&data.params.mode);
+        }
+        let demo_drag = std::env::var_os("MESH_VST_DEMO_DRAG").is_some();
         Self {
             data,
             ctx,
@@ -198,9 +212,14 @@ impl Gui {
             grabbed: None,
             cursor: Point::ORIGIN,
             size: Size::new(WINDOW.width, WINDOW.height),
-            dragging: false,
+            dragging: demo_drag,
             toast: String::new(),
             rng: now_seed(),
+            analyser: None,
+            slot_env: [0.0; crate::visual::SLOTS],
+            last_step: u32::MAX,
+            started: std::time::Instant::now(),
+            samples: Vec::new(),
         }
     }
 
@@ -321,6 +340,16 @@ impl Gui {
         self.data.shared.bump_kit();
     }
 
+    /// The middle area the visual fills, in window coordinates (from the
+    /// layout: 24 px padding, 260 px columns, 28 px gaps, 60 px top bar).
+    fn field_rect(&self) -> Option<Rectangle> {
+        let x = 24.0 + 260.0 + 28.0;
+        let y = 60.0 + 18.0 + 8.0;
+        let w = self.size.width - 2.0 * x;
+        let h = self.size.height - y - FOOTER_H - 18.0 - 8.0;
+        (w > 0.0 && h > 0.0).then_some(Rectangle { x, y, width: w, height: h })
+    }
+
     /// A file dropped at the cursor.
     fn dropped(&mut self, file: PathBuf) {
         self.record();
@@ -341,7 +370,10 @@ impl Gui {
             self.toast = format!("mudpie: {}", file_name(&path));
             return;
         }
-        let slot = if in_footer {
+        let in_field = self.field_rect().and_then(|r| subgrid_at(field_square(r.size()), Point::new(self.cursor.x - r.x, self.cursor.y - r.y)));
+        let slot = if let Some(i) = in_field {
+            Some(SUBGRIDS[i].1)
+        } else if in_footer {
             let i = ((self.cursor.x / self.size.width) * DRUM_SLOTS.len() as f32).floor() as usize;
             DRUM_SLOTS.get(i).map(|s| s.0)
         } else {
@@ -361,7 +393,12 @@ impl Gui {
 
     fn update(&mut self, message: Message) {
         match message {
-            Message::Poll => {}
+            Message::Poll => self.animate(),
+            Message::LowPower => {
+                if let Ok(mut u) = self.data.params.ui.lock() {
+                    u.low_power = !u.low_power;
+                }
+            }
             Message::Resized => self.ctx.sync_window_size(),
             Message::Event(e) => match e {
                 iced::Event::Mouse(mouse::Event::CursorMoved { position }) => self.cursor = position,
@@ -521,6 +558,54 @@ impl Gui {
         }
     }
 
+    /// Advance the visual: read the output, decay the slot envelopes, light
+    /// the slots that hit on a new step.
+    fn animate(&mut self) {
+        let shared = self.data.shared.clone();
+        let sr = shared.sample_rate.load(Ordering::Relaxed) as f32;
+        if self.analyser.as_ref().is_none_or(|a| a.sample_rate() != sr) {
+            self.analyser = Some(crate::visual::Analyser::new(sr));
+        }
+        self.samples.clear();
+        if let Ok(mut rx) = shared.audio.lock() {
+            if let Some(rx) = rx.as_mut() {
+                while let Ok(s) = rx.pop() {
+                    self.samples.push(s);
+                }
+            }
+        }
+        if let Some(a) = self.analyser.as_mut() {
+            a.push(&self.samples);
+        }
+        for e in &mut self.slot_env {
+            *e *= 0.82;
+        }
+        let step = shared.step.load(Ordering::Relaxed);
+        if step != self.last_step && (step as usize) < STEPS_PER_BAR {
+            let hits = shared.hits();
+            for (row, e) in self.slot_env.iter_mut().enumerate() {
+                let v = hits[row][step as usize];
+                if v > 0 {
+                    *e = e.max(v as f32 / 127.0);
+                }
+            }
+        }
+        self.last_step = step;
+    }
+
+    fn visual_frame(&self, drums: bool) -> crate::visual::Frame {
+        let a = self.analyser.as_ref();
+        crate::visual::Frame {
+            levels: a.map_or([0.0; crate::visual::BINS], |a| a.levels()),
+            slots: self.slot_env,
+            env: a.map_or(0.0, |a| a.env()),
+            punch: a.map_or(0.0, |a| a.punch()),
+            time: self.started.elapsed().as_secs_f32(),
+            drums,
+            aberration: 0.6,
+        }
+    }
+
     fn locks(&self) -> UiState {
         self.data.params.ui.lock().map(|u| u.clone()).unwrap_or_default()
     }
@@ -632,17 +717,29 @@ impl Gui {
             }
             right = right.push(column![small("RATE"), pick(Rate::variants_list(), p.rate.value(), Message::Rate)].spacing(6));
         }
-        let right = container(right).width(260);
+        right = right.push(Space::new().height(Length::Fill));
+        right = right.push(column![small("VISUAL"), row![toggle("FIELD", !locks.low_power, Message::LowPower), toggle("STEPS", locks.low_power, Message::LowPower)].spacing(6)].spacing(6));
+        let right = container(right).width(260).height(Length::Fill);
 
-        // Middle: the playing bar.
-        let view = canvas_widget(StepView {
-            hits: shared.hits(),
-            step: shared.step.load(Ordering::Relaxed),
-            drums,
-            letter: shared.letter.load(Ordering::Relaxed),
-        })
-        .width(Length::Fill)
-        .height(Length::Fill);
+        // Middle: the point field, or the step view in low-power mode.
+        let view: Element<Message> = if locks.low_power {
+            canvas_widget(StepView {
+                hits: shared.hits(),
+                step: shared.step.load(Ordering::Relaxed),
+                drums,
+                letter: shared.letter.load(Ordering::Relaxed),
+            })
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        } else {
+            iced_widget::shader(crate::visual::Field { frame: self.visual_frame(drums) }).width(Length::Fill).height(Length::Fill).into()
+        };
+        let view: Element<Message> = if self.dragging && drums {
+            iced::widget::stack![view, canvas_widget(SubgridLabels { hover: None }).width(Length::Fill).height(Length::Fill)].into()
+        } else {
+            view
+        };
         let middle = container(view).width(Length::Fill).height(Length::Fill).padding([8, 0]);
 
         let body = row![left, middle, right].spacing(28).padding([18, 24]).height(Length::Fill);
@@ -694,8 +791,8 @@ impl Gui {
             text_color: Some(INK),
             ..Default::default()
         });
-        if self.dragging {
-            let hint = if drums { "drop on a slot below, or anywhere to sort it" } else { "drop mudpie" };
+        if self.dragging && !drums {
+            let hint = "drop mudpie";
             iced::widget::stack![
                 base,
                 container(column![text(hint).font(DISPLAY_FONT).size(24).color(INK), small("files outside the library are copied to mesh vst imports")].spacing(8).align_x(Alignment::Center))
@@ -922,6 +1019,70 @@ struct StepView {
     step: u32,
     drums: bool,
     letter: u8,
+}
+
+/// The drum field's subgrids, in the shader's order (top row first), and the
+/// slot a file dropped on one loads.
+const SUBGRIDS: [(&str, Slot); 8] = [
+    ("KICK", Slot::Kick),
+    ("SNARE", Slot::Snare),
+    ("HATS", Slot::HatClosed),
+    ("RIDE", Slot::CymbalA),
+    ("SHAKER", Slot::Shaker),
+    ("PERC", Slot::Perc),
+    ("TOP", Slot::Break),
+    ("BREAK", Slot::Break),
+];
+
+/// The field's square inside `bounds` (as the shader lays it out).
+fn field_square(bounds: Size) -> Rectangle {
+    let side = bounds.width.min(bounds.height) - 28.0;
+    Rectangle { x: (bounds.width - side) / 2.0, y: (bounds.height - side) / 2.0, width: side, height: side }
+}
+
+/// Subgrid index (0..8) of a point inside the square.
+fn subgrid_at(sq: Rectangle, p: Point) -> Option<usize> {
+    if !sq.contains(p) {
+        return None;
+    }
+    let sx = (((p.x - sq.x) / sq.width) * 4.0).floor().clamp(0.0, 3.0) as usize;
+    let sy = if p.y - sq.y < sq.height / 2.0 { 0 } else { 1 };
+    Some(sx + 4 * sy)
+}
+
+/// Labels over the drum field while a file is dragged (Q17).
+struct SubgridLabels {
+    hover: Option<Point>,
+}
+
+impl canvas::Program<Message> for SubgridLabels {
+    type State = ();
+
+    fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: Rectangle, cursor: mouse::Cursor) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let sq = field_square(bounds.size());
+        let hover = cursor.position_in(bounds).or(self.hover).and_then(|p| subgrid_at(sq, p));
+        let (w, h) = (sq.width / 4.0, sq.height / 2.0);
+        for (i, (name, _)) in SUBGRIDS.iter().enumerate() {
+            let x = sq.x + (i % 4) as f32 * w;
+            let y = sq.y + (i / 4) as f32 * h;
+            let on = hover == Some(i);
+            frame.fill_rectangle(Point::new(x + 1.0, y + 1.0), Size::new(w - 2.0, h - 2.0), Color { a: if on { 0.55 } else { 0.35 }, ..BG });
+            frame.stroke(
+                &canvas::Path::rectangle(Point::new(x + 1.0, y + 1.0), Size::new(w - 2.0, h - 2.0)),
+                canvas::Stroke::default().with_color(if on { INK } else { EDGE }).with_width(1.0),
+            );
+            frame.fill_text(canvas::Text {
+                content: (*name).into(),
+                position: Point::new(x + 8.0, y + 8.0),
+                color: if on { INK } else { DIM },
+                size: 13.0.into(),
+                font: DATA_FONT,
+                ..Default::default()
+            });
+        }
+        vec![frame.into_geometry()]
+    }
 }
 
 const DRUM_ROWS: [&str; 8] = ["KICK", "SNARE", "HATS", "RIDE", "SHAKER", "PERC", "TOP", "BREAK"];

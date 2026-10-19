@@ -30,6 +30,9 @@ pub struct UiShared {
     pub kit_generation: AtomicU32,
     pub gated: AtomicBool,
     pub notifier: PollSubNotifier,
+    /// The plugin's mono output for the visual, while the editor is open.
+    pub audio: std::sync::Mutex<Option<rtrb::Consumer<f32>>>,
+    pub sample_rate: AtomicU32,
 }
 
 impl Default for UiShared {
@@ -44,6 +47,8 @@ impl Default for UiShared {
             kit_generation: AtomicU32::new(0),
             gated: AtomicBool::new(false),
             notifier: PollSubNotifier::new(),
+            audio: std::sync::Mutex::new(None),
+            sample_rate: AtomicU32::new(48_000),
         }
     }
 }
@@ -91,4 +96,6 @@ impl UiShared {
 pub struct UiState {
     pub sound_locked: bool,
     pub pattern_locked: bool,
+    /// The step view instead of the shader field (low power, D35).
+    pub low_power: bool,
 }

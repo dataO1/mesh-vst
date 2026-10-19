@@ -435,6 +435,26 @@ Each step is tested before the next one starts.
   - **Checks.** `nix run .#screenshot -- out.png` captures the editor on a virtual X server, with
     a demo note held. `checks.gui` asserts that it draws.
 
+- **M5 (2026-10-19, first version).** The point field runs as a wgpu shader through iced's shader
+  widget (`visual.rs`).
+  - **Drawing.** There are 100 × 100 instanced points in one draw call with three additive
+    passes (red, blue, ink). The flow field, displacement, size and color split are computed
+    per point on the GPU.
+  - **Spectrum.** The editor reads the plugin's output through a lock-free ring while it is open
+    and analyses it into 100 log bins (40 Hz–16 kHz, 2048-point FFT, +4.5 dB/oct tilt, 42 dB
+    range).
+  - **Bass.** Dots, one row per bin.
+  - **Drums.** Short lines in 4 × 2 subgrids (kick, snare, hats, ride, shaker, perc, top,
+    break). A subgrid lights on its slot's hits with the spectrum as texture and a 25 % bleed to
+    its neighbors.
+  - **Dropping.** While a file is dragged, the subgrids show labels and the one under the
+    cursor is highlighted; a drop on a subgrid loads that slot.
+  - **Rate and modes.** Redraws are throttled to about 30 fps. A FIELD / STEPS toggle picks the
+    low-power step view, saved with the project.
+  - **Screenshots.** `nix run .#screenshot -- out.png [drums|bass] [drag]`.
+  - **Not yet.** Trails need a persistent texture. The top bar is not yet modulated by hits.
+    Visual sensitivity needs tuning by eye.
+
 ## 9. Research R5: automation in the host (2026-10-19)
 
 No CLAP (1.2.10), VST3 (3.8.1) or ARA API lets a plugin write automation points or clips into a

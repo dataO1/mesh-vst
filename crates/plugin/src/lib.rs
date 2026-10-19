@@ -21,6 +21,7 @@ pub mod builtin;
 pub mod editor;
 pub mod params;
 pub mod ui;
+pub mod visual;
 pub mod worker;
 
 use params::{MeshParams, Mode, PhaseMode, BEND_RANGES};
@@ -36,6 +37,8 @@ pub(crate) const BASS_VOICES: usize = 16;
 /// Environment variable that makes the plugin hold a note from activation
 /// (screenshots of the playing editor, without MIDI input).
 const DEMO_ENV: &str = "MESH_VST_DEMO";
+/// Editor redraws per second.
+const REDRAW_FPS: f32 = 30.0;
 const START_DRUM_GAIN: f32 = 0.4;
 const START_BASS_GAIN: f32 = 0.8;
 
@@ -80,6 +83,9 @@ pub struct MeshVst {
     editor_state: Arc<nice_plug_iced::IcedEditorState>,
     /// Last bar render published to the editor.
     published: (u64, u64),
+    /// The output for the editor's visual, and frames since its last redraw.
+    audio_tx: Option<rtrb::Producer<f32>>,
+    since_redraw: usize,
 }
 
 impl Default for MeshVst {
@@ -98,6 +104,8 @@ impl Default for MeshVst {
             ui: Arc::new(ui::UiShared::default()),
             editor_state: nice_plug_iced::IcedEditorState::from_size(editor::WINDOW, 1.0),
             published: (u64::MAX, u64::MAX),
+            audio_tx: None,
+            since_redraw: 0,
         }
     }
 }
@@ -196,7 +204,7 @@ impl MeshVst {
     }
 
     /// Hand the editor what it shows. Atomics only: RT-safe.
-    fn publish(&mut self, mode: Mode, playing: bool, bpm: f64) {
+    fn publish(&mut self, mode: Mode, playing: bool, bpm: f64, frames: usize) {
         use std::sync::atomic::Ordering::Relaxed;
         self.ui.bpm.store((bpm as f32).to_bits(), Relaxed);
         let Some(lane) = (match mode {
@@ -218,7 +226,10 @@ impl MeshVst {
                 self.ui.publish_bar(p.lane().role(), rendered);
             }
         }
-        if self.editor_state.is_open() {
+        // Redraw at about 30 fps (D35).
+        self.since_redraw += frames;
+        if self.editor_state.is_open() && self.since_redraw as f32 >= self.sample_rate / REDRAW_FPS {
+            self.since_redraw = 0;
             self.ui.notifier.notify();
         }
     }
@@ -288,10 +299,16 @@ impl MeshVst {
             Some(l) => l.player.process(buf, &transport),
             None => buf.fill(StereoSample::silence()),
         }
+        let feed = self.editor_state.is_open();
         for (i, s) in self.buf[..n].iter().enumerate() {
             let g = gain.next();
             out[0][from + i] = s.left * g;
             out[1][from + i] = s.right * g;
+            if feed {
+                if let Some(tx) = self.audio_tx.as_mut() {
+                    let _ = tx.push(0.5 * (s.left + s.right) * g);
+                }
+            }
         }
     }
 }
@@ -338,6 +355,13 @@ impl Plugin for MeshVst {
         sampler.set_bank(basedrop::Shared::new(&gc_handle(), mudpie_bank(share(builtin::mudpie(sr)))));
         self.bass = Some(Lane { player: Player::new(PatternLane::bass(1, 1), sampler), base: LaneSamplerParams { gain: START_BASS_GAIN, ..macros::mudpie_params() }, loaded: None, requested: None });
         self.applied = None;
+        // The editor's visual reads the output through a ring (half a second).
+        let (tx, rx) = rtrb::RingBuffer::new(sr as usize / 2);
+        self.audio_tx = Some(tx);
+        if let Ok(mut a) = self.ui.audio.lock() {
+            *a = Some(rx);
+        }
+        self.ui.sample_rate.store(sr, std::sync::atomic::Ordering::Relaxed);
         // The built-in sounds play until the library kit is loaded.
         self.worker = Some(Worker::spawn(sr, self.params.kit.clone()));
         // Demo for screenshots and checks: hold a note from the start.
@@ -405,7 +429,7 @@ impl Plugin for MeshVst {
             self.handle(mode, ev, tick, host_playing);
             pending = context.next_event();
         }
-        self.publish(mode, host_playing, bpm);
+        self.publish(mode, host_playing, bpm, frames);
         ProcessStatus::KeepAlive
     }
 }
