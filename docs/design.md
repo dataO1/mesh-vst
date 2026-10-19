@@ -1,6 +1,6 @@
 # mesh vst: design
 
-Status: design in progress (grilling rounds 1–3, 2026-10-19). Kept up to date as decisions land.
+Status: design in progress (grilling rounds 1–4, 2026-10-19). Kept up to date as decisions land.
 Each decision has a code (D1 …) so issues and commits can cite it. Open items are under
 [Open questions](#open-questions) and [Research](#research).
 
@@ -15,8 +15,9 @@ The pattern generation and sampler voice start from Mesh live mode (`mesh-core/s
 and `live/sampler`, about 13k lines, depending only on a key type and a stereo sample type).
 The code is copied, not shared: this project is independent of Mesh.
 
-Out of scope: an effects chain inside the plugin (EQ, compression, reverb), MIDI out, an
-arrangement engine, ML models.
+Out of scope: mixing effects (EQ, compression, reverb), presets, MIDI notes out, an arrangement
+engine, ML models. Built-in per-note processing (filter, drive) is avoided if R4 finds a way to
+drive external effects.
 
 ## 2. Decisions
 
@@ -27,7 +28,8 @@ arrangement engine, ML models.
   shows its own controls.
 - **D2** Formats: CLAP and VST3. Platforms: Linux and Windows first, macOS later (signing,
   notarization). No AU, so no Logic for now. A standalone JACK build exists for development.
-- **D3** FOSS, funded by donations.
+- **D3** FOSS, pay what you want. Mainly for personal use. No AGPL needed: the AGPL in Mesh comes
+  from its analysis and time-stretch dependencies, which mesh vst does not use. License per Q1.
 - **D4** Framework: [nice-plug](https://codeberg.org/RustAudio/nice-plug) (ISC, the maintained
   NIH-plug successor; VST3 through the MIT `vst3` crate since the VST3 SDK went MIT in Oct 2025).
   GUI: `nice-plug-iced` (iced 0.13 on baseview) with the wgpu renderer for shader visuals.
@@ -41,15 +43,17 @@ arrangement engine, ML models.
   bars.
 - **D7** Note gate. Sound plays only while an incoming MIDI note is held. The usual use is one long
   note over the whole clip. In Bass mode the note pitch is the root. In Drums mode the pitch is
-  ignored for now (pitching drums to the key needs drum pitch detection, deferred).
+  ignored in v1. v2: tonal drums (kick, toms, perc, not hats or cymbals) are pitched to the
+  nearest note of the key, using a pitch detected at scan time.
 - **D8** Pattern phase, a toggle: **continuous** (default; the pattern is locked to song
   position, so a note from bar 9 plays what bar 9 would play) or **retrigger** (the pattern
   restarts at note-on).
 - **D9** Note-off closes the gate on the next 16th step; sounding samples finish their release.
 - **D10** Overlapping notes: the last note wins; a new root glides or retriggers per a parameter.
 - **D11** Key: the root comes from the note, the scale from a parameter (minor default, phrygian,
-  dorian, harmonic minor, major). Reading key and scale from the DAW is being researched (R2);
-  where a host provides it, it replaces the parameter.
+  dorian, harmonic minor, major). After v1: read the key from the DAW only through generic
+  plugin-API fields (the VST3 chord and scale context) when a host fills them. No host-specific
+  code (R2).
 - **D12** Velocity. The generated pattern sets each hit's velocity, and parameters modify it
   (example: the sparse 8th hits that density adds between quarter and 8th feel come in softer).
   The incoming note velocity scales the whole lane. v1: velocity = loudness. Velocity as a
@@ -63,21 +67,23 @@ arrangement engine, ML models.
   plugin parameters.
 - **D15** Bass mode voice: the Mesh sampler voice. Per-note filter envelope, LFO, sample-start
   scrub, stab punch and saturation, mono with glide. Whether filter and drive stay built in or
-  move to a linked post chain depends on R1.
-- **D16** Drums mode kit slots (from Mesh): kick, snare, hats, ride, shaker, perc, top, break.
-  A seed starts with break or perc, not both, and at most one cymbal-type voice (as in Mesh
-  live mode now).
+  are handed to external effects depends on R4.
+- **D16** Drums mode pools and slots: kick, snare, hats, two cymbal slots, perc, break (close to Mesh
+  live mode now). A seed starts with break or perc, not both, and at most one cymbal slot
+  playing. The hat/cymbal confusion found in S1 is handled by the reassign UI (D30).
 
 ### Library
 
 - **D17** Library folders are a per-machine plugin setting (no DAW tells a plugin where its
   samples are). A scan sorts every usable file into pools (kick, snare, hat, cymbal, perc, break,
-  fx, mudpie) deterministically, no ML, by filename keywords first and audio features otherwise.
-  The scan is cached by path, size and modification time. Feasibility is the open spike S1.
+  mudpie; fx and unsure files go to an unsorted bin) deterministically, no ML, by filename
+  keywords first and audio features otherwise.
+  The scan is cached by path, size and modification time. S1 showed it is viable (5 s for 1288
+  files) but not exact, so pools are suggestions (D30).
 - **D18** Project state stores each used sample's path relative to its library folder plus a
   content hash. A missing file is found again by hash. Samples are not embedded in the project.
-- **D19** A sample dropped onto a slot from outside the library is added to the library
-  permanently (see Q5 for how).
+- **D19** A sample dropped onto a slot from inside a library folder is linked where it is. One
+  dropped from outside is copied into `<first library folder>/mesh vst imports/` and scanned.
 
 ### Seeds and parameters
 
@@ -85,7 +91,9 @@ arrangement engine, ML models.
   The **pattern seed** picks the groove. Each has a dice button and a lock.
 - **D21** Every seeded choice can be overridden by hand. Drums: roll the whole kit, roll one slot,
   or drop a file onto a slot. Bass: drop a mudpie or roll one.
-- **D22** Favorite seeds can be saved and recalled.
+- **D22** Favorite seeds: per machine, shared across projects, filtered by mode. A favorite stores
+  the seeds and a name, not parameters or samples. No presets: the plugin is for exploring, and
+  the DAW saves the state.
 - **D23** The parameter list is fixed and well named, grouped as Shared, Drums and Bass. The
   inactive mode's group does nothing and is hidden. DAW automation stays valid.
 - **D24** Pitch bend bends all voices. Its range is editable, with a default set by mode and seed
@@ -100,6 +108,15 @@ arrangement engine, ML models.
   rolling the pattern seed rolls the form too.
 - **D26** History: sample loads, mode switches and parameter changes made in the plugin UI
   (recorded on mouse release, not every tick) go on an undo/redo stack, stepped from the top bar.
+  The stack lasts for the session and is not saved in the project.
+- **D27** Choke: the hats form a choke group, and break slices cut each other. A choke amount
+  parameter (0 = no choke, 1 = full cut, in between a shortened release) is set by the seed as
+  part of the suggested beat and can be changed or automated.
+- **D28** Drums polyphony: a few voices per slot (4 by default). The kick does not choke.
+- **D29** Break loops follow the host tempo by resampling (pitch follows speed). Slicing on
+  detected onsets is a v2 todo. v1 keeps Mesh's step-grid chops and density gating.
+- **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
+  click, and these overrides are saved per machine by path. An audition browser lists each pool.
 
 ## 3. Research
 
@@ -170,26 +187,23 @@ arrangement engine, ML models.
     parameter.
 - **R3** Velocity timbre: how to make velocity sound like a different hit (filter tracking,
   transient shaping, round robin, layer crossfade) from one sample. Not started.
+- **R4** Modulation outputs (running): can mesh vst expose its per-note state (velocity, accent,
+  envelope) as something the user maps once onto external effects, in every major DAW? Candidates:
+  output parameters, a control-signal audio output, MIDI CC out, automation write-back. If no
+  mechanism covers the major DAWs, the fallback is built-in processing.
 
 ## 4. Open questions
 
-- **Q1** License: Mesh is AGPL-3.0-or-later. Copied Mesh code must stay AGPL unless the copyright
-  holder relicenses it. GPL-3 or AGPL for mesh vst?
-- **Q2** History scope: is the undo stack saved with the project, or per session only?
-- **Q3** Favorites scope: per machine across projects, per mode? Do they store only the seeds, or
-  seeds plus parameters (a preset)?
-- **Q4** Presets: is there a preset browser separate from favorites?
-- **Q5** Adding a dropped file to the library: copy it into a managed "mesh vst imports" folder,
-  or record its path where it is?
-- **Q6** Drum pitching to key (deferred from D7): later version or never?
+- **Q1** License: GPL-3.0-or-later (forks stay open) or MIT (anything goes)? The copied Mesh code
+  is relicensed by its author.
 - **Q7** UI layout per mode, top bar contents, visualizer.
-- **Q8** Polyphony in Drums mode, choke groups (open/closed hat), voice limits.
-- **Q9** Break slicing: how loops are chopped and gated to the density grid in a DAW context
-  (Mesh's loop gating, tempo-matched to the host).
-- **Q10** Pools after S1: keep 8 fine pools, or use coarse pools (kick, snare, top = hat+cymbal,
-  loop, other = perc+fx+tonal) with the fine label as a sorting hint?
-- **Q11** Post-processing (after R1). D15 and the "no effects chain" scope line depend on it.
-  Options: built-in fixed processing (filter, drive, transient), a hosted CLAP chain with a
-  parameter contract, or host routing.
-- **Q12** DAW key integrations (after R2): add Reaper's scale read, and a Cubase test, after v1?
-  Or keep the scale parameter only?
+- **Q11** Post-processing: waits on R4.
+- **Q13** The two cymbal slots: ride and crash, or two picks from one cymbal pool? Where do shaker
+  and top loops go: hats, perc, or break?
+
+## 5. Todo after v1
+
+- Slicing breaks on detected onsets (D29).
+- Pitching tonal drums to the key (D7).
+- Velocity as timbre (R3).
+- Generic DAW key read via the VST3 chord and scale context (D11).
