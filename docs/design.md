@@ -103,9 +103,31 @@ arrangement engine, ML models.
 
 ## 3. Research
 
-- **S1** Sample classification spike (running): classify the 1288 files in
-  `~/Music/mesh-live-dev/samples` with folder names hidden; measure accuracy per pool, unsure rate
-  and scan time. Decides whether D17 holds or needs a manual pool editor as the main path.
+- **S1** Sample classification spike (done 2026-10-19). Ran on the 1288 WAVs in
+  `~/Music/mesh-live-dev/samples` with the top folder name hidden. No ML.
+  - **Speed is not a problem.** The full scan takes 5 s on one thread, 3.9 ms per file. Decoding
+    only the first 1 s costs 0.5 points of accuracy.
+  - **Filenames are the main signal.** Filename keywords alone get 90.5% right, and 97% of their
+    answers are correct.
+  - **Audio features are a fallback.** Hand-written rules get 70% at best, with thresholds tuned on
+    this same library.
+  - **Combined result.** Name first, then features, with an "unsure" answer when the two disagree:
+    81.5% right, 15.6% unsure, 96.5% of answers correct.
+  - **Per pool.** Kick, snare and loop are reliable (94–99%). Hat and cymbal confuse each other
+    through open hats and shakers. Perc (64%) and fx (41%) are not reliable. Perc folders often
+    hold loops and hats.
+  - **Robustness.** 0.8% of the files have WAV headers that claim more data than they hold, so
+    the decoder must tolerate them.
+  - **Consequence for D17.** The scan is viable, but the pools it builds are only suggestions.
+    The UI needs:
+    - an "unsorted" bin for unsure files;
+    - a one-click reassign, saved by path;
+    - an audition browser.
+
+    Merging hat and cymbal into one "top" pool, and perc, fx and tonal into "other", would remove
+    most errors. The thresholds still need a second, differently named library to validate them.
+    Spike code: scratchpad `classify-spike/` (Rust, hound + realfft), to be moved into
+    `spikes/` here.
 - **R1** Post-processing chain (running): can an instrument drive parameters of plugins after it
   through a native CLAP/VST3 mechanism, without hand wiring (a parameter contract such as "knob 1
   = filter, knob 2 = drive")? Options: built-in hand-picked processing, hosting third-party
@@ -130,3 +152,5 @@ arrangement engine, ML models.
 - **Q8** Polyphony in Drums mode, choke groups (open/closed hat), voice limits.
 - **Q9** Break slicing: how loops are chopped and gated to the density grid in a DAW context
   (Mesh's loop gating, tempo-matched to the host).
+- **Q10** Pools after S1: keep 8 fine pools, or use coarse pools (kick, snare, top = hat+cymbal,
+  loop, other = perc+fx+tonal) with the fine label as a sorting hint?
