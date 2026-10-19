@@ -29,7 +29,7 @@ use params::{MeshParams, Mode, NewRootMode, PhaseMode, UnisonSpread, BEND_RANGES
 use worker::{Garbage, Ready, Request, Worker};
 
 /// Tempo when the host gives none.
-const DEFAULT_BPM: f64 = 120.0;
+const DEFAULT_BPM: f64 = 175.0;
 /// Sampler voices per mode.
 pub(crate) const DRUM_VOICES: usize = 48;
 pub(crate) const BASS_VOICES: usize = 48;

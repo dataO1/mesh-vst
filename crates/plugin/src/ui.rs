@@ -43,7 +43,7 @@ impl Default for UiShared {
     fn default() -> Self {
         Self {
             root: AtomicU8::new(255),
-            bpm: AtomicU32::new(120f32.to_bits()),
+            bpm: AtomicU32::new(175f32.to_bits()),
             bar: AtomicU32::new(u32::MAX),
             step: AtomicU32::new(u32::MAX),
             letter: AtomicU8::new(0),

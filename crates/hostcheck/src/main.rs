@@ -440,6 +440,8 @@ fn main() -> Result<(), Error> {
     if std::env::var_os("XDG_CACHE_HOME").is_none() {
         std::env::set_var("XDG_CACHE_HOME", std::env::temp_dir().join("mesh-vst-hostcheck-cache"));
     }
+    // The user's settings (library folders) never leak in: the library comes from --library.
+    std::env::set_var("XDG_CONFIG_HOME", std::env::temp_dir().join("mesh-vst-hostcheck-config"));
     // SAFETY: loading a plugin runs its code; this tool is for our own bundle.
     let entry = unsafe { PluginEntry::load(&bundle)? };
 

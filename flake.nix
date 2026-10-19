@@ -82,7 +82,7 @@
         # Run the standalone editor on a virtual X server and capture it.
         # Inside the virtual X server: start the editor, wait, capture.
         capture = pkgs.writeShellScript "mesh-vst-capture" ''
-          MESH_VST_DEMO=1 ${standalone}/bin/mesh-vst --backend dummy >"$1.log" 2>&1 &
+          MESH_VST_DEMO=1 ${standalone}/bin/mesh-vst --backend dummy --tempo 175 >"$1.log" 2>&1 &
           pid=$!
           sleep "''${MESH_VST_SHOT_WAIT:-6}"
           ${pkgs.imagemagick}/bin/import -window root "$1"
@@ -183,10 +183,10 @@
           done
           if [ -z "$port" ]; then
             echo "VMPK's MIDI port did not show up; starting without MIDI input." >&2
-            exec ${standalone}/bin/mesh-vst --backend alsa "$@"
+            exec ${standalone}/bin/mesh-vst --backend alsa --tempo 175 "$@"
           fi
           echo "MIDI from: $port"
-          ${standalone}/bin/mesh-vst --backend alsa --midi-input "$port" "$@"
+          ${standalone}/bin/mesh-vst --backend alsa --tempo 175 --midi-input "$port" "$@"
         '';
         qtractor = pkgs.writeShellScript "mesh-vst-qtractor" ''
           # Qtractor (FOSS DAW, CLAP and VST3) with its own config dir, so the
