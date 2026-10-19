@@ -151,22 +151,56 @@
         # it plays on this desktop.
         jackLibs = "${pkgs.pipewire.jack}/lib:${pkgs.lib.makeLibraryPath libs}";
         play = pkgs.writeShellScript "mesh-vst-play" ''
-          # The standalone editor (outputs go to the speakers), a virtual
-          # keyboard (VMPK) and a patchbay (qpwgraph) to wire the keyboard's
-          # MIDI out to mesh vst. Without MIDI: MESH_VST_DEMO=1 nix run .#play
+          # The standalone mesh vst played from a virtual keyboard (VMPK).
+          # VMPK runs with its own portable settings file: ALSA MIDI out
+          # instead of its built-in synth. mesh vst (ALSA backend) connects to
+          # VMPK's port by name, so the keys play the plugin.
+          # Without the keyboard: MESH_VST_DEMO=1 holds a note from the start.
+          set -u
           export LD_LIBRARY_PATH="${jackLibs}"
-          ${pkgs.vmpk}/bin/vmpk >/dev/null 2>&1 &
+          vmpk_cfg="''${XDG_CACHE_HOME:-$HOME/.cache}/mesh-vst/vmpk.ini"
+          mkdir -p "$(dirname "$vmpk_cfg")"
+          [ -f "$vmpk_cfg" ] || cat > "$vmpk_cfg" <<'CONF'
+          [Connections]
+          AdvancedEnabled=true
+          InEnabled=false
+          ThruEnabled=false
+          InputDriver=ALSA
+          OutputDriver=ALSA
+          InPort=
+          OutPort=
+          CONF
+          ${pkgs.vmpk}/bin/vmpk -p -f "$vmpk_cfg" >/dev/null 2>&1 &
           kb=$!
-          ${pkgs.qpwgraph}/bin/qpwgraph >/dev/null 2>&1 &
-          pb=$!
-          trap 'kill $kb $pb 2>/dev/null' EXIT
-          ${standalone}/bin/mesh-vst --backend jack "$@"
+          trap 'kill $kb 2>/dev/null' EXIT
+          # Wait for the keyboard's ALSA port, then take its exact name from
+          # mesh vst's own device listing.
+          port=""
+          for _ in $(seq 1 50); do
+            port=$(${standalone}/bin/mesh-vst --backend alsa --midi-input "" 2>&1 | grep -m1 "^VMPK Output" || true)
+            [ -n "$port" ] && break
+            sleep 0.2
+          done
+          if [ -z "$port" ]; then
+            echo "VMPK's MIDI port did not show up; starting without MIDI input." >&2
+            exec ${standalone}/bin/mesh-vst --backend alsa "$@"
+          fi
+          echo "MIDI from: $port"
+          ${standalone}/bin/mesh-vst --backend alsa --midi-input "$port" "$@"
         '';
         qtractor = pkgs.writeShellScript "mesh-vst-qtractor" ''
-          # Qtractor (FOSS DAW, CLAP and VST3) with the bundles built by this
-          # flake on its plugin paths.
-          export CLAP_PATH="${plugin}/lib/clap''${CLAP_PATH:+:$CLAP_PATH}"
-          export VST3_PATH="${plugin}/lib/vst3''${VST3_PATH:+:$VST3_PATH}"
+          # Qtractor (FOSS DAW, CLAP and VST3) with its own config dir, so the
+          # user's Qtractor settings stay untouched. Qtractor takes plugin
+          # paths from its config, not the environment, so each start points
+          # them at this build.
+          set -u
+          export XDG_CONFIG_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/mesh-vst/qtractor"
+          conf="$XDG_CONFIG_HOME/rncbc.org/Qtractor.conf"
+          mkdir -p "$(dirname "$conf")"
+          touch "$conf"
+          ${pkgs.gnused}/bin/sed -i '/^ClapPaths=/d; /^Vst3Paths=/d' "$conf"
+          grep -q '^\[Plugins\]$' "$conf" || printf '\n[Plugins]\n' >> "$conf"
+          ${pkgs.gnused}/bin/sed -i 's|^\[Plugins\]$|[Plugins]\nClapPaths=${plugin}/lib/clap\nVst3Paths=${plugin}/lib/vst3|' "$conf"
           export LD_LIBRARY_PATH="${jackLibs}"
           exec ${pkgs.qtractor}/bin/qtractor "$@"
         '';
@@ -240,11 +274,12 @@
           mesh vst devshell
 
           Try it
-            nix run .#play                 editor with sound, no DAW (JACK via PipeWire); VMPK keyboard +
-                                           qpwgraph open too: wire "VMPK Output" to "mesh vst" MIDI in
+            nix run .#play                 editor with sound, no DAW; the VMPK keyboard window plays it
+                                           (hold a key: it gates the pattern and sets the root)
             MESH_VST_DEMO=1 nix run .#play  same, holding a note from the start (no keyboard needed)
             nix run .#qtractor             Qtractor (FOSS DAW, CLAP + VST3) with this build on its plugin
-                                           paths; add an instrument track, insert "mesh vst", draw one long note
+                                           paths (own config); Track > Add Track > MIDI, Plugins tab > Add >
+                                           "mesh vst", then draw one long note
             nix run .#screenshot -- out.png [drums|bass] [drag|settings|library]
                                            the editor on a virtual X server, playing a demo note
 

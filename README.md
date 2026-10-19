@@ -58,10 +58,12 @@ cargo run -p mesh-vst-core --release --example render -- --mode drums --kick k.w
 ## Trying it without a DAW, or with a FOSS one
 
 ```sh
-nix run .#play              # the standalone editor with sound (JACK via PipeWire), a VMPK keyboard and qpwgraph
+nix run .#play              # the standalone editor with sound; the VMPK keyboard window plays it
 MESH_VST_DEMO=1 nix run .#play   # the same, holding a note from the start
-nix run .#qtractor          # Qtractor with this build on its CLAP and VST3 paths
+nix run .#qtractor          # Qtractor (own config) with this build on its CLAP and VST3 paths
 ```
+
+In Qtractor: Track > Add Track > MIDI, then the track's Plugins tab > Add > "mesh vst", then draw one long note in the clip.
 
 `nix develop` prints every run, test and build command.
 
