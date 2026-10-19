@@ -115,6 +115,10 @@ drive external effects.
 - **D28** Drums polyphony: a few voices per slot (4 by default). The kick does not choke.
 - **D29** Break loops follow the host tempo by resampling (pitch follows speed). Slicing on
   detected onsets is a v2 todo. v1 keeps Mesh's step-grid chops and density gating.
+- **D39** Drum **Style**: a stepped, automatable parameter. Options: Seed (the pattern seed
+  picks), Half time, Two step, Rolling, Jungle, Hardcore. These are the Mesh live archetypes,
+  each played exactly, not blended. Morph no longer moves the style. It chops and rewrites
+  inside it.
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
 - **D31** Hat, cymbal and shaker pools. The name decides when it carries a keyword: 97% of
@@ -266,6 +270,19 @@ drive external effects.
 
 ## 5. Todo after v1
 
+- Enrich the drum styles (D39): more archetypes for creative EDM, none generic. Candidates:
+  - techstep
+  - neuro rollers
+  - UK garage 2-step
+  - footwork / juke
+  - dubstep half time
+  - nu-skool breakbeat
+  - bounce / jump-up
+  - rave hardcore with amen chops
+  - minimal dnb
+
+  Each needs kick, snare, hat and ghost level maps in `generator/drums.rs` and a name in
+  `DEFAULT_ARCHETYPE_ORDER`. The Style parameter then lists it.
 - Slicing breaks on detected onsets (D29).
 - Pitching tonal drums to the key (D7).
 - Velocity as timbre (R3).
@@ -284,9 +301,12 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | **Variation** | syncopation, rewrites, fills | rewrites, fills, ghost notes |
 | **Swing** | swing | swing |
 | **Shape** | stabby to sustained: length, expression, filter bite | tight to open: choke, loop hold, decay |
-| **Morph** | mudpie scrub position | backbone archetype, from straight to chopped |
+| **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style |
 | **Spread** | octave lifts, jump size | — |
 | **Slide** | slides, glide time | — |
+
+A ninth, stepped and automatable parameter, **Style** (drums), picks the rhythm family
+(D39).
 
 The **settings panel** holds values that are seeded where sensible, saved with the project, and
 not knobs: Rate, Form, Phrase, Phase, Scale, Bend range, Gain, and the mod-out assignment and

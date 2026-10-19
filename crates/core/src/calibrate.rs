@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn trimmed_lanes_land_on_the_target() {
-        let settings = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 3, pattern_seed: 3, form: 0, rate: 0, mode: 0 };
+        let settings = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 3, pattern_seed: 3, form: 0, rate: 0, mode: 0, style: None };
         for amp in [0.05, 0.6] {
             let lufs = lane_lufs(PatternLane::bass(3, 3), pie(amp), mudpie_params(), &settings, None, 48_000, 16);
             assert!(lufs.is_finite());

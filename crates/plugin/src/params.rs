@@ -41,6 +41,34 @@ impl Scale {
     }
 }
 
+/// The drum style (D39): a rhythm family from Mesh live, or the pattern
+/// seed's pick.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrumStyle {
+    Seed,
+    #[name = "Half time"]
+    HalfTime,
+    #[name = "Two step"]
+    TwoStep,
+    Rolling,
+    Jungle,
+    Hardcore,
+}
+
+impl DrumStyle {
+    /// Index into `macros::DRUM_STYLES`, `None` for the seed's pick.
+    pub fn index(self) -> Option<u8> {
+        match self {
+            DrumStyle::Seed => None,
+            DrumStyle::HalfTime => Some(0),
+            DrumStyle::TwoStep => Some(1),
+            DrumStyle::Rolling => Some(2),
+            DrumStyle::Jungle => Some(3),
+            DrumStyle::Hardcore => Some(4),
+        }
+    }
+}
+
 /// Speed of the bass line on top of its seeded block speeds.
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rate {
@@ -83,6 +111,8 @@ pub struct MeshParams {
     #[id = "slide"]
     pub slide: FloatParam,
 
+    #[id = "style"]
+    pub style: EnumParam<DrumStyle>,
     #[id = "mode"]
     pub mode: EnumParam<Mode>,
     #[id = "sound_seed"]
@@ -129,6 +159,7 @@ impl Default for MeshParams {
             morph: knob("Morph"),
             spread: knob("Spread"),
             slide: knob("Slide"),
+            style: EnumParam::new("Style", DrumStyle::Seed),
             mode: EnumParam::new("Mode", Mode::Drums).non_automatable(),
             sound_seed: setting(IntParam::new("Sound seed", 1, IntRange::Linear { min: 0, max: MAX_SEED })),
             pattern_seed: setting(IntParam::new("Pattern seed", 1, IntRange::Linear { min: 0, max: MAX_SEED })),

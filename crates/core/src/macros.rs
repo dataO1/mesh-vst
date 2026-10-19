@@ -108,6 +108,9 @@ pub struct LaneSettings {
     pub rate: i8,
     /// Mode in the scale family.
     pub mode: u8,
+    /// Drums: the style (index into [`DRUM_STYLES`]); `None` lets the pattern
+    /// seed pick one.
+    pub style: Option<u8>,
 }
 
 /// Configure `lane` for `s` and return the sampler params, from `base`.
@@ -121,7 +124,25 @@ pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettin
     lane.mode = s.mode;
     lane.select_form(s.form);
     apply(role, &resolved, lane, &mut sp);
+    if role == Role::Drums {
+        lane.set_param("style", style_value(s.style.unwrap_or_else(|| seeded_style(s.pattern_seed))));
+    }
     sp
+}
+
+/// The drum styles, in the generator's archetype order (design D39).
+pub const DRUM_STYLES: [&str; 5] = crate::generator::drums::DEFAULT_ARCHETYPE_ORDER;
+const S_STYLE: u32 = 0xC41;
+
+/// The style a pattern seed picks when the user leaves it to the seed.
+pub fn seeded_style(pattern_seed: u32) -> u8 {
+    (rng::hash(pattern_seed, 0, 0, 0, S_STYLE) % DRUM_STYLES.len() as u64) as u8
+}
+
+/// The generator's `style` value that plays style `index` exactly, unblended.
+pub fn style_value(index: u8) -> f32 {
+    let last = (DRUM_STYLES.len() - 1) as f32;
+    (index as f32).min(last) / last
 }
 
 /// Set the lane's generator parameters and the sampler's from resolved knob
@@ -137,11 +158,11 @@ pub fn apply(role: Role, v: &Knobs, lane: &mut PatternLane, sampler: &mut LaneSa
 fn apply_drums(v: &Knobs, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
     lane.set_param("density", v.density);
     lane.set_param("variation", v.variation);
-    lane.set_param("mutate", 0.6 * v.variation);
     lane.set_param("overlay_ghost", lerp(0.1, 0.6, v.variation));
     lane.set_param("swing", v.swing);
-    lane.set_param("style", v.morph);
-    lane.set_param("chop", lerp(0.15, 0.8, v.morph));
+    // Morph: straight .. chopped, inside the style the Style setting picks.
+    lane.set_param("chop", lerp(0.15, 0.85, v.morph));
+    lane.set_param("mutate", (0.6 * v.variation + 0.25 * v.morph).min(1.0));
     lane.set_param("overlay_ride", 0.5);
     lane.set_param("overlay_shaker", 0.5);
     lane.set_param("overlay_top", 0.6);
@@ -260,5 +281,34 @@ mod tests {
                 assert!((lo..=hi).contains(v));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod style_tests {
+    use super::*;
+    use crate::generator::DrumLayout;
+    use crate::key::MusicalKey;
+    use crate::pattern::{RenderedBar, Scratch};
+    use crate::sampler::LaneSamplerParams;
+
+    #[test]
+    fn each_style_plays_its_own_rhythm_and_the_seed_picks_one() {
+        let mut bars = Vec::new();
+        for style in 0..DRUM_STYLES.len() as u8 {
+            let mut lane = PatternLane::drums(DrumLayout::standard(), 5, 5);
+            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 5, pattern_seed: 5, form: 0, rate: 0, mode: 0, style: Some(style) };
+            configure(&mut lane, LaneSamplerParams::default(), &s);
+            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+            lane.render(0, MusicalKey::new(0, true), &mut out, &mut scratch);
+            bars.push(out.events.as_slice().iter().map(|e| (e.tick, e.target)).collect::<Vec<_>>());
+        }
+        for i in 0..bars.len() {
+            for j in i + 1..bars.len() {
+                assert_ne!(bars[i], bars[j], "styles {i} and {j}");
+            }
+        }
+        let picks: std::collections::BTreeSet<u8> = (0..200).map(seeded_style).collect();
+        assert_eq!(picks.len(), DRUM_STYLES.len());
     }
 }

@@ -44,8 +44,8 @@ struct Settings {
 
 /// What the loudness calibration depends on: the samples, seeds, form and
 /// rate, not the knobs (Mesh calibrated at the default controls too).
-fn calibration_key(s: &LaneSettings) -> (u32, u32, usize, i8, u8) {
-    (s.sound_seed, s.pattern_seed, s.form, s.rate, s.mode)
+fn calibration_key(s: &LaneSettings) -> (u32, u32, usize, i8, u8, Option<u8>) {
+    (s.sound_seed, s.pattern_seed, s.form, s.rate, s.mode, s.style)
 }
 
 /// One mode's player and the sampler params the knobs start from.
@@ -111,6 +111,7 @@ impl MeshVst {
             form: p.form.value().max(0) as usize,
             rate: p.rate.value().exponent(),
             mode,
+            style: p.style.value().index(),
             },
             minor,
             phase: match p.phase.value() {
