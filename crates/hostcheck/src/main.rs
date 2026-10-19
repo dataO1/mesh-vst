@@ -91,6 +91,13 @@ impl Audio {
         db(ms.sqrt())
     }
 
+    /// Integrated loudness (BS.1770).
+    fn lufs(&self) -> f64 {
+        let st: Vec<mesh_vst_core::types::StereoSample> =
+            self.samples.chunks_exact(2).map(|c| mesh_vst_core::types::StereoSample { left: c[0], right: c[1] }).collect();
+        mesh_vst_core::loudness::measure_lufs(&st, SR)
+    }
+
     fn finite(&self) -> bool {
         self.samples.iter().all(|v| v.is_finite())
     }
@@ -244,11 +251,12 @@ impl Report {
         }
     }
 
-    /// A render is finite, audible and below full scale.
+    /// A render is finite and audible. Peaks above 0 dBFS are fine: the plugin
+    /// outputs float, the DAW mix does the gain staging.
     fn healthy(&mut self, name: &str, a: &Audio) {
         let rms = a.rms_db(0.0, a.secs());
         let peak = a.peak_db();
-        self.check(name, a.finite() && rms > -45.0 && peak < 0.0, format!("rms {rms:.1} dBFS, peak {peak:.1} dBFS"));
+        self.check(name, a.finite() && rms > -45.0, format!("rms {rms:.1} dBFS, peak {peak:.1} dBFS"));
     }
 }
 
@@ -291,6 +299,25 @@ fn make_library(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// Loudness is calibrated (G5): every seed of both modes lands on the
+/// target at the knobs' middle, so a new seed or sample never jumps in level.
+fn loudness(entry: &PluginEntry, rep: &mut Report, base: &Render, what: &str) -> Result<(), Error> {
+    const TARGET: f64 = -14.0;
+    for mode in ["drums", "bass"] {
+        let mut all = Vec::new();
+        for seed in [1, 7, 21, 99] {
+            let a = render(entry, &Render { mode, seed: Some(seed), bars: 16.0, ..base.clone() })?;
+            all.push(a.lufs());
+        }
+        let lo = all.iter().cloned().fold(f64::INFINITY, f64::min);
+        let hi = all.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let ok = all.iter().all(|l| (l - TARGET).abs() <= 1.5);
+        let list: Vec<String> = all.iter().map(|l| format!("{l:.1}")).collect();
+        rep.check(&format!("{what} {mode} land on {TARGET} LUFS over seeds"), ok, format!("{} LUFS (spread {:.1} dB)", list.join(", "), hi - lo));
+    }
+    Ok(())
+}
+
 /// Every scenario. Renders go to `out`.
 fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Report, Error> {
     std::fs::create_dir_all(out)?;
@@ -299,7 +326,8 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
 
     // Built-in sounds (no library).
     std::env::remove_var("MESH_VST_LIBRARY");
-    let base = Render { seed: Some(7), bars: 4.0, warmup: 0.3, ..Default::default() };
+    // The warmup lets the background kit load and loudness calibration land.
+    let base = Render { seed: Some(7), bars: 4.0, warmup: 1.5, ..Default::default() };
     let drums = render(entry, &base)?;
     save("builtin-drums", &drums)?;
     rep.healthy("built-in drums play", &drums);
@@ -319,6 +347,8 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     let released = render(entry, &Render { release_at: Some(1.0), ..base.clone() })?;
     let (held, tail) = (released.rms_db(0.0, bar), released.rms_db(bar + 0.8, released.secs()));
     rep.check("a release goes silent after the tails", held > -45.0 && tail < -90.0, format!("before {held:.1} dBFS, after {tail:.1} dBFS"));
+
+    loudness(entry, &mut rep, &base, "built-in")?;
 
     // A library, scanned and loaded in the background.
     let (lib, warmup) = match library {
@@ -342,6 +372,7 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
         let a = render(entry, &Render { bpm, warmup: 2.0, ..base.clone() })?;
         rep.healthy(&format!("library drums at {bpm} bpm"), &a);
     }
+    loudness(entry, &mut rep, &Render { warmup: 3.0, ..base.clone() }, "library")?;
     Ok(rep)
 }
 

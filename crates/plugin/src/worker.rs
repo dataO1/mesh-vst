@@ -19,7 +19,10 @@ use std::time::Duration;
 
 use basedrop::Shared;
 use mesh_vst_core::gc::gc_handle;
-use mesh_vst_core::kit::{mudpie_bank, share};
+use mesh_vst_core::calibrate;
+use mesh_vst_core::kit::{mudpie_bank, share, DrumKit};
+use mesh_vst_core::macros::{self, LaneSettings};
+use mesh_vst_core::role::Role;
 use mesh_vst_core::library::Library;
 use mesh_vst_core::loader::{self, DrumPicks, Slot};
 use mesh_vst_core::pattern::PatternLane;
@@ -34,17 +37,19 @@ const POLL: Duration = Duration::from_millis(15);
 /// replaces the settings file's folders.
 pub const LIBRARY_ENV: &str = "MESH_VST_LIBRARY";
 
-/// Which kit to load. `Copy`, so the audio thread can send it without allocating.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which kit to load, and the settings to calibrate its loudness for.
+/// `Copy`, so the audio thread can send it without allocating.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Request {
-    Drums { sound_seed: u32 },
-    Bass { sound_seed: u32 },
+    Drums(LaneSettings),
+    Bass(LaneSettings),
 }
 
-/// A kit ready to play.
+/// A kit ready to play, with the output gain that brings it to its
+/// loudness target (G5) for `settings`.
 pub enum Ready {
-    Drums { lane: Box<PatternLane>, bank: Shared<SampleBank>, loop_bpm: Option<f64>, sound_seed: u32, builtin: bool },
-    Bass { bank: Shared<SampleBank>, sound_seed: u32, builtin: bool },
+    Drums { lane: Box<PatternLane>, bank: Shared<SampleBank>, loop_bpm: Option<f64>, gain: f32, settings: LaneSettings },
+    Bass { bank: Shared<SampleBank>, gain: f32, settings: LaneSettings },
 }
 
 /// What the audio thread hands back to be dropped here.
@@ -157,16 +162,19 @@ impl Drop for Worker {
     }
 }
 
-/// The worker's state: the library and what it last loaded.
+/// The worker's state: the library and the kits it last loaded, so a seed
+/// or form change only calibrates again.
 struct Job {
     sample_rate: u32,
     state: Arc<Mutex<KitState>>,
     library: Option<Library>,
+    drums: Option<(u32, DrumKit, Option<f64>)>,
+    bass: Option<(u32, Shared<SampleData>)>,
 }
 
 impl Job {
     fn new(sample_rate: u32, state: Arc<Mutex<KitState>>) -> Self {
-        Self { sample_rate, state, library: None }
+        Self { sample_rate, state, library: None, drums: None, bass: None }
     }
 
     /// The library, scanned on first use.
@@ -187,57 +195,103 @@ impl Job {
 
     fn load(&mut self, r: Request) -> Option<Ready> {
         let sr = self.sample_rate;
+        match r {
+            Request::Drums(settings) => {
+                let seed = settings.sound_seed;
+                if self.drums.as_ref().is_none_or(|d| d.0 != seed) {
+                    let (kit, loop_bpm) = self.load_drums(seed)?;
+                    self.drums = Some((seed, kit, loop_bpm));
+                }
+                let (_, kit, loop_bpm) = self.drums.as_ref()?;
+                let (layout, bank) = kit.build();
+                let bank = Shared::new(&gc_handle(), bank);
+                let lufs = calibrate::lane_lufs(
+                    PatternLane::drums(layout, 1, seed),
+                    bank.clone(),
+                    macros::drum_params(),
+                    &settings,
+                    *loop_bpm,
+                    sr,
+                    crate::DRUM_VOICES,
+                );
+                let gain = calibrate::trim_gain(Role::Drums, lufs);
+                let lane = Box::new(PatternLane::drums(layout, 1, seed));
+                Some(Ready::Drums { lane, bank, loop_bpm: *loop_bpm, gain, settings })
+            }
+            Request::Bass(settings) => {
+                let seed = settings.sound_seed;
+                if self.bass.as_ref().is_none_or(|b| b.0 != seed) {
+                    let sample = self.load_mudpie(seed)?;
+                    self.bass = Some((seed, sample));
+                }
+                let (_, sample) = self.bass.as_ref()?;
+                let bank = Shared::new(&gc_handle(), mudpie_bank(sample.clone()));
+                let lufs = calibrate::lane_lufs(
+                    PatternLane::bass(1, seed),
+                    bank.clone(),
+                    macros::mudpie_params(),
+                    &settings,
+                    None,
+                    sr,
+                    crate::BASS_VOICES,
+                );
+                Some(Ready::Bass { bank, gain: calibrate::trim_gain(Role::Bass, lufs), settings })
+            }
+        }
+    }
+
+    /// The kit of `sound_seed`: the project's files when it was saved with
+    /// this seed, else the seed's picks; pins replace either. Built-in sounds
+    /// without a library.
+    fn load_drums(&mut self, sound_seed: u32) -> Option<(DrumKit, Option<f64>)> {
+        let sr = self.sample_rate;
         let state = self.state.lock().map(|s| s.clone()).unwrap_or_default();
         self.library();
         let lib = self.library.as_ref()?;
-        match r {
-            Request::Drums { sound_seed } => {
-                let resolve = |f: &FileRef| resolve(lib, f);
-                let pins: DrumPicks = state.pins.iter().filter_map(|(s, f)| Some((*s, resolve(f)?))).collect();
-                // The project's own files when it was saved with this seed.
-                let picks: DrumPicks = if state.drums_seed == Some(sound_seed) && !state.drums.is_empty() {
-                    let mut p: DrumPicks = state.drums.iter().filter_map(|(s, f)| Some((*s, resolve(f)?))).collect();
-                    p.extend(pins.clone());
-                    p
-                } else {
-                    loader::pick_drums(lib, sound_seed, &pins)
-                };
-                let builtin = picks.is_empty();
-                let (kit, loop_bpm, refs) = if builtin {
-                    (builtin::drum_kit(sr), None, BTreeMap::new())
-                } else {
-                    let loaded = loader::load_drums(lib, &picks, sr);
-                    let refs = picks.iter().map(|(s, p)| (*s, file_ref(lib, p))).collect();
-                    (loaded.kit, loaded.break_bpm.map(f64::from), refs)
-                };
-                let (layout, bank) = kit.build();
-                if let Ok(mut s) = self.state.lock() {
-                    s.drums_seed = Some(sound_seed);
-                    s.drums = refs;
-                }
-                let lane = Box::new(PatternLane::drums(layout, 1, sound_seed));
-                Some(Ready::Drums { lane, bank: Shared::new(&gc_handle(), bank), loop_bpm, sound_seed, builtin })
-            }
-            Request::Bass { sound_seed } => {
-                let pin = state.mudpie_pin.as_ref().and_then(|f| resolve(lib, f));
-                let path = match (&state.mudpie, state.bass_seed == Some(sound_seed)) {
-                    (Some(f), true) => resolve(lib, f).or_else(|| loader::pick_mudpie(lib, sound_seed, pin.as_deref())),
-                    _ => loader::pick_mudpie(lib, sound_seed, pin.as_deref()),
-                };
-                let loaded: Option<(Shared<SampleData>, FileRef)> =
-                    path.and_then(|p| loader::load_mudpie(lib, &p, sr).ok().map(|s| (s, file_ref(lib, &p))));
-                let (sample, mudpie) = match loaded {
-                    Some((s, f)) => (s, Some(f)),
-                    None => (share(builtin::mudpie(sr)), None),
-                };
-                let builtin = mudpie.is_none();
-                if let Ok(mut s) = self.state.lock() {
-                    s.bass_seed = Some(sound_seed);
-                    s.mudpie = mudpie;
-                }
-                Some(Ready::Bass { bank: Shared::new(&gc_handle(), mudpie_bank(sample)), sound_seed, builtin })
-            }
+        let resolve = |f: &FileRef| resolve(lib, f);
+        let pins: DrumPicks = state.pins.iter().filter_map(|(s, f)| Some((*s, resolve(f)?))).collect();
+        let picks: DrumPicks = if state.drums_seed == Some(sound_seed) && !state.drums.is_empty() {
+            let mut p: DrumPicks = state.drums.iter().filter_map(|(s, f)| Some((*s, resolve(f)?))).collect();
+            p.extend(pins.clone());
+            p
+        } else {
+            loader::pick_drums(lib, sound_seed, &pins)
+        };
+        let (kit, loop_bpm, refs) = if picks.is_empty() {
+            (builtin::drum_kit(sr), None, BTreeMap::new())
+        } else {
+            let loaded = loader::load_drums(lib, &picks, sr);
+            let refs = picks.iter().map(|(s, p)| (*s, file_ref(lib, p))).collect();
+            (loaded.kit, loaded.break_bpm.map(f64::from), refs)
+        };
+        if let Ok(mut s) = self.state.lock() {
+            s.drums_seed = Some(sound_seed);
+            s.drums = refs;
         }
+        Some((kit, loop_bpm))
+    }
+
+    /// The mudpie of `sound_seed`, as [`Self::load_drums`] picks a kit.
+    fn load_mudpie(&mut self, sound_seed: u32) -> Option<Shared<SampleData>> {
+        let sr = self.sample_rate;
+        let state = self.state.lock().map(|s| s.clone()).unwrap_or_default();
+        self.library();
+        let lib = self.library.as_ref()?;
+        let pin = state.mudpie_pin.as_ref().and_then(|f| resolve(lib, f));
+        let path = match (&state.mudpie, state.bass_seed == Some(sound_seed)) {
+            (Some(f), true) => resolve(lib, f).or_else(|| loader::pick_mudpie(lib, sound_seed, pin.as_deref())),
+            _ => loader::pick_mudpie(lib, sound_seed, pin.as_deref()),
+        };
+        let loaded = path.and_then(|p| loader::load_mudpie(lib, &p, sr).ok().map(|s| (s, file_ref(lib, &p))));
+        let (sample, mudpie) = match loaded {
+            Some((s, f)) => (s, Some(f)),
+            None => (share(builtin::mudpie(sr)), None),
+        };
+        if let Ok(mut s) = self.state.lock() {
+            s.bass_seed = Some(sound_seed);
+            s.mudpie = mudpie;
+        }
+        Some(sample)
     }
 }
 

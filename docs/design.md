@@ -383,5 +383,13 @@ Each step is tested before the next one starts.
       passes on both.
   - **Gaps.**
     - **G8** No UI for pins and overrides yet (M4).
-    - **G9** Mudpies vary a lot in level after normalization. Seed 7's dev mudpie renders at
-      −35 dBFS RMS.
+- **Loudness (2026-10-19, fixes G5 and G9).** This works as in Mesh live, in two stages:
+  - **Per sample.** Every sample is normalized to −12 LUFS. Drum slots then sit at Mesh's
+    sub-voice balance: break −2 dB, hats −8, cymbals and shaker −6, perc −10.
+  - **Per lane.** The loader renders 16 bars of the lane with its own generator at the knobs'
+    middle, measures BS.1770 loudness and trims the output to −14 LUFS. This reruns when the
+    samples, seeds, form or rate change.
+
+  The knobs then change loudness as they should, but a new seed or sample does not. The e2e
+  suite checks four seeds per mode, built-in and library, and all land at −14.0 LUFS. Peaks
+  above 0 dBFS are left alone: the output is float, and the DAW mix does the gain staging.

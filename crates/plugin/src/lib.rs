@@ -10,7 +10,7 @@ use std::sync::Arc;
 use mesh_vst_core::event::{EventKind, LiveEvent};
 use mesh_vst_core::gc::gc_handle;
 use mesh_vst_core::kit::{mudpie_bank, share};
-use mesh_vst_core::macros::{self, Centers, Knobs};
+use mesh_vst_core::macros::{self, Knobs, LaneSettings};
 use mesh_vst_core::pattern::PatternLane;
 use mesh_vst_core::player::{Phase, Player, Transport, TICKS_PER_BEAT};
 use mesh_vst_core::sampler::{LaneSamplerParams, Sampler};
@@ -27,36 +27,34 @@ use worker::{Garbage, Ready, Request, Worker};
 /// Tempo when the host gives none.
 const DEFAULT_BPM: f64 = 120.0;
 /// Sampler voices per mode.
-const DRUM_VOICES: usize = 48;
-const BASS_VOICES: usize = 16;
-// MUSICAL: output trims of the built-in sounds, measured to peak below 0 dBFS
-// (the library samples get loudness-normalized at load, M3).
-const BUILTIN_DRUM_GAIN: f32 = 0.4;
-const BUILTIN_BASS_GAIN: f32 = 0.8;
-// MUSICAL: output trims of library kits (every sample at −12 LUFS), first draft.
-const LIBRARY_DRUM_GAIN: f32 = 0.35;
-const LIBRARY_BASS_GAIN: f32 = 0.6;
+pub(crate) const DRUM_VOICES: usize = 48;
+pub(crate) const BASS_VOICES: usize = 16;
+// MUSICAL: gains of the built-in sounds until their first calibration lands
+// (a few hundred ms after loading), measured near the target.
+const START_DRUM_GAIN: f32 = 0.4;
+const START_BASS_GAIN: f32 = 0.8;
 
 /// Everything the knobs and settings resolve to; a change re-applies them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Settings {
-    knobs: Knobs,
-    sound_seed: u32,
-    pattern_seed: u32,
-    form: usize,
-    rate: i8,
+    lane: LaneSettings,
     minor: bool,
-    mode: u8,
     phase: Phase,
+}
+
+/// What the loudness calibration depends on: the samples, seeds, form and
+/// rate, not the knobs (Mesh calibrated at the default controls too).
+fn calibration_key(s: &LaneSettings) -> (u32, u32, usize, i8, u8) {
+    (s.sound_seed, s.pattern_seed, s.form, s.rate, s.mode)
 }
 
 /// One mode's player and the sampler params the knobs start from.
 struct Lane {
     player: Player,
     base: LaneSamplerParams,
-    /// Sound seed of the kit playing, and of the kit asked for.
-    loaded: Option<u32>,
-    requested: Option<u32>,
+    /// Settings the playing kit was calibrated for, and the ones asked for.
+    loaded: Option<LaneSettings>,
+    requested: Option<LaneSettings>,
 }
 
 pub struct MeshVst {
@@ -97,6 +95,7 @@ impl MeshVst {
         let intensity = p.intensity.value();
         let (minor, mode) = p.scale.value().family_mode();
         Settings {
+            lane: LaneSettings {
             knobs: Knobs {
                 density: p.density.value(),
                 intensity: intensity + self.mod_wheel * (1.0 - intensity),
@@ -111,8 +110,9 @@ impl MeshVst {
             pattern_seed: p.pattern_seed.value() as u32,
             form: p.form.value().max(0) as usize,
             rate: p.rate.value().exponent(),
-            minor,
             mode,
+            },
+            minor,
             phase: match p.phase.value() {
                 PhaseMode::Continuous => Phase::Continuous,
                 PhaseMode::Retrigger => Phase::Retrigger,
@@ -132,21 +132,21 @@ impl MeshVst {
         let Some(w) = self.worker.as_mut() else { return };
         while let Ok(ready) = w.ready.pop() {
             match ready {
-                Ready::Drums { mut lane, bank, loop_bpm, sound_seed, builtin } => {
+                Ready::Drums { mut lane, bank, loop_bpm, gain, settings } => {
                     if let Some(l) = self.drums.as_mut() {
                         l.player.swap_lane(&mut lane);
                         l.player.sampler_mut().set_bank(bank);
                         l.player.loop_bpm = loop_bpm;
-                        l.base.gain = if builtin { BUILTIN_DRUM_GAIN } else { LIBRARY_DRUM_GAIN };
-                        l.loaded = Some(sound_seed);
+                        l.base.gain = gain;
+                        l.loaded = Some(settings);
                     }
                     let _ = w.garbage.push(Garbage::Lane(lane));
                 }
-                Ready::Bass { bank, sound_seed, builtin } => {
+                Ready::Bass { bank, gain, settings } => {
                     if let Some(l) = self.bass.as_mut() {
                         l.player.sampler_mut().set_bank(bank);
-                        l.base.gain = if builtin { BUILTIN_BASS_GAIN } else { LIBRARY_BASS_GAIN };
-                        l.loaded = Some(sound_seed);
+                        l.base.gain = gain;
+                        l.loaded = Some(settings);
                     }
                 }
             }
@@ -154,25 +154,26 @@ impl MeshVst {
         }
     }
 
-    /// Ask the worker for the kit of the sound seed when it is not the one
-    /// playing or already asked for.
+    /// Ask the worker for the kit and its loudness trim when the samples,
+    /// seeds or form are not the ones playing or already asked for.
     fn ask_kit(&mut self, mode: Mode) {
-        let seed = self.params.sound_seed.value() as u32;
+        let want = self.settings().lane;
+        let key = calibration_key(&want);
         let Some(w) = self.worker.as_mut() else { return };
         let lane = match mode {
             Mode::Drums => self.drums.as_mut(),
             Mode::Bass => self.bass.as_mut(),
         };
         let Some(l) = lane else { return };
-        if l.loaded == Some(seed) || l.requested == Some(seed) {
+        if l.loaded.as_ref().map(calibration_key) == Some(key) || l.requested.as_ref().map(calibration_key) == Some(key) {
             return;
         }
         let req = match mode {
-            Mode::Drums => Request::Drums { sound_seed: seed },
-            Mode::Bass => Request::Bass { sound_seed: seed },
+            Mode::Drums => Request::Drums(want),
+            Mode::Bass => Request::Bass(want),
         };
         if w.requests.push(req).is_ok() {
-            l.requested = Some(seed);
+            l.requested = Some(want);
         }
     }
 
@@ -183,18 +184,8 @@ impl MeshVst {
             return;
         }
         let Some(lane) = self.lane_mut(mode) else { return };
-        let role = lane.player.lane().role();
-        let resolved = Centers::of(role, s.pattern_seed, s.sound_seed).resolve(&s.knobs);
-        let mut sp = lane.base;
-        {
-            let pl = lane.player.lane_mut();
-            pl.pattern_seed = s.pattern_seed;
-            pl.sound_seed = s.sound_seed;
-            pl.rate = s.rate;
-            pl.mode = s.mode;
-            pl.select_form(s.form);
-            macros::apply(role, &resolved, pl, &mut sp);
-        }
+        let base = lane.base;
+        let sp = macros::configure(lane.player.lane_mut(), base, &s.lane);
         lane.player.minor = s.minor;
         lane.player.phase = s.phase;
         lane.player.sampler_mut().set_params(sp);
@@ -291,11 +282,11 @@ impl Plugin for MeshVst {
         let (layout, bank) = builtin::drum_kit(sr).build();
         let mut sampler = Sampler::new(sr, DRUM_VOICES);
         sampler.set_bank(basedrop::Shared::new(&gc_handle(), bank));
-        self.drums = Some(Lane { player: Player::new(PatternLane::drums(layout, 1, 1), sampler), base: LaneSamplerParams { gain: BUILTIN_DRUM_GAIN, ..macros::drum_params() }, loaded: None, requested: None });
+        self.drums = Some(Lane { player: Player::new(PatternLane::drums(layout, 1, 1), sampler), base: LaneSamplerParams { gain: START_DRUM_GAIN, ..macros::drum_params() }, loaded: None, requested: None });
 
         let mut sampler = Sampler::new(sr, BASS_VOICES);
         sampler.set_bank(basedrop::Shared::new(&gc_handle(), mudpie_bank(share(builtin::mudpie(sr)))));
-        self.bass = Some(Lane { player: Player::new(PatternLane::bass(1, 1), sampler), base: LaneSamplerParams { gain: BUILTIN_BASS_GAIN, ..macros::mudpie_params() }, loaded: None, requested: None });
+        self.bass = Some(Lane { player: Player::new(PatternLane::bass(1, 1), sampler), base: LaneSamplerParams { gain: START_BASS_GAIN, ..macros::mudpie_params() }, loaded: None, requested: None });
         self.applied = None;
         // The built-in sounds play until the library kit is loaded.
         self.worker = Some(Worker::spawn(sr, self.params.kit.clone()));

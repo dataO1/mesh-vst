@@ -419,6 +419,7 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "hound",
+ "mesh-vst-core",
 ]
 
 [[package]]

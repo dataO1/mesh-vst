@@ -32,6 +32,20 @@ const HIT_ROOT: u8 = 60;
 /// Break chops per bar of loop.
 const CHOPS_PER_BAR: u32 = 16;
 
+// MUSICAL: Mesh live's sub-voice balance (style-calibrate, user 2026-10-15):
+// the kit's voices sum on one lane, so the quieter roles sit below the
+// backbone. Applied on top of each sample's normalization.
+/// Level of a slot against the kick and snare, in dB.
+pub fn slot_offset_db(slot: Slot) -> f64 {
+    match slot {
+        Slot::Kick | Slot::Snare => 0.0,
+        Slot::Break => -2.0,
+        Slot::HatClosed | Slot::HatOpen => -8.0,
+        Slot::CymbalA | Slot::CymbalB | Slot::Shaker => -6.0,
+        Slot::Perc => -10.0,
+    }
+}
+
 /// A drum kit slot (design D16; the shaker comes from the cymbal pool).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Slot {
@@ -115,7 +129,7 @@ pub fn load_drums(lib: &Library, picks: &DrumPicks, sample_rate: u32) -> LoadedD
     let mut failed = Vec::new();
     let mut break_bpm = None;
     for (&slot, path) in picks {
-        let sample = match load_sample(path, HIT_ROOT, sample_rate) {
+        let sample = match load_sample(path, HIT_ROOT, sample_rate, slot_offset_db(slot)) {
             Ok(s) => s,
             Err(e) => {
                 failed.push((slot, e.to_string()));
@@ -150,17 +164,19 @@ pub fn load_drums(lib: &Library, picks: &DrumPicks, sample_rate: u32) -> LoadedD
 /// Load a mudpie at its root key (the library's, else [`DEFAULT_MUDPIE_ROOT`]).
 pub fn load_mudpie(lib: &Library, path: &Path, sample_rate: u32) -> Result<Shared<SampleData>, AudioFileError> {
     let root = lib.entry(path).and_then(|e| e.root).unwrap_or(DEFAULT_MUDPIE_ROOT);
-    load_sample(path, root, sample_rate).map(share)
+    load_sample(path, root, sample_rate, 0.0).map(share)
 }
 
-/// Decode, normalize to [`SAMPLE_LOUDNESS_TARGET`] and resample a file.
-pub fn load_sample(path: &Path, root: u8, sample_rate: u32) -> Result<SampleData, AudioFileError> {
+/// Decode, normalize to [`SAMPLE_LOUDNESS_TARGET`] plus `offset_db` and
+/// resample a file.
+pub fn load_sample(path: &Path, root: u8, sample_rate: u32, offset_db: f64) -> Result<SampleData, AudioFileError> {
     let data = SampleData::decode(path, root)?;
     let frames: Vec<StereoSample> = (0..data.len()).map(|i| data.frame(i)).collect();
     let rate = data.sample_rate() as f64;
     // Hits shorter than one gating block are measured over their own length.
     let lufs = if frames.len() < (rate * 0.4).ceil() as usize { measure_hit_lufs(&frames, rate) } else { measure_lufs(&frames, rate) };
-    let gain = if lufs.is_finite() { 10f64.powf((SAMPLE_LOUDNESS_TARGET - lufs).clamp(-CUT_MAX_DB, BOOST_MAX_DB) / 20.0) as f32 } else { 1.0 };
+    let norm = if lufs.is_finite() { (SAMPLE_LOUDNESS_TARGET - lufs).clamp(-CUT_MAX_DB, BOOST_MAX_DB) } else { 0.0 };
+    let gain = 10f64.powf((norm + offset_db) / 20.0) as f32;
     let left: Vec<f32> = frames.iter().map(|s| s.left * gain).collect();
     let right: Vec<f32> = frames.iter().map(|s| s.right * gain).collect();
     let cents = data.root_cents;

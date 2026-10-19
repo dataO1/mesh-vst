@@ -4,6 +4,7 @@
 //! and sampler started as a copy of Mesh live mode
 //! (`mesh-core/src/live`), relicensed under GPL-3.0-or-later by their author.
 
+pub mod calibrate;
 pub mod error;
 pub mod event;
 pub mod form;

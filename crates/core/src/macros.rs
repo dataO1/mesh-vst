@@ -95,6 +95,35 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+/// A lane's seeds, form and knob positions: everything that decides its
+/// pattern and sound apart from the samples.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LaneSettings {
+    pub knobs: Knobs,
+    pub sound_seed: u32,
+    pub pattern_seed: u32,
+    /// 0 = one bar of A, 1..=10 = the default forms.
+    pub form: usize,
+    /// Speed exponent: −1 half, 0, 1 double.
+    pub rate: i8,
+    /// Mode in the scale family.
+    pub mode: u8,
+}
+
+/// Configure `lane` for `s` and return the sampler params, from `base`.
+pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettings) -> LaneSamplerParams {
+    let role = lane.role();
+    let resolved = Centers::of(role, s.pattern_seed, s.sound_seed).resolve(&s.knobs);
+    let mut sp = base;
+    lane.pattern_seed = s.pattern_seed;
+    lane.sound_seed = s.sound_seed;
+    lane.rate = s.rate;
+    lane.mode = s.mode;
+    lane.select_form(s.form);
+    apply(role, &resolved, lane, &mut sp);
+    sp
+}
+
 /// Set the lane's generator parameters and the sampler's from resolved knob
 /// values (see [`Centers::resolve`]).
 pub fn apply(role: Role, v: &Knobs, lane: &mut PatternLane, sampler: &mut LaneSamplerParams) {
