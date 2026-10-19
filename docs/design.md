@@ -271,31 +271,32 @@ drive external effects.
 - Velocity as timbre (R3).
 - Generic DAW key read via the VST3 chord and scale context (D11).
 
-## 6. Parameters (proposal, Q18)
+## 6. Parameters (D37)
 
-Broad meta parameters, like Mesh live's lane controls. Each one moves a group of related
-internal parameters along a curve that has been tuned once. No fine-tuning parameters are
-exposed. Every meta parameter is automatable. Seeds, locks, mode, samples and the mod-out
-assignment are project state, not DAW parameters.
+Eight knobs at most: 5 shared and up to 3 per mode, broad like Mesh live's lane controls. All
+are automatable. The seed sets each knob's default center, so a new seed comes with its own
+suggested settings. Turning a knob or automating it moves away from that center.
 
-| Group | Parameter | Moves (from Mesh live) |
+| Knob | Bass | Drums |
 |---|---|---|
-| Shared | Density | Hits or notes in importance order, loop gating to the 4th/8th/16th grid, softer added off-beats |
-| Shared | Intensity | Accent depth, velocity range, stab drive, filter envelope depth. The mod wheel drives it too |
-| Shared | Variation | Seeded rewrites (Mesh `mutate`, `variation`), fills at phrase ends, ghost notes |
-| Shared | Swing | Swing |
-| Shared | Rate | Half, normal or double speed (Mesh rate pads) |
-| Shared | Form | One of the default forms (a custom string is state) |
-| Shared | Phrase, Phase, Scale, Bend range, Gain | As in D8, D11, D24, D25 |
-| Bass | Complexity | Syncopation and rhythm freedom (Mesh `complexity`) |
-| Bass | Shape | Stabby and accented to sustained and calm: note length, expression, stabs, filter bite (Mesh `shape`) |
-| Bass | Morph | Mudpie scrub position, or crossfade between layers (Mesh `morph`) |
-| Bass | Spread | Weak notes lifted an octave, interval jump size (Mesh `spread`) |
-| Bass | Slide | Slides between notes and glide time (Mesh `slide`) |
-| Drums | Style | Moves along the backbone archetypes (Mesh `style`) |
-| Drums | Chop | Break chop and slice rate (Mesh `chop`) |
-| Drums | Tops | Cymbal and shaker overlay amounts (Mesh `overlay_*`) |
-| Drums | Choke | Choke amount (D27) |
+| **Density** | notes, note length | hits, voices coming in (tops included), loop gating |
+| **Intensity** | accents, stab drive, filter envelope depth | accents, velocity range |
+| **Variation** | syncopation, rewrites, fills | rewrites, fills, ghost notes |
+| **Swing** | swing | swing |
+| **Shape** | stabby to sustained: length, expression, filter bite | tight to open: choke, loop hold, decay |
+| **Morph** | mudpie scrub position | backbone archetype, from straight to chopped |
+| **Spread** | octave lifts, jump size | — |
+| **Slide** | slides, glide time | — |
+
+The **settings panel** holds values that are seeded where sensible, saved with the project, and
+not knobs: Rate, Form, Phrase, Phase, Scale, Bend range, Gain, and the mod-out assignment and
+meters.
+
+**Unison (Bass only, D38).** Each note plays a seeded number of detuned copies of the mudpie
+voice, with a seeded detune and stereo width per note. Some notes come out wide and detuned,
+others straight and narrow. The footer's bottom-right widget sets the limits the seed works
+within: **Voices** (maximum, 1–8) and **Detune** (maximum, in cents). These two are project
+state, not knobs.
 
 ## 7. Build order (D36)
 
