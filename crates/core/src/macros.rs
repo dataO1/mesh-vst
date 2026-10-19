@@ -111,6 +111,8 @@ pub struct LaneSettings {
     /// Drums: the style (index into [`DRUM_STYLES`]); `None` lets the pattern
     /// seed pick one.
     pub style: Option<u8>,
+    /// Bass: unison limits and mode (D38).
+    pub unison: crate::sampler::Unison,
 }
 
 /// Configure `lane` for `s` and return the sampler params, from `base`.
@@ -126,6 +128,8 @@ pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettin
     apply(role, &resolved, lane, &mut sp);
     if role == Role::Drums {
         lane.set_param("style", style_value(s.style.unwrap_or_else(|| seeded_style(s.pattern_seed))));
+    } else {
+        sp.unison = s.unison;
     }
     sp
 }
@@ -299,7 +303,7 @@ mod style_tests {
         let mut bars = Vec::new();
         for style in 0..DRUM_STYLES.len() as u8 {
             let mut lane = PatternLane::drums(DrumLayout::standard(), 5, 5);
-            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 5, pattern_seed: 5, form: 0, rate: 0, mode: 0, style: Some(style) };
+            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 5, pattern_seed: 5, form: 0, rate: 0, mode: 0, style: Some(style), unison: Default::default() };
             configure(&mut lane, LaneSamplerParams::default(), &s);
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
             lane.render(0, MusicalKey::new(0, true), &mut out, &mut scratch);

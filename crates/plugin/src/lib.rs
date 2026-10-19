@@ -71,15 +71,15 @@ struct Settings {
     phase: Phase,
     phrase_bars: u32,
     new_root: NewRoot,
-    unison: Unison,
     /// Channel or MPE pressure, in 1/64 steps (it drives the stab drive).
     pressure: u8,
 }
 
 /// What the loudness calibration depends on: the samples, seeds, form and
 /// rate, not the knobs (Mesh calibrated at the default controls too).
-fn calibration_key(s: &LaneSettings) -> (u32, u32, usize, i8, u8, Option<u8>) {
-    (s.sound_seed, s.pattern_seed, s.form, s.rate, s.mode, s.style)
+fn calibration_key(s: &LaneSettings) -> (u32, u32, usize, i8, u8, Option<u8>, (u8, u32, u8)) {
+    let u = (s.unison.voices, s.unison.detune_cents.to_bits(), s.unison.mode as u8);
+    (s.sound_seed, s.pattern_seed, s.form, s.rate, s.mode, s.style, u)
 }
 
 /// One mode's player and the sampler params the knobs start from.
@@ -167,17 +167,6 @@ impl MeshVst {
             rate: p.rate.value().exponent(),
             mode,
             style: p.style.value().index(),
-            },
-            minor,
-            phase: match p.phase.value() {
-                PhaseMode::Continuous => Phase::Continuous,
-                PhaseMode::Retrigger => Phase::Retrigger,
-            },
-            phrase_bars: p.phrase.value().bars(),
-            new_root: match p.new_root.value() {
-                NewRootMode::Glide => NewRoot::Glide,
-                NewRootMode::Retrigger => NewRoot::Retrigger,
-            },
             unison: Unison {
                 voices: p.unison_voices.value().clamp(1, 8) as u8,
                 detune_cents: p.unison_detune.value(),
@@ -189,6 +178,17 @@ impl MeshVst {
                     UnisonSpread::Random => UnisonMode::Random,
                 },
                 seed: p.sound_seed.value() as u32,
+            },
+            },
+            minor,
+            phase: match p.phase.value() {
+                PhaseMode::Continuous => Phase::Continuous,
+                PhaseMode::Retrigger => Phase::Retrigger,
+            },
+            phrase_bars: p.phrase.value().bars(),
+            new_root: match p.new_root.value() {
+                NewRootMode::Glide => NewRoot::Glide,
+                NewRootMode::Retrigger => NewRoot::Retrigger,
             },
             pressure: (self.pressure * 64.0).round() as u8,
         }
@@ -296,9 +296,6 @@ impl MeshVst {
         let base = lane.base;
         let role = lane.player.lane().role();
         let mut sp = macros::configure(lane.player.lane_mut(), base, &s.lane);
-        if role != mesh_vst_core::role::Role::Drums {
-            sp.unison = s.unison;
-        }
         // Pressure drives the drive (D24): the stab punch, the drum accents.
         let pressure = s.pressure as f32 / 64.0;
         sp.punch = (sp.punch + 0.8 * pressure).min(1.5);
