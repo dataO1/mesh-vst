@@ -570,6 +570,21 @@ impl Sampler {
             (p.decay, p.sustain)
         };
         self.age += 1;
+        // Notes start at the slot start, except on streams (mudpies), where
+        // the generator picks the position. Pack zones may set their own
+        // start (SFZ `offset`, plus its CC).
+        let (offset, level) = if ev.kind == EventKind::NoteOn && !slot.stream {
+            let cc = self.cc_now();
+            let cc_frames = (ModConfig::sum(&p.modulation.offset_cc, &cc) + ZoneMod::sum(&slot.zone_mods, &cc, ZoneTarget::Offset)) as f64;
+            (((slot.start_offset as f64 + cc_frames) / slot.len().max(1) as f64).clamp(0.0, 0.999), 1.0)
+        } else {
+            // A stream: the generator's seeded position across the whole
+            // sample, moved within a region around it by the Morph knob,
+            // played at the sample's overall loudness.
+            let morph = if p.morph >= 0.0 { (p.morph as f64 - 0.5) * MORPH_REGION } else { 0.0 };
+            let at = (ev.start as f64 / u16::MAX as f64 + morph).rem_euclid(1.0).min(0.999);
+            (at, slot.sample.level_gain(at))
+        };
         let init = VoiceInit {
             age: self.age,
             group,
@@ -580,23 +595,10 @@ impl Sampler {
             reverse: ev.has(flags::REVERSE),
             start: slot.start,
             end: slot.end,
-            // Notes start at the slot start, except on streams (mudpies),
-            // where the generator picks the position.
-            // Pack zones may set their own start (SFZ `offset`, plus its CC).
-            offset: if ev.kind == EventKind::NoteOn && !slot.stream {
-                let cc = self.cc_now();
-                let cc_frames = (ModConfig::sum(&p.modulation.offset_cc, &cc)
-                    + ZoneMod::sum(&slot.zone_mods, &cc, ZoneTarget::Offset)) as f64;
-                ((slot.start_offset as f64 + cc_frames) / slot.len().max(1) as f64).clamp(0.0, 0.999)
-            } else {
-                // A stream: the generator's seeded position across the whole
-                // sample, moved within a region around it by the Morph knob.
-                let morph = if p.morph >= 0.0 { (p.morph as f64 - 0.5) * MORPH_REGION } else { 0.0 };
-                (ev.start as f64 / u16::MAX as f64 + morph).rem_euclid(1.0).min(0.999)
-            },
+            offset,
             rate,
             detune_cents: detune,
-            gain: slot.gain * vel * accent * copy.gain,
+            gain: slot.gain * vel * accent * copy.gain * level,
             pan_offset: ev.pan as f32 / 127.0 + slot.pan + copy.pan,
             cutoff_offset: ev.cutoff as f32 / 127.0,
             // A gliding cutoff starts where the newest voice's is now.

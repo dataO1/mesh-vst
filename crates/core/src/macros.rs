@@ -130,8 +130,32 @@ pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettin
         lane.set_param("style", style_value(s.style.unwrap_or_else(|| seeded_style(s.pattern_seed))));
     } else {
         sp.unison = s.unison;
+        seeded_voice(&mut sp, s.sound_seed);
     }
     sp
+}
+
+const S_VOICE: u32 = 0xC50;
+
+// MUSICAL: first draft, tune by ear. Around the designed mudpie voice.
+/// The sound seed's mudpie voice (design D20): filter, resonance, filter and
+/// pitch envelopes and the LFO, drawn around the designed voice. The knobs
+/// act on top.
+fn seeded_voice(p: &mut LaneSamplerParams, sound_seed: u32) {
+    let r = |k: u8, lo: f32, hi: f32| rng::range_f32(rng::hash(sound_seed, k, 0, 0, S_VOICE), lo, hi);
+    // Cutoff 200 Hz .. 1 kHz, an octave and more around the designed 400 Hz.
+    p.cutoff_hz *= 2f32.powf(r(0, -1.0, 1.3));
+    p.resonance = (p.resonance + r(1, -0.2, 0.3)).clamp(0.05, 0.9);
+    let m = &mut p.modulation;
+    m.env.decay *= 2f32.powf(r(2, -1.3, 1.0));
+    m.env.to_cutoff *= r(3, 0.5, 1.6);
+    // A pitch blip on some voices, none on others.
+    m.env.to_pitch = if r(4, 0.0, 1.0) < 0.4 { 0.0 } else { r(5, 60.0, 450.0) };
+    // A slow drift .. a fast wobble, light .. deep.
+    m.lfo.rate = 2f32.powf(r(6, -1.5, 2.8));
+    m.lfo.to_cutoff = r(7, 0.0, 1600.0);
+    p.decay *= 2f32.powf(r(8, -0.8, 0.8));
+    p.release *= 2f32.powf(r(9, -0.7, 1.2));
 }
 
 /// The drum styles, in the generator's archetype order (design D39).
@@ -316,6 +340,24 @@ mod style_tests {
         }
         let picks: std::collections::BTreeSet<u8> = (0..200).map(seeded_style).collect();
         assert_eq!(picks.len(), DRUM_STYLES.len());
+    }
+
+    #[test]
+    fn the_sound_seed_rolls_the_mudpie_voice() {
+        let voice = |seed| {
+            let mut lane = PatternLane::bass(5, seed);
+            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: seed, pattern_seed: 5, form: 1, rate: 0, mode: 0, style: None, unison: Default::default() };
+            let p = configure(&mut lane, mudpie_params(), &s);
+            (p.cutoff_hz, p.resonance, p.modulation.lfo.rate, p.modulation.env.decay)
+        };
+        let voices: Vec<_> = (0..20).map(voice).collect();
+        assert_eq!(voice(3), voice(3), "seeded");
+        for v in &voices {
+            assert!((150.0..1100.0).contains(&v.0) && (0.05..=0.9).contains(&v.1), "{v:?}");
+        }
+        let cutoffs: Vec<f32> = voices.iter().map(|v| v.0).collect();
+        let (lo, hi) = cutoffs.iter().fold((f32::MAX, 0.0f32), |(a, b), &c| (a.min(c), b.max(c)));
+        assert!(hi / lo > 2.5, "voices differ: {lo}..{hi} Hz");
     }
 
     /// Eight bars of drums at style `style` with `knobs`, as (bar, tick, target).

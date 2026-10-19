@@ -16,7 +16,7 @@ use crate::error::AudioFileError;
 use crate::kit::{grid_slices, share, DrumKit};
 use crate::library::{Library, Pool, Tag};
 use crate::loudness::{measure_hit_lufs, measure_lufs};
-use crate::sampler::SampleData;
+use crate::sampler::{SampleData, LEVEL_PARTS};
 use crate::types::StereoSample;
 
 /// Loudness every sample is brought to before the knobs (as in Mesh live).
@@ -129,7 +129,9 @@ pub fn load_drums(lib: &Library, picks: &DrumPicks, sample_rate: u32) -> LoadedD
     let mut failed = Vec::new();
     let mut break_bpm = None;
     for (&slot, path) in picks {
-        let sample = match load_sample(path, HIT_ROOT, sample_rate, slot_offset_db(slot)) {
+        // One-shots start at their onset; a break keeps its grid.
+        let trim = if slot == Slot::Break { Trim::None } else { Trim::Edges };
+        let sample = match load_trimmed(path, HIT_ROOT, sample_rate, slot_offset_db(slot), trim) {
             Ok(s) => s,
             Err(e) => {
                 failed.push((slot, e.to_string()));
@@ -164,15 +166,116 @@ pub fn load_drums(lib: &Library, picks: &DrumPicks, sample_rate: u32) -> LoadedD
 /// Load a mudpie at its root key (the library's, else [`DEFAULT_MUDPIE_ROOT`]).
 pub fn load_mudpie(lib: &Library, path: &Path, sample_rate: u32) -> Result<Shared<SampleData>, AudioFileError> {
     let root = lib.entry(path).and_then(|e| e.root).unwrap_or(DEFAULT_MUDPIE_ROOT);
-    load_sample(path, root, sample_rate, 0.0).map(share)
+    // A mudpie plays from seeded positions across the whole file: its
+    // silent stretches go, so every position sounds.
+    load_trimmed(path, root, sample_rate, 0.0, Trim::Gaps).map(share)
+}
+
+/// Which silence a load cuts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trim {
+    None,
+    /// Before the onset and after the tail.
+    Edges,
+    /// The edges and every silent stretch inside.
+    Gaps,
+}
+
+// MUSICAL: first draft, tune by ear.
+/// Silence: this far below the loudest 10 ms of the file.
+const SILENCE_DB: f32 = -40.0;
+/// Inside a file, only silent stretches at least this long go.
+const MIN_GAP_SECS: f64 = 0.05;
+/// Sound kept around each loud stretch (attacks, tails).
+const KEEP_SECS: f64 = 0.02;
+/// Crossfade where a gap was cut.
+const JOIN_SECS: f64 = 0.005;
+
+/// Cut silence from `frames` as `trim` says.
+fn trim_silence(frames: Vec<StereoSample>, rate: f64, trim: Trim) -> Vec<StereoSample> {
+    if trim == Trim::None || frames.is_empty() {
+        return frames;
+    }
+    let block = ((rate * 0.01) as usize).max(1);
+    let level: Vec<f32> = frames
+        .chunks(block)
+        .map(|c| (c.iter().map(|s| 0.5 * (s.left * s.left + s.right * s.right)).sum::<f32>() / c.len() as f32).sqrt())
+        .collect();
+    let loudest = level.iter().cloned().fold(0.0, f32::max);
+    if loudest <= 0.0 {
+        return frames;
+    }
+    let floor = loudest * 10f32.powf(SILENCE_DB / 20.0);
+    let keep = (KEEP_SECS * rate / block as f64).ceil() as usize;
+    let mut on: Vec<bool> = level.iter().map(|&l| l >= floor).collect();
+    // Grow every loud stretch by `keep` blocks.
+    let loud = on.clone();
+    for (i, &l) in loud.iter().enumerate() {
+        if l {
+            for o in on.iter_mut().take((i + keep + 1).min(loud.len())).skip(i.saturating_sub(keep)) {
+                *o = true;
+            }
+        }
+    }
+    let first = on.iter().position(|&b| b).unwrap_or(0);
+    let last = on.iter().rposition(|&b| b).unwrap_or(on.len() - 1);
+    // Runs of blocks to keep.
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut start = first;
+    if trim == Trim::Gaps {
+        // A silent stretch of at least `min_gap` blocks splits two runs.
+        let min_gap = (MIN_GAP_SECS * rate / block as f64).ceil() as usize;
+        let mut i = first;
+        while i <= last {
+            if on[i] {
+                i += 1;
+                continue;
+            }
+            let gap = on[i..=last].iter().take_while(|&&b| !b).count();
+            if gap >= min_gap {
+                runs.push((start, i));
+                start = i + gap;
+            }
+            i += gap;
+        }
+    }
+    runs.push((start, last + 1));
+    let join = (JOIN_SECS * rate) as usize;
+    // The file starts at its onset to the sample (a block is 10 ms), less a
+    // millisecond.
+    let onset = frames.iter().position(|s| s.left.abs().max(s.right.abs()) >= floor).unwrap_or(0);
+    let lead = onset.saturating_sub((rate * 0.001) as usize);
+    let mut out: Vec<StereoSample> = Vec::with_capacity(frames.len());
+    for (k, (a, b)) in runs.into_iter().enumerate() {
+        let from = if k == 0 { lead.min(b * block) } else { a * block };
+        let seg = &frames[from..(b * block).min(frames.len())];
+        // Crossfade into what is already there.
+        let x = join.min(seg.len()).min(out.len());
+        let base = out.len() - x;
+        for (k, s) in seg.iter().enumerate() {
+            if k < x {
+                let t = (k as f32 + 0.5) / x as f32;
+                let o = &mut out[base + k];
+                o.left = o.left * (1.0 - t) + s.left * t;
+                o.right = o.right * (1.0 - t) + s.right * t;
+            } else {
+                out.push(*s);
+            }
+        }
+    }
+    out
 }
 
 /// Decode, normalize to [`SAMPLE_LOUDNESS_TARGET`] plus `offset_db` and
 /// resample a file.
 pub fn load_sample(path: &Path, root: u8, sample_rate: u32, offset_db: f64) -> Result<SampleData, AudioFileError> {
+    load_trimmed(path, root, sample_rate, offset_db, Trim::None)
+}
+
+fn load_trimmed(path: &Path, root: u8, sample_rate: u32, offset_db: f64, trim: Trim) -> Result<SampleData, AudioFileError> {
     let data = SampleData::decode(path, root)?;
-    let frames: Vec<StereoSample> = (0..data.len()).map(|i| data.frame(i)).collect();
     let rate = data.sample_rate() as f64;
+    let frames = trim_silence((0..data.len()).map(|i| data.frame(i)).collect(), rate, trim);
     // Hits shorter than one gating block are measured over their own length.
     let lufs = if frames.len() < (rate * 0.4).ceil() as usize { measure_hit_lufs(&frames, rate) } else { measure_lufs(&frames, rate) };
     let norm = if lufs.is_finite() { (SAMPLE_LOUDNESS_TARGET - lufs).clamp(-CUT_MAX_DB, BOOST_MAX_DB) } else { 0.0 };
@@ -180,12 +283,78 @@ pub fn load_sample(path: &Path, root: u8, sample_rate: u32, offset_db: f64) -> R
     let left: Vec<f32> = frames.iter().map(|s| s.left * gain).collect();
     let right: Vec<f32> = frames.iter().map(|s| s.right * gain).collect();
     let cents = data.root_cents;
-    SampleData::from_channels(&left, &right, data.sample_rate(), root).with_root_cents(cents).resampled_to(sample_rate)
+    let gains = if trim == Trim::Gaps { level_gains(&left, &right, rate) } else { Vec::new() };
+    SampleData::from_channels(&left, &right, data.sample_rate(), root)
+        .with_root_cents(cents)
+        .with_level_gains(gains)
+        .resampled_to(sample_rate)
+}
+
+// MUSICAL: first draft, tune by ear.
+/// What a streamed note hears from its start position: this much of the sample.
+const LEVEL_WINDOW_SECS: f64 = 0.4;
+/// Largest correction of a part's level, in dB.
+const LEVEL_MAX_DB: f32 = 18.0;
+
+/// Per part of the sample, the gain that brings the next
+/// [`LEVEL_WINDOW_SECS`] from there to the sample's overall level, so every
+/// streamed note plays at the loudness the lane was calibrated for.
+fn level_gains(left: &[f32], right: &[f32], rate: f64) -> Vec<f32> {
+    let n = left.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let power = |a: usize, b: usize| (a..b).map(|i| 0.5 * (left[i] * left[i] + right[i] * right[i])).sum::<f32>() / (b - a).max(1) as f32;
+    let overall = power(0, n).sqrt();
+    let window = ((LEVEL_WINDOW_SECS * rate) as usize).clamp(1, n);
+    let max = 10f32.powf(LEVEL_MAX_DB / 20.0);
+    (0..LEVEL_PARTS)
+        .map(|i| {
+            let a = i * n / LEVEL_PARTS;
+            // Past the end the note wraps to the start, as the stream does.
+            let local = if a + window <= n {
+                power(a, a + window)
+            } else {
+                (power(a, n) * (n - a) as f32 + power(0, a + window - n) * (a + window - n) as f32) / window as f32
+            }
+            .sqrt();
+            if local <= 0.0 { 1.0 } else { (overall / local).clamp(1.0 / max, max) }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `secs` of a tone (`on`) or silence, in order.
+    fn pieces(parts: &[(bool, f64)]) -> Vec<StereoSample> {
+        let rate = 48_000.0;
+        parts
+            .iter()
+            .flat_map(|&(on, secs)| {
+                (0..(secs * rate) as usize).map(move |i| {
+                    let v = if on { 0.5 * (i as f32 * 0.05).sin() } else { 0.0 };
+                    StereoSample { left: v, right: v }
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mudpies_lose_their_silence_and_hits_start_at_the_onset() {
+        let rate = 48_000.0;
+        let f = pieces(&[(false, 0.3), (true, 1.0), (false, 2.0), (true, 1.0), (false, 0.01), (true, 0.5), (false, 1.0)]);
+        let gaps = trim_silence(f.clone(), rate, Trim::Gaps);
+        let secs = gaps.len() as f64 / rate;
+        // The 2 s gap and the edges go, the 10 ms gap stays (plus kept tails).
+        assert!((2.5..2.7).contains(&secs), "{secs}");
+        let edges = trim_silence(f.clone(), rate, Trim::Edges);
+        let lead = edges.iter().position(|s| s.left != 0.0).unwrap();
+        assert!(lead <= 48, "starts within 1 ms of the onset: {lead}");
+        assert!((edges.len() as f64 / rate - 4.51).abs() < 0.05, "{}", edges.len() as f64 / rate);
+        assert_eq!(trim_silence(f.clone(), rate, Trim::None).len(), f.len());
+    }
 
     fn write_wav(path: &Path, secs: f32, freq: f32, amp: f32) {
         let spec = hound::WavSpec { channels: 1, sample_rate: 44_100, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };

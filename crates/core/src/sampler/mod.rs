@@ -25,7 +25,7 @@ mod voice;
 #[cfg(test)]
 mod tests;
 
-pub use data::{decode_mono, SampleBank, SampleData, Slice, SliceType, SlotDef, MAX_LAYERS};
+pub use data::{decode_mono, SampleBank, SampleData, Slice, SliceType, SlotDef, LEVEL_PARTS, MAX_LAYERS};
 pub use engine::{Sampler, SamplerMeters};
 pub use interp::{sinc_tables, Interpolation, SincTables};
 pub use unison::{Unison, UnisonMode, MAX_UNISON};

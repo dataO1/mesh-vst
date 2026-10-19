@@ -58,9 +58,31 @@ pub struct SampleData {
     /// Tuning of the recording relative to `root_key` (+20 = 20 cents sharp).
     pub root_cents: i16,
     pub slices: Vec<Slice>,
+    /// Gain that brings each part of the sample to its overall loudness:
+    /// entry `i` covers the fraction `i / n .. (i + 1) / n`. Empty: unity.
+    /// A note streaming from a position takes that position's gain.
+    pub level_gains: Vec<f32>,
 }
 
+/// Parts of a sample's level map.
+pub const LEVEL_PARTS: usize = 256;
+
 impl SampleData {
+    /// The level gain at `pos` (0..1 of the sample).
+    pub fn level_gain(&self, pos: f64) -> f32 {
+        if self.level_gains.is_empty() {
+            return 1.0;
+        }
+        let i = (pos.clamp(0.0, 0.999_999) * self.level_gains.len() as f64) as usize;
+        self.level_gains[i]
+    }
+
+    /// Attach a level map (see [`Self::level_gains`]).
+    pub fn with_level_gains(mut self, gains: Vec<f32>) -> Self {
+        self.level_gains = gains;
+        self
+    }
+
     /// Build from separate channel buffers. `right` may be empty for mono.
     pub fn from_channels(left: &[f32], right: &[f32], sample_rate: u32, root_key: u8) -> Self {
         let len = left.len();
@@ -70,7 +92,7 @@ impl SampleData {
         for i in 0..len {
             dst[PAD + i] = StereoSample::new(left[i], right[i]);
         }
-        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new() }
+        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new(), level_gains: Vec::new() }
     }
 
     /// Build from interleaved samples with 1 or 2 channels (extra channels ignored).
@@ -84,7 +106,7 @@ impl SampleData {
             let r = if channels > 1 { samples[i * channels + 1] } else { l };
             dst[PAD + i] = StereoSample::new(l, r);
         }
-        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new() }
+        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new(), level_gains: Vec::new() }
     }
 
     pub fn with_root_cents(mut self, cents: i16) -> Self {
@@ -149,7 +171,7 @@ impl SampleData {
                 kind: s.kind,
             })
             .collect();
-        out = out.with_slices(slices);
+        out = out.with_slices(slices).with_level_gains(self.level_gains);
         Ok(out)
     }
 

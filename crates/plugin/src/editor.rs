@@ -346,6 +346,21 @@ impl Gui {
         (self.next_rand() % (crate::params::MAX_SEED as u64 + 1)) as i32
     }
 
+    /// A random file of `pool` other than `current` (when the pool has another).
+    fn roll_pick(&mut self, pool: Pool, prefer: Option<Tag>, current: Option<FileRef>) -> Option<PathBuf> {
+        let mut first = None;
+        for _ in 0..32 {
+            let seed = self.next_rand() as u32;
+            let lib = self.library();
+            let Some(e) = lib.pick(pool, seed, 0, prefer) else { break };
+            if current.as_ref().is_none_or(|c| c.path != lib.relative(&e.path)) {
+                return Some(e.path.clone());
+            }
+            first.get_or_insert_with(|| e.path.clone());
+        }
+        first
+    }
+
     fn pin(&mut self, slot: Option<Slot>, path: &std::path::Path) {
         let lib = self.library();
         let r = FileRef { path: lib.relative(path), hash: lib.entry(path).map_or(0, |e| e.hash) };
@@ -546,8 +561,8 @@ impl Gui {
             Message::RollSlot(slot) => {
                 self.record();
                 let (pool, prefer) = slot.source();
-                let seed = self.next_rand() as u32;
-                let pick = self.library().pick(pool, seed, 0, prefer).map(|e| e.path.clone());
+                let current = self.kit().lock().ok().and_then(|k| k.pins.get(&slot).or_else(|| k.drums.get(&slot)).cloned());
+                let pick = self.roll_pick(pool, prefer, current);
                 match pick {
                     Some(p) => self.pin(Some(slot), &p),
                     None => self.toast = format!("no {} files in the library", pool.name()),
@@ -563,8 +578,8 @@ impl Gui {
             }
             Message::RollMudpie => {
                 self.record();
-                let seed = self.next_rand() as u32;
-                let pick = self.library().pick(Pool::Mudpie, seed, 0, None).map(|e| e.path.clone());
+                let current = self.kit().lock().ok().and_then(|k| k.mudpie_pin.clone().or_else(|| k.mudpie.clone()));
+                let pick = self.roll_pick(Pool::Mudpie, None, current);
                 match pick {
                     Some(p) => self.pin(None, &p),
                     None => self.toast = "no mudpies in the library".into(),

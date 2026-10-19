@@ -35,7 +35,7 @@ const BPM: f64 = 172.0;
 const KEY: u8 = 29;
 const BLOCK: usize = 512;
 /// Largest cut and boost of a trim.
-const TRIM_RANGE_DB: (f64, f64) = (-24.0, 24.0);
+const TRIM_RANGE_DB: (f64, f64) = (-48.0, 48.0);
 
 /// Integrated loudness of `lane` on `bank`, playing `settings` with its
 /// knobs at the seed's suggestion. `-inf` when it stays silent.

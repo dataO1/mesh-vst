@@ -440,6 +440,19 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     save("library-bass", &lib_bass)?;
     rep.healthy("library mudpie plays", &lib_bass);
     rep.check("the library mudpie replaces the built-in one", lib_bass.samples != bass.samples, String::new());
+    // Every bar of every seed's mudpie is heard: no bar far below the others.
+    let mut bars_db = Vec::new();
+    for seed in 1..=8 {
+        let a = render(entry, &Render { mode: "bass", seed: Some(seed), warmup: 2.0, ..base.clone() })?;
+        let bar = 4.0 * 60.0 / base.bpm;
+        for b in 0..base.bars as usize {
+            bars_db.push(a.rms_db(b as f64 * bar, (b + 1) as f64 * bar));
+        }
+    }
+    let mut sorted = bars_db.clone();
+    sorted.sort_by(f64::total_cmp);
+    let (low, median) = (sorted[0], sorted[sorted.len() / 2]);
+    rep.check("every library mudpie bar is heard", low > median - 12.0, format!("quietest bar {low:.1} dBFS, median {median:.1} dBFS over 8 seeds"));
     for bpm in [140.0, 174.0] {
         let a = render(entry, &Render { bpm, warmup: 2.0, ..base.clone() })?;
         rep.healthy(&format!("library drums at {bpm} bpm"), &a);

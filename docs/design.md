@@ -89,8 +89,13 @@ drive external effects.
 
 ### Seeds and parameters
 
-- **D20** Two seeds. The **sound seed** picks samples from the pools (or the mudpie in Bass mode).
+- **D20** Two seeds. The **sound seed** picks samples from the pools (or the mudpie in Bass mode),
+  and in Bass mode also the mudpie voice: cutoff, resonance, filter and pitch envelopes, LFO,
+  amp decay and release, drawn around the designed voice (2026-10-19). The knobs act on top.
   The **pattern seed** picks the groove. Each has a dice button and a lock.
+  Loading cuts silence: one-shots start at their onset, mudpies lose every silent stretch, and a
+  streamed mudpie note plays at the gain that brings its start position to the sample's overall
+  loudness. The lane trim (no cap) brings the lane to its LUFS target.
 - **D21** Every seeded choice can be overridden by hand. Drums: roll the whole kit, roll one slot,
   or drop a file onto a slot. Bass: drop a mudpie or roll one.
 - **D22** Favorite seeds: per machine, shared across projects, filtered by mode. A favorite stores
