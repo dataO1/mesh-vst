@@ -298,6 +298,17 @@ others straight and narrow. The footer's bottom-right widget sets the limits the
 within: **Voices** (maximum, 1–8) and **Detune** (maximum, in cents). These two are project
 state, not knobs.
 
+The unison sum keeps equal loudness: gain falls with the number of voices (1/√N for the
+uncorrelated detuned copies), so a wide note is not louder than a straight one. The **unison
+mode** sets how the voices are spread inside the detune range:
+- **Linear:** even steps.
+- **Soft:** clustered near the center.
+- **Hard:** pushed to the edges.
+- **Stacked:** octave and fifth layers, each slightly detuned.
+- **Random:** fixed seeded offsets.
+
+The mode is a patch setting. The seed does not change it.
+
 ## 7. Build order (D36)
 
 Each step is tested before the next one starts.
