@@ -29,6 +29,8 @@ With Nix:
 
 ```sh
 nix build                # result/lib/clap/mesh vst.clap, result/lib/vst3/mesh vst.vst3
+nix build .#windows       # Windows bundles, cross-compiled (mingw-w64, system DLLs only)
+nix build .#release       # zips of the Linux and Windows bundles
 nix flake check          # unit tests, clippy, clap-validator, end-to-end suite in a headless host
 nix run .#e2e -- ~/Music/samples   # the end-to-end suite against a real library (read only)
 nix run .#screenshot -- editor.png   # the editor on a virtual X server, playing a demo note
@@ -41,8 +43,9 @@ cargo xtask bundle mesh-vst --release   # target/bundled/mesh vst.clap and .vst3
 cargo test -p mesh-vst-core             # generator, sampler and player tests
 ```
 
-Copy the bundles to `~/.clap` and `~/.vst3` (Linux) or `%COMMONPROGRAMFILES%\CLAP` and
-`%COMMONPROGRAMFILES%\VST3` (Windows).
+Copy the bundles to `~/.clap` and `~/.vst3` (Linux) or `C:\Program Files\Common Files\CLAP` and
+`C:\Program Files\Common Files\VST3` (Windows). The Linux bundles are built by Nix and link against
+its libraries; on other distributions they need a glibc at least as new as nixpkgs'.
 
 Single renders without a DAW:
 

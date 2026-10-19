@@ -60,6 +60,8 @@
         # The CLAP and VST3 bundles, built by the nice-plug bundler.
         plugin = craneLib.mkCargoDerivation (common // {
           inherit cargoArtifacts;
+          CARGO_PROFILE_RELEASE_DEBUG = "0";
+          CARGO_PROFILE_RELEASE_STRIP = "symbols";
           doInstallCargoArtifacts = false;
           buildPhaseCargoCommand = "cargo xtask bundle mesh-vst --release";
           installPhaseCommand = ''
@@ -98,6 +100,39 @@
           echo "$out"
         '';
 
+        # Windows bundles, cross-compiled with mingw-w64.
+        mingw = pkgs.pkgsCross.mingwW64;
+        windows = craneLib.mkCargoDerivation {
+          inherit src dummySrc;
+          pname = "mesh-vst-windows";
+          version = "0.1.0";
+          CARGO_PROFILE_RELEASE_DEBUG = "0";
+          CARGO_PROFILE_RELEASE_STRIP = "symbols";
+          strictDeps = true;
+          doCheck = false;
+          cargoArtifacts = null;
+          doInstallCargoArtifacts = false;
+          depsBuildBuild = [ mingw.stdenv.cc ];
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "${mingw.stdenv.cc}/bin/${mingw.stdenv.cc.targetPrefix}cc";
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS = "-L native=${mingw.windows.pthreads}/lib";
+          buildPhaseCargoCommand = "cargo xtask bundle mesh-vst --release --target x86_64-pc-windows-gnu";
+          installPhaseCommand = ''
+            mkdir -p $out/clap $out/vst3
+            cp -r "target/bundled/mesh vst.clap" $out/clap/
+            cp -r "target/bundled/mesh vst.vst3" $out/vst3/
+          '';
+        };
+
+        # Release archives: CLAP and VST3 bundles per platform.
+        release = pkgs.runCommand "mesh-vst-release" { nativeBuildInputs = [ pkgs.zip ]; } ''
+          mkdir -p $out work/linux work/windows
+          cp -r "${plugin}/lib/clap/mesh vst.clap" "${plugin}/lib/vst3/mesh vst.vst3" work/linux/
+          cp -r "${windows}/clap/mesh vst.clap" "${windows}/vst3/mesh vst.vst3" work/windows/
+          chmod -R u+w work
+          (cd work/linux && zip -qr $out/mesh-vst-linux-x86_64.zip .)
+          (cd work/windows && zip -qr $out/mesh-vst-windows-x86_64.zip .)
+        '';
+
         hostcheck = craneLib.buildPackage (common // {
           inherit cargoArtifacts;
           pname = "hostcheck";
@@ -116,10 +151,11 @@
         packages = {
           default = plugin;
           mesh-vst = plugin;
-          inherit hostcheck clap-validator standalone;
+          inherit hostcheck clap-validator standalone windows release;
         };
 
         checks = {
+          inherit windows;
           # Debug profile: the RT tests count allocations, which needs debug assertions.
           tests = craneLib.cargoTest (common // {
             CARGO_PROFILE = "dev";

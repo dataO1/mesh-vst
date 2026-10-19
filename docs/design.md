@@ -469,6 +469,14 @@ Each step is tested before the next one starts.
     channels stay in range and follow the hits.
   - **Gap.** Reassigning channels to other sources needs a settings UI (G10).
 
+- **M7 (2026-10-19).**
+  - **Windows.** Bundles cross-compile with mingw-w64 in the flake (`nix build .#windows`, also a
+    check). They import only Windows system DLLs and are stripped to 24 MB.
+  - **Release.** `nix build .#release` zips the Linux and Windows CLAP and VST3 bundles.
+  - **Untested.** Neither has run in a Windows DAW yet. The Linux bundles need a recent glibc
+    outside NixOS.
+  - **macOS.** Later (D2).
+
 ## 9. Research R5: automation in the host (2026-10-19)
 
 No CLAP (1.2.10), VST3 (3.8.1) or ARA API lets a plugin write automation points or clips into a
