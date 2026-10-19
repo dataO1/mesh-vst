@@ -128,7 +128,8 @@ drive external effects.
   state. The first four are velocity, accent/stab, amp envelope and filter envelope; the full
   list is to be discussed. The user maps a channel once through the DAW's own follower (R4).
   Live needs one audio track per used channel plus a Max for Live Envelope Follower (Suite or
-  the add-on). Studio One has no path. Proven by test spike S2 before it is built in. The
+  the add-on). Studio One has no path. No test spike: it is built to spec, and if it fails in
+  practice the mechanism changes. The
   bass voice keeps its own filter and drive, and there are no other built-in effects.
 - **D33** UI layout (artifact "mesh vst UI"): a fixed global top bar (logo, mode, key from note,
   host tempo, sound and pattern seed with dice and lock, favorite, undo/redo, library,
@@ -136,14 +137,28 @@ drive external effects.
   in Mesh live). Shared pattern controls on the left, mode controls on the right, a square
   visual in the middle, and a footer strip. Font: Share Tech Mono, display font Major Mono
   Display, Mesh live palette.
-  - **Bass:** the visual is a 100×100 point cloud. Rows are 100 frequency bins (low at the
-    bottom). Each row lights dots from the left in proportion to that bin's level. Hits shake
-    the dots and split the colors. The footer holds the mudpie drop slot, the step row with
-    velocity, and the mod-out meters.
+  - **Bass:** the visual is a 100×100 point field in the style of Output Portal. Every point is
+    always on. Rows are 100 frequency bins (low at the bottom). Each point moves in x and y
+    along a slowly turning flow field. The distance is that bin's level, mapped over a
+    volume range in dB, so silence is a still grid and loud bins swirl. The effects follow
+    the field: brightness, point size and the red/blue split are set per point by its bin
+    level. Additive glow and short trails come on top. A file dropped anywhere on the window
+    loads as the mudpie. A full-window overlay shows while dragging, and the bottom-left slot
+    shows the result. The footer holds the mudpie slot, the step row with velocity, and the
+    mod-out meters.
   - **Drums:** the visual is a grid of scanline subcubes, one row per kit slot and one column
     per 16th. Lit subcubes show velocity, and a hit bursts its cubes outward. The footer is the
     slot strip: name, file, drop target, dice. Slots the seed leaves off (break or perc, one
     cymbal) are dimmed.
+- **D34** Mod-out default sources, each channel reassignable:
+  - Bass: 1 velocity, 2 stab, 3 amp env, 4 filter env, 5 LFO, 6 scrub position, 7 glide,
+    8 note pitch.
+  - Drums: 1 velocity, 2 accent, 3 kick, 4 snare, 5 hats, 6 cymbal, 7 break/perc, 8 fill gate.
+  - Both: 9 beat ramp, 10 bar ramp, 11 phrase position, 12 form letter, 13 effective density,
+    14 intensity, 15 mod wheel, 16 pressure.
+- **D35** Library side panel from the top bar: pools with counts, the unsorted bin, audition,
+  drag onto a slot, and library folder management. The visual runs at 30 fps or less, pauses
+  while hidden, and has a low-power static mode.
 
 ## 3. Research
 
@@ -243,9 +258,9 @@ drive external effects.
 
 ## 4. Open questions
 
-- **Q14** The internal values offered as mod-out sources, beyond the first four.
-- **Q15** S2 test plugin: DC on an aux output, mapped in Live, Bitwig, FL and Reaper on your PC.
-- **Q16** Library browser panel and shader-visual cost (Q7b, Q7c in the chat).
+- **Q17** Drums: what a drop anywhere on the window does.
+- **Q18** The full parameter list (draft in section 6).
+- **Q19** v1 milestone order.
 
 ## 5. Todo after v1
 
@@ -253,3 +268,17 @@ drive external effects.
 - Pitching tonal drums to the key (D7).
 - Velocity as timbre (R3).
 - Generic DAW key read via the VST3 chord and scale context (D11).
+
+## 6. Parameter list (draft, Q18)
+
+Automatable unless marked *state*. *State* values are saved with the project but are not DAW
+parameters.
+
+- **Shared:** Density, Intensity, Swing, Phrase (4/8/16), Phase (continuous/retrigger), Form
+  (one of the default forms; a custom form string is *state*), Scale, Bend range, Output gain.
+  Mode, both seeds and their locks, and the mod-out source assignments are *state*.
+- **Drums:** Choke, Ghost notes, Loop gate, Velocity range, Fills, plus a level per slot (×7).
+  Slot samples are *state*.
+- **Bass:** Cutoff, Resonance, Filter env depth, Filter env decay, Stab drive, Scrub, LFO rate,
+  LFO depth, Vibrato, Glide time, New root (glide/retrigger), Amp attack, Amp release. The
+  mudpie is *state*.
