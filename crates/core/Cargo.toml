@@ -1,0 +1,20 @@
+[package]
+name = "mesh-vst-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Seeded pattern generators and sampler voice of mesh vst"
+
+[dependencies]
+basedrop = "0.1"
+log = "0.4"
+thiserror = "2.0"
+bytemuck = { version = "1.21", features = ["derive"] }
+hound = "3.5"
+midly = "0.5"
+rubato = "0.16"
+symphonia = { version = "0.5", features = ["flac", "aiff", "pcm", "wav"] }
+
+[dev-dependencies]
+assert_no_alloc = { version = "1.1", features = ["warn_debug"] }
+tempfile = "3"

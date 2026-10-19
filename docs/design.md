@@ -320,3 +320,24 @@ Each step is tested before the next one starts.
 5. **M5** Visuals: point field (dots for Bass, lines in subgrids for Drums) and the low-power mode.
 6. **M6** Mod-out aux channels.
 7. **M7** Linux and Windows builds and a release.
+
+## 8. Progress
+
+- **M1 done (2026-10-19).** The `mesh-vst-core` crate holds the Mesh generators (drums, bass,
+  forms, layout), the sampler and three new modules:
+  - `pattern` renders one bar purely from seeds, form and parameters, without allocating.
+  - `player` fires a bar at sample-accurate offsets from the host song position, with the note
+    gate, the next-16th close and retrigger phase.
+  - `kit` builds the drum and mudpie banks.
+
+  227 tests pass. Output is identical at any block size and allocation-free. The
+  `examples/render` tool writes WAVs from real samples.
+
+  Gaps found, all for later milestones:
+  - **G1** Break loops play at their own speed. The tempo resampling of D29 needs the loop's
+    tempo, from its length or filename (M3), applied as slice pitch in the player.
+  - **G2** Samples are not loudness-normalized, so a render can peak above 0 dBFS. Normalize
+    at load like Mesh does (M3).
+  - **G3** A bass instance does not hear the drums. Mesh's bass followed the drum lane's kicks,
+    so its kick-follow behavior is off here.
+  - **G4** Break slice types are an amen template until onset slicing exists (todo).
