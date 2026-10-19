@@ -13,6 +13,9 @@ bytemuck = { version = "1.21", features = ["derive"] }
 hound = "3.5"
 midly = "0.5"
 rubato = "0.16"
+realfft = "3.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 symphonia = { version = "0.5", features = ["flac", "aiff", "pcm", "wav"] }
 
 [dev-dependencies]

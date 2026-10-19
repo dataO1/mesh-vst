@@ -25,7 +25,15 @@ FOSS, pay what you want. GPL-3.0-or-later, see [LICENSE](LICENSE).
 
 ## Building
 
-Inside the Nix devshell (`nix develop`):
+With Nix:
+
+```sh
+nix build                # result/lib/clap/mesh vst.clap, result/lib/vst3/mesh vst.vst3
+nix flake check          # tests, clippy, clap-validator, a headless host playing both modes
+nix run .#hostcheck -- "result/lib/clap/mesh vst.clap" --mode bass --out bass.wav
+```
+
+Inside the devshell (`nix develop`):
 
 ```sh
 cargo xtask bundle mesh-vst --release   # target/bundled/mesh vst.clap and .vst3

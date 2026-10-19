@@ -207,7 +207,7 @@ fn decode_file(path: &Path) -> Result<(Vec<f32>, usize, u32), AudioFileError> {
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("wav"));
     if is_wav {
-        let reader = hound::WavReader::open(path).map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        let Ok(reader) = hound::WavReader::open(path) else { return decode_wav_tolerant(path) };
         let spec = reader.spec();
         let samples: Result<Vec<f32>, _> = match spec.sample_format {
             hound::SampleFormat::Float => reader.into_samples::<f32>().collect(),
@@ -216,8 +216,10 @@ fn decode_file(path: &Path) -> Result<(Vec<f32>, usize, u32), AudioFileError> {
                 reader.into_samples::<i32>().map(|s| s.map(|v| v as f32 * scale)).collect()
             }
         };
-        let samples = samples.map_err(|e| AudioFileError::Corrupted(e.to_string()))?;
-        return Ok((samples, spec.channels as usize, spec.sample_rate));
+        return match samples {
+            Ok(s) => Ok((s, spec.channels as usize, spec.sample_rate)),
+            Err(_) => decode_wav_tolerant(path),
+        };
     }
 
     use symphonia::core::audio::SampleBuffer;
@@ -268,6 +270,64 @@ fn decode_file(path: &Path) -> Result<(Vec<f32>, usize, u32), AudioFileError> {
     Ok((out, channels, rate))
 }
 
+
+/// Decode a file to mono, reading at most `max_secs` of it. Returns the
+/// samples, their rate and the whole file's length in seconds.
+pub fn decode_mono(path: &Path, max_secs: f32) -> Result<(Vec<f32>, u32, f32), AudioFileError> {
+    let (interleaved, channels, rate) = decode_file(path)?;
+    let channels = channels.max(1);
+    let frames = interleaved.len() / channels;
+    let keep = frames.min((max_secs * rate as f32) as usize);
+    let mono = interleaved.chunks_exact(channels).take(keep).map(|c| c.iter().sum::<f32>() / channels as f32).collect();
+    Ok((mono, rate, frames as f32 / rate.max(1) as f32))
+}
+
+/// A WAV whose header declares more data than the file holds (S1 found
+/// 0.8 % of a library like that) or that `hound` rejects otherwise: read the
+/// `fmt ` and `data` chunks by hand and keep what is there.
+fn decode_wav_tolerant(path: &Path) -> Result<(Vec<f32>, usize, u32), AudioFileError> {
+    let b = std::fs::read(path).map_err(|e| AudioFileError::IoError(e.to_string()))?;
+    let bad = || AudioFileError::Corrupted("unreadable WAV".into());
+    if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        return Err(AudioFileError::InvalidFormat("not a RIFF WAVE file".into()));
+    }
+    let u16_at = |p: usize| b.get(p..p + 2).map(|s| u16::from_le_bytes([s[0], s[1]]));
+    let u32_at = |p: usize| b.get(p..p + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]));
+    let (mut p, mut fmt, mut data) = (12usize, None, None);
+    while p + 8 <= b.len() {
+        let id = &b[p..p + 4];
+        let size = u32_at(p + 4).ok_or_else(bad)? as usize;
+        let body = p + 8;
+        if id == b"fmt " {
+            fmt = Some((u16_at(body).ok_or_else(bad)?, u16_at(body + 2).ok_or_else(bad)?, u32_at(body + 4).ok_or_else(bad)?, u16_at(body + 14).ok_or_else(bad)?));
+        } else if id == b"data" {
+            data = Some((body, size.min(b.len() - body)));
+            break;
+        }
+        p = body + size + (size & 1);
+    }
+    let ((tag, channels, rate, bits), (off, len)) = (fmt.ok_or_else(bad)?, data.ok_or_else(bad)?);
+    let width = (bits / 8) as usize;
+    if channels == 0 || width == 0 {
+        return Err(bad());
+    }
+    let n = len / width;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let q = off + i * width;
+        let s = &b[q..q + width];
+        out.push(match (tag, bits) {
+            (3, 32) | (0xFFFE, 32) if tag == 3 => f32::from_le_bytes([s[0], s[1], s[2], s[3]]),
+            (_, 8) => (s[0] as f32 - 128.0) / 128.0,
+            (_, 16) => i16::from_le_bytes([s[0], s[1]]) as f32 / 32768.0,
+            (_, 24) => ((((s[0] as i32) << 8) | ((s[1] as i32) << 16) | ((s[2] as i32) << 24)) >> 8) as f32 / 8_388_608.0,
+            (_, 32) => i32::from_le_bytes([s[0], s[1], s[2], s[3]]) as f32 / 2_147_483_648.0,
+            _ => return Err(AudioFileError::InvalidFormat(format!("{bits}-bit WAV"))),
+        });
+    }
+    out.truncate(out.len() / channels as usize * channels as usize);
+    Ok((out, channels as usize, rate))
+}
 /// One playable region of a sample, addressed by an event `target`.
 #[derive(Clone)]
 pub struct SlotDef {

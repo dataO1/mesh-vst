@@ -1,5 +1,36 @@
 {
   "nodes": {
+    "clap-validator-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1784878294,
+        "narHash": "sha256-PHEHvAFhEGtFrvy+b6QwsoMUAmoNjC0ctJPAQx/mHcE=",
+        "owner": "free-audio",
+        "repo": "clap-validator",
+        "rev": "b2f1d9b79b1d264a5747f46707d72b1aa40a02ef",
+        "type": "github"
+      },
+      "original": {
+        "owner": "free-audio",
+        "repo": "clap-validator",
+        "type": "github"
+      }
+    },
+    "crane": {
+      "locked": {
+        "lastModified": 1792350552,
+        "narHash": "sha256-292lvpvxTGKryKxh3/3tcIVi85CwYGdl4oOi113Sob8=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "e675a36b7377bebe41d548388a2501cbb16d380d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -36,6 +67,8 @@
     },
     "root": {
       "inputs": {
+        "clap-validator-src": "clap-validator-src",
+        "crane": "crane",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay"
