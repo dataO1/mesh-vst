@@ -92,7 +92,7 @@
           set -eu
           out="$(realpath -m "''${1:-mesh-vst.png}")"
           export MESH_VST_DEMO_MODE="''${2:-drums}"
-          if [ "''${3:-}" = drag ]; then export MESH_VST_DEMO_DRAG=1; fi
+          export MESH_VST_DEMO_VIEW="''${3:-}"
           export HOME="$(mktemp -d)" XDG_CACHE_HOME="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)"
           export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (libs ++ [ pkgs.mesa ])}"
           export LIBGL_ALWAYS_SOFTWARE=1
@@ -186,7 +186,7 @@
         };
 
         apps = {
-          # A screenshot of the editor: nix run .#screenshot -- out.png [drums|bass] [drag]
+          # A screenshot of the editor: nix run .#screenshot -- out.png [drums|bass] [drag|settings|library]
           screenshot = { type = "app"; program = toString screenshot; };
           # The same scenarios against a real library folder (read only):
           #   nix run .#e2e -- ~/Music/samples [out dir]

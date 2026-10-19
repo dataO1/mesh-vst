@@ -815,3 +815,56 @@ fn tone_shifts_a_phrase_curve_and_expression_scales_the_envelope() {
     };
     assert!(sweep(1.0) > sweep(0.0) * 4.0, "{} vs {}", sweep(0.0), sweep(1.0));
 }
+
+#[test]
+fn unison_starts_detuned_copies_at_equal_loudness() {
+    use super::unison::{Unison, UnisonMode};
+    let make = |voices: u8| {
+        let mut s = sampler(vec![(0, SlotDef::whole(sine(220.0, 2.0, 57)))], 64);
+        s.set_params(LaneSamplerParams {
+            unison: Unison { voices, detune_cents: 30.0, mode: UnisonMode::Linear, seed: 3 },
+            ..flat_params()
+        });
+        s
+    };
+    let rms = |x: &[StereoSample]| (x.iter().map(|s| s.left * s.left + s.right * s.right).sum::<f32>() / x.len() as f32).sqrt();
+    let (mut wide, mut copies) = (0usize, 0usize);
+    let (mut on, mut off) = (0.0f32, 0.0f32);
+    for id in 0..40u16 {
+        let mut u = make(8);
+        u.handle_event(&note_on(57, id), 0);
+        let a = render(&mut u, 72_000, 10_000.0);
+        let n = u.voices_active();
+        copies = copies.max(n);
+        if n > 1 {
+            wide += 1;
+        }
+        let mut s = make(1);
+        s.handle_event(&note_on(57, id), 0);
+        let b = render(&mut s, 72_000, 10_000.0);
+        on += rms(&a);
+        off += rms(&b);
+    }
+    assert!(wide > 10 && copies >= 4, "{wide} wide notes, up to {copies} copies");
+    // Uncorrelated copies at 1/√N: the same loudness on average (within 2 dB).
+    let db = 20.0 * (on / off).log10();
+    assert!(db.abs() < 2.0, "{db:.2} dB");
+}
+
+#[test]
+fn choke_amount_shortens_instead_of_cutting() {
+    let tail = |amount: f32| {
+        let mut s = sampler(vec![(0, SlotDef::whole(dc(0.5, 48_000)).with_choke(2)), (1, SlotDef::whole(dc(0.25, 48_000)).with_choke(2))], 8);
+        s.set_params(LaneSamplerParams { choke_amount: amount, ..flat_params() });
+        s.handle_event(&trig(0), 0);
+        render(&mut s, 4800, 100.0);
+        s.handle_event(&trig(1), 0);
+        let out = render(&mut s, 9600, 100.0);
+        // The first hit's level left 30 ms after the second (above its 0.25).
+        out[1440].left - 0.25
+    };
+    assert!(tail(1.0) < 0.01, "full cut");
+    assert!(tail(0.0) > 0.49, "no choke");
+    let half = tail(0.5);
+    assert!(half > 0.05 && half < 0.49, "partly: {half}");
+}

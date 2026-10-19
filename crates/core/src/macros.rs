@@ -173,6 +173,8 @@ fn apply_drums(v: &Knobs, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
     p.sustain = lerp(0.35, 1.0, v.shape);
     p.decay = lerp(0.12, 0.8, v.shape);
     p.release = lerp(0.02, 0.15, v.shape);
+    // The choke amount follows Shape: tight cuts, open lets the hats ring (D27).
+    p.choke_amount = lerp(1.0, 0.2, v.shape);
 }
 
 // MUSICAL: from Mesh live's bass lane (shape, morph, spread, slide), the

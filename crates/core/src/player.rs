@@ -33,6 +33,16 @@ pub struct Transport {
     pub bpm: f64,
 }
 
+/// What a new held note does to the sounding bass (D10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NewRoot {
+    /// The pattern's next notes glide over from the held voice.
+    #[default]
+    Glide,
+    /// The sounding notes stop; the pattern restarts its line at the new root.
+    Retrigger,
+}
+
 /// Where bar 0 of the pattern is (design D8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Phase {
@@ -60,6 +70,7 @@ pub struct Player {
     sampler: Sampler,
     sample_rate: f64,
     pub phase: Phase,
+    pub new_root: NewRoot,
     /// Scale family of the root: minor or major.
     pub minor: bool,
     gate: Option<Gate>,
@@ -93,6 +104,7 @@ impl Player {
             sampler,
             sample_rate,
             phase: Phase::default(),
+            new_root: NewRoot::default(),
             minor: true,
             gate: None,
             until: None,
@@ -149,6 +161,10 @@ impl Player {
             (Phase::Retrigger, Some(g)) if g.close_at.is_infinite() => g.origin,
             (Phase::Retrigger, _) => (tick / TICKS_PER_STEP as f64).round() * TICKS_PER_STEP as f64,
         };
+        let changed = self.gate.is_some_and(|g| g.close_at.is_infinite() && g.key % 12 != key % 12);
+        if changed && self.new_root == NewRoot::Retrigger && self.lane.role() != Role::Drums {
+            self.sampler.handle_event(&LiveEvent { kind: EventKind::Choke, ..Default::default() }, 0);
+        }
         self.gate = Some(Gate { key, vel: vel.clamp(0.0, 1.0), origin, close_at: f64::INFINITY });
     }
 
@@ -440,6 +456,34 @@ mod tests {
         }
         let diff = out.iter().zip(&ref_audio).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
         assert!(diff < 1e-4, "bar 0 again: {diff}");
+    }
+
+    #[test]
+    fn a_new_root_retriggers_or_glides() {
+        for (mode, cut) in [(NewRoot::Retrigger, true), (NewRoot::Glide, false)] {
+            let mut p = bass_player(6);
+            p.new_root = mode;
+            p.note_on(41, 1.0, 0.0);
+            let bpm = 150.0;
+            let mut buf = vec![StereoSample::silence(); 256];
+            let mut pos = 0usize;
+            // Play until a note sounds.
+            while p.sampler().voices_active() == 0 && pos < 48_000 * 4 {
+                let beat = pos as f64 * bpm / 60.0 / SR as f64;
+                p.process(&mut buf, &Transport { playing: true, beat, bpm });
+                pos += 256;
+            }
+            let before = p.sampler().voices_active();
+            assert!(before > 0);
+            p.note_on(43, 1.0, pos as f64 * bpm / 60.0 / SR as f64 * TICKS_PER_BEAT);
+            // One short block, before the next 16th: only the choke acts.
+            let beat = pos as f64 * bpm / 60.0 / SR as f64;
+            p.process(&mut buf[..16], &Transport { playing: true, beat, bpm });
+            let mut quiet = vec![StereoSample::silence(); 960];
+            p.process(&mut quiet, &Transport { playing: false, beat, bpm });
+            let level = quiet[900..].iter().map(|s| s.left.abs()).fold(0.0, f32::max);
+            assert_eq!(level < 1e-4, cut, "{mode:?}: {level}");
+        }
     }
 
     #[test]

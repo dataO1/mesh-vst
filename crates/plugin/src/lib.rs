@@ -13,8 +13,8 @@ use mesh_vst_core::kit::{mudpie_bank, share};
 use mesh_vst_core::macros::{self, Centers, Knobs, LaneSettings};
 use mesh_vst_core::modout::{self, BlockInfo, ModOut};
 use mesh_vst_core::pattern::PatternLane;
-use mesh_vst_core::player::{Phase, Player, Transport, TICKS_PER_BEAT};
-use mesh_vst_core::sampler::{LaneSamplerParams, Sampler};
+use mesh_vst_core::player::{NewRoot, Phase, Player, Transport, TICKS_PER_BEAT};
+use mesh_vst_core::sampler::{LaneSamplerParams, Sampler, Unison, UnisonMode};
 use mesh_vst_core::types::StereoSample;
 use nice_plug::prelude::*;
 
@@ -25,14 +25,14 @@ pub mod ui;
 pub mod visual;
 pub mod worker;
 
-use params::{MeshParams, Mode, PhaseMode, BEND_RANGES};
+use params::{MeshParams, Mode, NewRootMode, PhaseMode, UnisonSpread, BEND_RANGES, SEEDED_BEND_BASS, SEEDED_BEND_DRUMS};
 use worker::{Garbage, Ready, Request, Worker};
 
 /// Tempo when the host gives none.
 const DEFAULT_BPM: f64 = 120.0;
 /// Sampler voices per mode.
 pub(crate) const DRUM_VOICES: usize = 48;
-pub(crate) const BASS_VOICES: usize = 16;
+pub(crate) const BASS_VOICES: usize = 48;
 // MUSICAL: gains of the built-in sounds until their first calibration lands
 // (a few hundred ms after loading), measured near the target.
 /// Environment variable that makes the plugin hold a note from activation
@@ -69,6 +69,11 @@ struct Settings {
     lane: LaneSettings,
     minor: bool,
     phase: Phase,
+    phrase_bars: u32,
+    new_root: NewRoot,
+    unison: Unison,
+    /// Channel or MPE pressure, in 1/64 steps (it drives the stab drive).
+    pressure: u8,
 }
 
 /// What the loudness calibration depends on: the samples, seeds, form and
@@ -168,6 +173,24 @@ impl MeshVst {
                 PhaseMode::Continuous => Phase::Continuous,
                 PhaseMode::Retrigger => Phase::Retrigger,
             },
+            phrase_bars: p.phrase.value().bars(),
+            new_root: match p.new_root.value() {
+                NewRootMode::Glide => NewRoot::Glide,
+                NewRootMode::Retrigger => NewRoot::Retrigger,
+            },
+            unison: Unison {
+                voices: p.unison_voices.value().clamp(1, 8) as u8,
+                detune_cents: p.unison_detune.value(),
+                mode: match p.unison_mode.value() {
+                    UnisonSpread::Linear => UnisonMode::Linear,
+                    UnisonSpread::Soft => UnisonMode::Soft,
+                    UnisonSpread::Hard => UnisonMode::Hard,
+                    UnisonSpread::Stacked => UnisonMode::Stacked,
+                    UnisonSpread::Random => UnisonMode::Random,
+                },
+                seed: p.sound_seed.value() as u32,
+            },
+            pressure: (self.pressure * 64.0).round() as u8,
         }
     }
 
@@ -272,25 +295,49 @@ impl MeshVst {
         let Some(lane) = self.lane_mut(mode) else { return };
         let base = lane.base;
         let role = lane.player.lane().role();
-        let sp = macros::configure(lane.player.lane_mut(), base, &s.lane);
+        let mut sp = macros::configure(lane.player.lane_mut(), base, &s.lane);
+        if role != mesh_vst_core::role::Role::Drums {
+            sp.unison = s.unison;
+        }
+        // Pressure drives the drive (D24): the stab punch, the drum accents.
+        let pressure = s.pressure as f32 / 64.0;
+        sp.punch = (sp.punch + 0.8 * pressure).min(1.5);
+        sp.accent_gain *= 1.0 + 0.5 * pressure;
         let resolved = Centers::of(role, s.lane.pattern_seed, s.lane.sound_seed).resolve(&s.lane.knobs);
         self.resolved = resolved;
         let Some(lane) = self.lane_mut(mode) else { return };
         lane.player.minor = s.minor;
         lane.player.phase = s.phase;
+        lane.player.new_root = s.new_root;
+        lane.player.lane_mut().phrase_bars = s.phrase_bars;
         lane.player.sampler_mut().set_params(sp);
         self.applied = Some((mode, s));
     }
 
+    /// Pitch bend range in semitones: the setting, or the pattern seed's pick
+    /// for the mode (D24).
+    fn bend_range(&self, mode: Mode) -> i32 {
+        let v = self.params.bend_range.value();
+        if v > 0 {
+            return BEND_RANGES[(v as usize - 1).min(BEND_RANGES.len() - 1)];
+        }
+        let seed = self.params.pattern_seed.value() as u64;
+        let pick = |t: &[i32]| t[(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 59) as usize % t.len()];
+        match mode {
+            Mode::Drums => pick(&SEEDED_BEND_DRUMS),
+            Mode::Bass => pick(&SEEDED_BEND_BASS),
+        }
+    }
+
     /// Handle one note or controller event at song tick `tick`.
     fn handle(&mut self, mode: Mode, ev: NoteEvent<()>, tick: f64, playing: bool) {
-        let bend_range = BEND_RANGES[self.params.bend_range.value().clamp(0, 6) as usize];
+        let bend_range = self.bend_range(mode);
         if matches!(ev, NoteEvent::NoteOn { .. }) && !playing && !self.lane_mut(mode).is_some_and(|l| l.player.is_gated()) {
             // A note with the transport stopped starts the free clock.
             self.free_beat = 0.0;
             self.free_running = true;
         }
-        if let NoteEvent::MidiChannelPressure { pressure, .. } = ev {
+        if let NoteEvent::MidiChannelPressure { pressure, .. } | NoteEvent::PolyPressure { pressure, .. } = ev {
             self.pressure = pressure;
             return;
         }
@@ -312,6 +359,11 @@ impl MeshVst {
                 }
             }
             NoteEvent::Choke { .. } => lane.player.sampler_mut().reset_voices(),
+            // MPE per-note pitch acts as pitch bend (D24).
+            NoteEvent::PolyTuning { tuning, .. } => {
+                let cents = (tuning * 100.0).round().clamp(-12_000.0, 12_000.0) as i16;
+                lane.player.sampler_mut().handle_event(&LiveEvent { kind: EventKind::Bend, cents, ..Default::default() }, 0);
+            }
             NoteEvent::MidiPitchBend { value, .. } => {
                 let cents = ((value - 0.5) * 2.0 * bend_range as f32 * 100.0).round() as i16;
                 lane.player.sampler_mut().handle_event(&LiveEvent { kind: EventKind::Bend, cents, ..Default::default() }, 0);
@@ -372,6 +424,11 @@ impl MeshVst {
                     pressure: self.pressure,
                     lfo_hz,
                 };
+                for c in 0..modout::CHANNELS {
+                    let at = |m: usize| modout::Source::ALL[self.ui.mod_map[m][c].load(std::sync::atomic::Ordering::Relaxed) as usize % modout::SOURCES];
+                    self.modout.map_bass[c] = at(0);
+                    self.modout.map_drums[c] = at(1);
+                }
                 self.modout.render(role, fired, &info, &mut chans);
             }
         }
@@ -432,6 +489,9 @@ impl Plugin for MeshVst {
         let sr = config.sample_rate.round() as u32;
         self.buf = vec![StereoSample::silence(); config.max_buffer_size as usize];
         self.modout = ModOut::new(config.sample_rate);
+        if let Ok(u) = self.params.ui.lock() {
+            self.ui.load_mod_map(&u);
+        }
 
         let (layout, bank) = builtin::drum_kit(sr).build();
         let mut sampler = Sampler::new(sr, DRUM_VOICES);

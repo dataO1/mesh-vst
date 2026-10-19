@@ -92,6 +92,13 @@ pub fn cache_file() -> Option<PathBuf> {
     dirs::cache_dir().map(|d| d.join("mesh-vst").join("library.json"))
 }
 
+/// Save the per-machine settings.
+pub fn save_settings(s: &Settings) -> std::io::Result<()> {
+    let dir = config_dir().ok_or_else(|| std::io::Error::other("no config directory"))?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("settings.json"), serde_json::to_vec_pretty(s)?)
+}
+
 /// Library folders: the environment variable, else the settings file.
 pub fn library_folders() -> Vec<PathBuf> {
     if let Some(v) = std::env::var_os(LIBRARY_ENV) {

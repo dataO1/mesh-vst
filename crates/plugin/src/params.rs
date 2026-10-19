@@ -89,6 +89,47 @@ impl Rate {
 
 /// Pitch bend ranges in semitones (D24).
 pub const BEND_RANGES: [i32; 7] = [1, 3, 5, 7, 12, 19, 24];
+/// Ranges the seed picks from for its default (D24), per mode.
+pub const SEEDED_BEND_DRUMS: [i32; 3] = [12, 19, 24];
+pub const SEEDED_BEND_BASS: [i32; 5] = [1, 3, 5, 7, 12];
+
+/// Bars of a phrase (D25).
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phrase {
+    #[name = "4 bars"]
+    Four,
+    #[name = "8 bars"]
+    Eight,
+    #[name = "16 bars"]
+    Sixteen,
+}
+
+impl Phrase {
+    pub fn bars(self) -> u32 {
+        match self {
+            Phrase::Four => 4,
+            Phrase::Eight => 8,
+            Phrase::Sixteen => 16,
+        }
+    }
+}
+
+/// What a new held note does (D10).
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewRootMode {
+    Glide,
+    Retrigger,
+}
+
+/// How unison copies spread (D38).
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnisonSpread {
+    Linear,
+    Soft,
+    Hard,
+    Stacked,
+    Random,
+}
 /// Highest seed value.
 pub const MAX_SEED: i32 = 9999;
 
@@ -129,6 +170,16 @@ pub struct MeshParams {
     pub rate: EnumParam<Rate>,
     #[id = "bend_range"]
     pub bend_range: IntParam,
+    #[id = "phrase"]
+    pub phrase: EnumParam<Phrase>,
+    #[id = "new_root"]
+    pub new_root: EnumParam<NewRootMode>,
+    #[id = "unison_voices"]
+    pub unison_voices: IntParam,
+    #[id = "unison_detune"]
+    pub unison_detune: FloatParam,
+    #[id = "unison_mode"]
+    pub unison_mode: EnumParam<UnisonSpread>,
     #[id = "gain"]
     pub gain: FloatParam,
 
@@ -172,12 +223,24 @@ impl Default for MeshParams {
             phase: EnumParam::new("Phase", PhaseMode::Continuous).non_automatable(),
             scale: EnumParam::new("Scale", Scale::Minor).non_automatable(),
             rate: EnumParam::new("Rate", Rate::Normal),
-            bend_range: setting(IntParam::new("Bend range", 4, IntRange::Linear { min: 0, max: BEND_RANGES.len() as i32 - 1 }))
-                .with_value_to_string(std::sync::Arc::new(|v| format!("{} st", BEND_RANGES[v.clamp(0, 6) as usize])))
+            // 0 = the seed picks; 1.. = BEND_RANGES.
+            bend_range: setting(IntParam::new("Bend range", 0, IntRange::Linear { min: 0, max: BEND_RANGES.len() as i32 }))
+                .with_value_to_string(std::sync::Arc::new(|v| if v <= 0 { "seed".into() } else { format!("{} st", BEND_RANGES[(v as usize - 1).min(6)]) }))
                 .with_string_to_value(std::sync::Arc::new(|s| {
+                    if s.trim() == "seed" {
+                        return Some(0);
+                    }
                     let st: i32 = s.trim().trim_end_matches("st").trim().parse().ok()?;
-                    BEND_RANGES.iter().position(|&r| r == st).map(|i| i as i32)
+                    BEND_RANGES.iter().position(|&r| r == st).map(|i| i as i32 + 1)
                 })),
+            phrase: EnumParam::new("Phrase", Phrase::Eight).non_automatable(),
+            new_root: EnumParam::new("New root", NewRootMode::Glide).non_automatable(),
+            unison_voices: setting(IntParam::new("Unison voices", 4, IntRange::Linear { min: 1, max: 8 })),
+            unison_detune: FloatParam::new("Unison detune", 25.0, FloatRange::Linear { min: 0.0, max: 60.0 })
+                .with_unit(" ct")
+                .with_step_size(0.5)
+                .non_automatable(),
+            unison_mode: EnumParam::new("Unison mode", UnisonSpread::Linear).non_automatable(),
             gain: FloatParam::new(
                 "Gain",
                 util::db_to_gain(0.0),

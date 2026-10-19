@@ -33,6 +33,8 @@ pub struct UiShared {
     /// The plugin's mono output for the visual, while the editor is open.
     pub audio: std::sync::Mutex<Option<rtrb::Consumer<f32>>>,
     pub sample_rate: AtomicU32,
+    /// Mod-out source per channel (index into `Source::ALL`), bass then drums.
+    pub mod_map: [[AtomicU8; mesh_vst_core::modout::CHANNELS]; 2],
 }
 
 impl Default for UiShared {
@@ -49,6 +51,10 @@ impl Default for UiShared {
             notifier: PollSubNotifier::new(),
             audio: std::sync::Mutex::new(None),
             sample_rate: AtomicU32::new(48_000),
+            mod_map: [
+                std::array::from_fn(|c| AtomicU8::new(source_index(mesh_vst_core::modout::DEFAULT_BASS[c]))),
+                std::array::from_fn(|c| AtomicU8::new(source_index(mesh_vst_core::modout::DEFAULT_DRUMS[c]))),
+            ],
         }
     }
 }
@@ -91,6 +97,24 @@ impl UiShared {
     }
 }
 
+/// Index of a source in `Source::ALL`.
+pub fn source_index(s: mesh_vst_core::modout::Source) -> u8 {
+    mesh_vst_core::modout::Source::ALL.iter().position(|x| *x == s).unwrap_or(0) as u8
+}
+
+impl UiShared {
+    /// Copy a saved mapping into the atomics the audio thread reads.
+    pub fn load_mod_map(&self, state: &UiState) {
+        use mesh_vst_core::modout::{DEFAULT_BASS, DEFAULT_DRUMS};
+        for (m, (saved, default)) in [(&state.mod_bass, DEFAULT_BASS), (&state.mod_drums, DEFAULT_DRUMS)].into_iter().enumerate() {
+            for c in 0..mesh_vst_core::modout::CHANNELS {
+                let s = saved.get(c).copied().unwrap_or(default[c]);
+                self.mod_map[m][c].store(source_index(s), Ordering::Relaxed);
+            }
+        }
+    }
+}
+
 /// Editor settings saved with the project: seed locks (D20).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
@@ -98,4 +122,7 @@ pub struct UiState {
     pub pattern_locked: bool,
     /// The step view instead of the shader field (low power, D35).
     pub low_power: bool,
+    /// Mod-out sources per channel (D34); empty = the defaults.
+    pub mod_bass: Vec<mesh_vst_core::modout::Source>,
+    pub mod_drums: Vec<mesh_vst_core::modout::Source>,
 }

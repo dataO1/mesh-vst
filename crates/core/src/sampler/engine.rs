@@ -11,9 +11,14 @@ use super::params::{
     attack_secs, decay_secs, glide_secs, LaneSamplerParams, ModConfig, ZoneMod, ZoneTarget, CHOKE_FADE_SECS, PITCH_ENV_ATTACK_SECS,
 };
 use super::voice::{BlockMod, VoiceInit, VoiceState};
+use super::unison::{Copy as UnisonCopy, Unison};
 use crate::event::{flags, EventKind, LiveEvent};
 use crate::MAX_EVENTS_PER_BAR;
 use crate::types::{StereoBuffer, StereoSample};
+
+// MUSICAL: the choke amount's longest fade, at the open end.
+/// Fade of a choke at the smallest non-zero amount.
+const CHOKE_OPEN_SECS: f32 = 0.5;
 
 /// Width of the region around the generator's position the Morph knob moves
 /// a stream's notes over, as a share of the sample (knob centre = the
@@ -462,7 +467,17 @@ impl Sampler {
     }
 
     fn choke_group(&mut self, group: u8) {
-        let fade = CHOKE_FADE_SECS * self.sr;
+        self.choke_group_by(group, 1.0);
+    }
+
+    /// Choke a group by `amount` (D27): 1 cuts in [`CHOKE_FADE_SECS`], 0 lets
+    /// the voices ring, in between fades them over a longer time.
+    fn choke_group_by(&mut self, group: u8, amount: f32) {
+        if amount <= 0.0 {
+            return;
+        }
+        let secs = CHOKE_FADE_SECS * (CHOKE_OPEN_SECS / CHOKE_FADE_SECS).powf(1.0 - amount.min(1.0));
+        let fade = secs * self.sr;
         for v in self.voices.iter_mut() {
             if v.st.active && (group == 0 || v.st.group == group) {
                 v.st.choke(fade);
@@ -515,20 +530,28 @@ impl Sampler {
         }
 
         if group != 0 {
-            self.choke_group(group);
+            // Mono groups (a mudpie) always cut; drum groups by the choke amount.
+            let amount = if mono { 1.0 } else { self.params.choke_amount };
+            self.choke_group_by(group, amount);
         }
-        for slot in layers.iter().flatten() {
-            self.start_voice(ev, slot, group, gate_ticks);
+        // Unison copies of pitched notes (D38).
+        let pitched = ev.kind == EventKind::NoteOn && layers[0].as_ref().is_some_and(|s| s.pitched);
+        let (copies, n) = if pitched { self.params.unison.copies(ev.note_id) } else { Unison::default().copies(0) };
+        for copy in &copies[..n] {
+            for slot in layers.iter().flatten() {
+                self.start_voice(ev, slot, group, gate_ticks, copy);
+            }
         }
     }
 
     /// Start one voice of a note on `slot`.
-    fn start_voice(&mut self, ev: &LiveEvent, slot: &SlotDef, group: u8, gate_ticks: f64) {
+    fn start_voice(&mut self, ev: &LiveEvent, slot: &SlotDef, group: u8, gate_ticks: f64, copy: &UnisonCopy) {
         let p = &self.params;
         let pitched = slot.pitched && ev.key != 0;
         let semis = if pitched { ev.key as f64 - slot.root_key as f64 } else { 0.0 };
         let root_rate = (-(slot.root_cents as f64) / 1200.0).exp2() * (slot.sample.sample_rate() as f64 / self.sr as f64);
-        let rate = root_rate * (semis / 12.0 + ev.cents as f64 / 1200.0).exp2();
+        let detune = copy.cents as f64;
+        let rate = root_rate * (semis / 12.0 + (ev.cents as f64 + detune) / 1200.0).exp2();
 
         let vel = (ev.vel.min(127) as f32 / 127.0).powf(p.velocity_curve);
         let accent = if ev.has(flags::ACCENT) { p.accent_gain } else { 1.0 };
@@ -567,8 +590,9 @@ impl Sampler {
                 (ev.start as f64 / u16::MAX as f64 + morph).rem_euclid(1.0).min(0.999)
             },
             rate,
-            gain: slot.gain * vel * accent,
-            pan_offset: ev.pan as f32 / 127.0 + slot.pan,
+            detune_cents: detune,
+            gain: slot.gain * vel * accent * copy.gain,
+            pan_offset: ev.pan as f32 / 127.0 + slot.pan + copy.pan,
             cutoff_offset: ev.cutoff as f32 / 127.0,
             // A gliding cutoff starts where the newest voice's is now.
             cutoff_start: if p.cutoff_glide > 0.0 {

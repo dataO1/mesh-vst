@@ -477,6 +477,25 @@ Each step is tested before the next one starts.
     outside NixOS.
   - **macOS.** Later (D2).
 
+- **Built after M7 (2026-10-19).**
+  - **Unison (D38).** Per-note seeded copies, 1 to 8, with detune and width inside the user's
+    Voices and Detune limits. They sum at equal loudness (1/√N, within 2 dB of a plain note
+    over 1.5 s). The five modes are linear, soft, hard, stacked (octaves and fifths) and random.
+    The bass footer has the widget.
+  - **Choke amount (D27).** 1 cuts in 10 ms, 0 lets the voices ring, in between fades over up
+    to 0.5 s. It follows the drums' Shape. Mono groups (mudpies) always cut.
+  - **Phrase (D25).** 4, 8 or 16 bars. The drums fill the last bar of each phrase, counted from
+    song position.
+  - **New root (D10).** Glide or retrigger. Retrigger chokes the sounding bass when the held
+    note changes its pitch class.
+  - **Pressure (D24).** Channel and MPE pressure push the stab drive and the drum accents.
+    MPE per-note pitch bends.
+  - **Bend range (D24).** A "seed" setting picks it from the mode's musical steps.
+  - **Mod-out sources (D34, closes G10).** Every channel can take any of 23 sources. The
+    mapping is saved with the project and read lock-free on the audio thread.
+  - **Settings panel.** Phrase, new root, bend range, the 16 mod-out sources, and the library
+    folders (add, remove, rescan, written to `settings.json`).
+
 ## 9. Research R5: automation in the host (2026-10-19)
 
 No CLAP (1.2.10), VST3 (3.8.1) or ARA API lets a plugin write automation points or clips into a

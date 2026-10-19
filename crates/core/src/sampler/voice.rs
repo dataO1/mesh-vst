@@ -53,6 +53,8 @@ pub(crate) struct VoiceInit {
     /// Start offset as a fraction of the slot (from the end when reversed).
     pub offset: f64,
     pub rate: f64,
+    /// Unison copy's detune, kept through glides (D38).
+    pub detune_cents: f64,
     pub gain: f32,
     pub pan_offset: f32,
     pub cutoff_offset: f32,
@@ -172,6 +174,7 @@ pub(crate) struct VoiceState {
 
     gain: f32,
     pan_offset: f32,
+    detune_cents: f64,
     cutoff_offset: f32,
     cutoff_target: f32,
     /// Slope morph 0 (6 dB/oct) .. 1 (24 dB/oct), `None` = plain 12 dB/oct.
@@ -237,6 +240,7 @@ impl Default for VoiceState {
             fade_step: 0.0,
             gain: 0.0,
             pan_offset: 0.0,
+            detune_cents: 0.0,
             cutoff_offset: 0.0,
             cutoff_target: 0.0,
             morph: None,
@@ -291,6 +295,7 @@ impl VoiceState {
             punch: v.punch,
             gain: v.gain,
             pan_offset: v.pan_offset,
+            detune_cents: v.detune_cents,
             cutoff_offset: v.cutoff_start,
             cutoff_target: v.cutoff_offset,
             ..Self::default()
@@ -405,7 +410,7 @@ impl VoiceState {
             Some(root) if key != 0 => key as f64 - root as f64,
             _ => 0.0,
         };
-        self.root_rate * (semis / 12.0 + cents / 1200.0).exp2()
+        self.root_rate * (semis / 12.0 + (cents + self.detune_cents) / 1200.0).exp2()
     }
 
     /// Tie: retarget pitch with an exponential rate ramp over `glide_samples`.

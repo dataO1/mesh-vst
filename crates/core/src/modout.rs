@@ -73,9 +73,137 @@ pub struct BlockInfo {
     pub lfo_hz: f32,
 }
 
+/// A channel's source (D34: every channel can be reassigned).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Source {
+    Velocity,
+    Accent,
+    AmpEnv,
+    FilterEnv,
+    Lfo,
+    Scrub,
+    Glide,
+    Pitch,
+    Kick,
+    Snare,
+    Hats,
+    Cymbals,
+    BreakPerc,
+    Fill,
+    BeatRamp,
+    BarRamp,
+    Phrase,
+    FormLetter,
+    Density,
+    Intensity,
+    ModWheel,
+    Pressure,
+    Off,
+}
+
+/// Sources.
+pub const SOURCES: usize = 23;
+
+impl Source {
+    pub const ALL: [Source; SOURCES] = [
+        Source::Velocity,
+        Source::Accent,
+        Source::AmpEnv,
+        Source::FilterEnv,
+        Source::Lfo,
+        Source::Scrub,
+        Source::Glide,
+        Source::Pitch,
+        Source::Kick,
+        Source::Snare,
+        Source::Hats,
+        Source::Cymbals,
+        Source::BreakPerc,
+        Source::Fill,
+        Source::BeatRamp,
+        Source::BarRamp,
+        Source::Phrase,
+        Source::FormLetter,
+        Source::Density,
+        Source::Intensity,
+        Source::ModWheel,
+        Source::Pressure,
+        Source::Off,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Source::Velocity => "velocity",
+            Source::Accent => "accent / stab",
+            Source::AmpEnv => "amp env",
+            Source::FilterEnv => "filter env",
+            Source::Lfo => "LFO",
+            Source::Scrub => "scrub",
+            Source::Glide => "glide",
+            Source::Pitch => "pitch",
+            Source::Kick => "kick",
+            Source::Snare => "snare",
+            Source::Hats => "hats",
+            Source::Cymbals => "cymbals",
+            Source::BreakPerc => "break / perc",
+            Source::Fill => "fill",
+            Source::BeatRamp => "beat ramp",
+            Source::BarRamp => "bar ramp",
+            Source::Phrase => "phrase",
+            Source::FormLetter => "form letter",
+            Source::Density => "density",
+            Source::Intensity => "intensity",
+            Source::ModWheel => "mod wheel",
+            Source::Pressure => "pressure",
+            Source::Off => "off",
+        }
+    }
+}
+
+/// D34's default sources per mode.
+pub const DEFAULT_BASS: [Source; CHANNELS] = [
+    Source::Velocity,
+    Source::Accent,
+    Source::AmpEnv,
+    Source::FilterEnv,
+    Source::Lfo,
+    Source::Scrub,
+    Source::Glide,
+    Source::Pitch,
+    Source::BeatRamp,
+    Source::BarRamp,
+    Source::Phrase,
+    Source::FormLetter,
+    Source::Density,
+    Source::Intensity,
+    Source::ModWheel,
+    Source::Pressure,
+];
+pub const DEFAULT_DRUMS: [Source; CHANNELS] = [
+    Source::Velocity,
+    Source::Accent,
+    Source::Kick,
+    Source::Snare,
+    Source::Hats,
+    Source::Cymbals,
+    Source::BreakPerc,
+    Source::Fill,
+    Source::BeatRamp,
+    Source::BarRamp,
+    Source::Phrase,
+    Source::FormLetter,
+    Source::Density,
+    Source::Intensity,
+    Source::ModWheel,
+    Source::Pressure,
+];
+
 /// The channels' running state.
 pub struct ModOut {
     sample_rate: f32,
+    /// Source per channel, per mode.
+    pub map_bass: [Source; CHANNELS],
+    pub map_drums: [Source; CHANNELS],
     velocity: f32,
     accent: f32,
     amp: f32,
@@ -94,6 +222,8 @@ impl ModOut {
     pub fn new(sample_rate: f32) -> Self {
         Self {
             sample_rate,
+            map_bass: DEFAULT_BASS,
+            map_drums: DEFAULT_DRUMS,
             velocity: 0.0,
             accent: 0.0,
             amp: 0.0,
@@ -186,46 +316,37 @@ impl ModOut {
             } else {
                 (0.0, 0.0, 0.0)
             };
-            let values: [f32; CHANNELS] = match role {
-                Role::Drums => [
-                    self.velocity,
-                    self.accent,
-                    self.hits[0],
-                    self.hits[1],
-                    self.hits[2],
-                    self.hits[3],
-                    self.hits[4],
-                    fill,
-                    beat_ramp,
-                    bar_ramp,
-                    phrase,
-                    letter,
-                    info.density,
-                    info.intensity,
-                    info.mod_wheel,
-                    info.pressure,
-                ],
-                _ => [
-                    self.velocity,
-                    self.accent,
-                    self.amp,
-                    self.filter,
-                    0.5 + 0.5 * (std::f32::consts::TAU * self.lfo_phase).sin(),
-                    self.scrub,
-                    self.glide,
-                    self.pitch,
-                    beat_ramp,
-                    bar_ramp,
-                    phrase,
-                    letter,
-                    info.density,
-                    info.intensity,
-                    info.mod_wheel,
-                    info.pressure,
-                ],
+            let all: [f32; SOURCES] = [
+                self.velocity,
+                self.accent,
+                self.amp,
+                self.filter,
+                0.5 + 0.5 * (std::f32::consts::TAU * self.lfo_phase).sin(),
+                self.scrub,
+                self.glide,
+                self.pitch,
+                self.hits[0],
+                self.hits[1],
+                self.hits[2],
+                self.hits[3],
+                self.hits[4],
+                fill,
+                beat_ramp,
+                bar_ramp,
+                phrase,
+                letter,
+                info.density,
+                info.intensity,
+                info.mod_wheel,
+                info.pressure,
+                0.0,
+            ];
+            let map = match role {
+                Role::Drums => &self.map_drums,
+                _ => &self.map_bass,
             };
-            for (c, v) in out.iter_mut().zip(values) {
-                c[i] = v;
+            for (c, s) in out.iter_mut().zip(map) {
+                c[i] = all[*s as usize];
             }
             self.accent *= accent_k;
             self.filter *= filter_k;
@@ -292,5 +413,26 @@ mod tests {
         assert!((bufs[5][100] - 0.5).abs() < 0.01, "scrub position");
         assert!(bufs[6][10] > 0.9 && bufs[6][19_000] < 0.2, "glide (200 ms time constant)");
         assert!(bufs[4].iter().any(|v| *v > 0.9) && bufs[4].iter().any(|v| *v < 0.1), "LFO swings");
+    }
+}
+
+#[cfg(test)]
+mod map_tests {
+    use super::*;
+
+    #[test]
+    fn a_reassigned_channel_plays_its_new_source() {
+        let mut m = ModOut::new(48_000.0);
+        m.map_drums[0] = Source::Kick;
+        m.map_drums[1] = Source::Off;
+        let mut bufs = vec![vec![0.0f32; 480]; CHANNELS];
+        let kick = LiveEvent { kind: EventKind::Trigger, target: 0, vel: 127, ..Default::default() };
+        {
+            let mut out: Vec<&mut [f32]> = bufs.iter_mut().map(|b| b.as_mut_slice()).collect();
+            m.render(Role::Drums, &[(10, kick)], &BlockInfo::default(), &mut out);
+        }
+        assert!((bufs[0][10] - 1.0).abs() < 1e-6, "channel 1 follows the kick now");
+        assert!(bufs[1].iter().all(|v| *v == 0.0), "channel 2 is off");
+        assert!((bufs[2][10] - 1.0).abs() < 1e-6, "channel 3 keeps its default (kick)");
     }
 }

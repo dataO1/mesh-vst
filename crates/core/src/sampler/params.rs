@@ -68,6 +68,10 @@ pub struct LaneSamplerParams {
     /// Stab accent 0..1 (the Character macro's stabby half): a gain kick at
     /// each note start and a deeper mod-envelope pitch move.
     pub punch: f32,
+    /// Unison of pitched notes (D38).
+    pub unison: super::unison::Unison,
+    /// How hard a new hit cuts its choke group, 0..1 (D27).
+    pub choke_amount: f32,
 }
 
 /// Per-note modulation envelope (SF2 "Mod env", SFZ `fileg_*` / `pitcheg_*`):
@@ -365,6 +369,8 @@ impl Default for LaneSamplerParams {
             designed_res: 0.0,
             morph: -1.0,
             punch: 0.0,
+            unison: super::unison::Unison::default(),
+            choke_amount: 1.0,
         }
     }
 }

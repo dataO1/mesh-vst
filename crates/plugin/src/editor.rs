@@ -23,7 +23,8 @@ use nice_plug_iced::iced::{
 use nice_plug_iced::{application, create_iced_editor, IcedEditor, IcedEditorState, IcedNiceContext, IcedNiceSettings, PersistentState};
 use serde::{Deserialize, Serialize};
 
-use crate::params::{DrumStyle, MeshParams, Mode, PhaseMode, Rate, Scale};
+use crate::params::{DrumStyle, MeshParams, Mode, NewRootMode, Phrase, PhaseMode, Rate, Scale, UnisonSpread, BEND_RANGES};
+use mesh_vst_core::modout::{Source, CHANNELS as MOD_CHANNELS};
 use crate::ui::{UiShared, UiState, ROWS};
 use crate::worker::{self, FileRef, KitState};
 
@@ -161,6 +162,19 @@ pub enum Message {
     ClearSlot(Slot),
     RollMudpie,
     ShowPool(Pool),
+    ToggleSettings,
+    Phrase(Phrase),
+    NewRoot(NewRootMode),
+    Bend(BendItem),
+    ModSource(usize, SourceItem),
+    FolderInput(String),
+    AddFolder,
+    RemoveFolder(usize),
+    Rescan,
+    UnisonVoices(i32),
+    UnisonDetune(f32),
+    UnisonDetuneReleased,
+    UnisonMode(UnisonSpread),
     MoveFile(PathBuf, Pool),
 }
 
@@ -169,6 +183,8 @@ pub struct Gui {
     ctx: IcedNiceContext,
     library: Option<Library>,
     show_library: bool,
+    show_settings: bool,
+    folder_input: String,
     pool: Pool,
     favorites: Vec<Favorite>,
     undo: Vec<Snapshot>,
@@ -199,12 +215,15 @@ impl Gui {
             setter.set_parameter(&data.params.mode, Mode::Bass);
             setter.end_set_parameter(&data.params.mode);
         }
-        let demo_drag = std::env::var_os("MESH_VST_DEMO_DRAG").is_some();
+        let view = std::env::var("MESH_VST_DEMO_VIEW").unwrap_or_default();
+        let demo_drag = view == "drag";
         Self {
             data,
             ctx,
             library: None,
-            show_library: false,
+            show_library: view == "library",
+            show_settings: view == "settings",
+            folder_input: String::new(),
             pool: Pool::Kick,
             favorites: load_favorites(),
             undo: Vec::new(),
@@ -549,6 +568,85 @@ impl Gui {
                     None => self.toast = "no mudpies in the library".into(),
                 }
             }
+            Message::ToggleSettings => {
+                self.show_settings = !self.show_settings;
+                self.show_library = false;
+            }
+            Message::Phrase(v) => {
+                self.record();
+                let params = self.data.params.clone();
+                self.set_enum(&params.phrase, v);
+            }
+            Message::NewRoot(v) => {
+                self.record();
+                let params = self.data.params.clone();
+                self.set_enum(&params.new_root, v);
+            }
+            Message::Bend(b) => {
+                self.record();
+                let params = self.data.params.clone();
+                self.set_int(&params.bend_range, b.0);
+            }
+            Message::ModSource(ch, s) => {
+                let drums = self.params().mode.value() == Mode::Drums;
+                if let Ok(mut u) = self.data.params.ui.lock() {
+                    let (map, default) = if drums {
+                        (&mut u.mod_drums, mesh_vst_core::modout::DEFAULT_DRUMS)
+                    } else {
+                        (&mut u.mod_bass, mesh_vst_core::modout::DEFAULT_BASS)
+                    };
+                    if map.len() != MOD_CHANNELS {
+                        *map = default.to_vec();
+                    }
+                    map[ch] = s.0;
+                    self.data.shared.load_mod_map(&u);
+                }
+            }
+            Message::FolderInput(s) => self.folder_input = s,
+            Message::AddFolder => {
+                let p = PathBuf::from(self.folder_input.trim());
+                if p.is_dir() {
+                    let mut folders = worker::library_folders();
+                    if !folders.contains(&p) {
+                        folders.push(p);
+                        self.save_folders(folders);
+                    }
+                    self.folder_input.clear();
+                } else {
+                    self.toast = format!("not a folder: {}", p.display());
+                }
+            }
+            Message::RemoveFolder(i) => {
+                let mut folders = worker::library_folders();
+                if i < folders.len() {
+                    folders.remove(i);
+                    self.save_folders(folders);
+                }
+            }
+            Message::Rescan => {
+                self.library = None;
+                self.library().scan();
+                self.save_library();
+                self.data.shared.bump_kit();
+                self.toast = format!("{} files in the library", self.library.as_ref().map_or(0, |l| l.len()));
+            }
+            Message::UnisonVoices(v) => {
+                let params = self.data.params.clone();
+                self.set_int(&params.unison_voices, v);
+            }
+            Message::UnisonDetune(v) => {
+                let params = self.data.params.clone();
+                let setter = self.ctx.nice_context.param_setter();
+                setter.begin_set_parameter(&params.unison_detune);
+                setter.set_parameter(&params.unison_detune, v);
+                setter.end_set_parameter(&params.unison_detune);
+            }
+            Message::UnisonDetuneReleased => self.record(),
+            Message::UnisonMode(m) => {
+                self.record();
+                let params = self.data.params.clone();
+                self.set_enum(&params.unison_mode, m);
+            }
             Message::ShowPool(p) => self.pool = p,
             Message::MoveFile(path, pool) => {
                 self.library().set_override(&path, Some(pool));
@@ -606,6 +704,18 @@ impl Gui {
         }
     }
 
+    /// Write the library folders to the settings file and reload the library.
+    fn save_folders(&mut self, folders: Vec<PathBuf>) {
+        if let Err(e) = worker::save_settings(&worker::Settings { library_folders: folders }) {
+            self.toast = format!("could not save the settings: {e}");
+            return;
+        }
+        self.library = None;
+        self.library().scan();
+        self.save_library();
+        self.data.shared.bump_kit();
+    }
+
     fn locks(&self) -> UiState {
         self.data.params.ui.lock().map(|u| u.clone()).unwrap_or_default()
     }
@@ -659,22 +769,23 @@ impl Gui {
             .align_y(Alignment::Center)
         };
         let top = row![
-            text("mesh//vst").font(DISPLAY_FONT).size(17).color(DIM),
+            text("mesh//vst").font(DISPLAY_FONT).size(15).color(DIM),
             row![mode_button(Mode::Drums, "DRUMS"), mode_button(Mode::Bass, "BASS")],
-            column![small("KEY · from note"), row![text(key).font(DATA_FONT).size(16).color(INK), pick_w(Scale::variants_list(), p.scale.value(), Message::Scale, 118.0)].spacing(6).align_y(Alignment::Center)].spacing(2),
+            column![small("KEY · from note"), row![text(key).font(DATA_FONT).size(16).color(INK), pick_w(Scale::variants_list(), p.scale.value(), Message::Scale, 104.0)].spacing(6).align_y(Alignment::Center)].spacing(2),
             column![small("HOST"), text(format!("{bpm:.1} bpm")).font(DATA_FONT).size(16).color(INK)].spacing(2),
             seed_box("SOUND", p.sound_seed.value(), Message::RollSound, Message::LockSound, locks.sound_locked),
             seed_box("PATTERN", p.pattern_seed.value(), Message::RollPattern, Message::LockPattern, locks.pattern_locked),
             button(text("★").font(DATA_FONT).size(14)).on_press(Message::SaveFavorite).padding([6, 8]).style(|_, s| btn(false, s)),
-            pick_list(self.favorites.clone(), None::<Favorite>, Message::Favorite).placeholder("favs").text_size(12).font(DATA_FONT).width(80).style(|_, _| pick_style()),
+            pick_list(self.favorites.clone(), None::<Favorite>, Message::Favorite).placeholder("favs").text_size(12).font(DATA_FONT).width(70).style(|_, _| pick_style()),
             Space::new().width(Length::Fill),
             button(text("undo").font(DATA_FONT).size(12)).on_press_maybe((!self.undo.is_empty()).then_some(Message::Undo)).padding([6, 8]).style(|_, s| btn(false, s)),
             button(text("redo").font(DATA_FONT).size(12)).on_press_maybe((!self.redo.is_empty()).then_some(Message::Redo)).padding([6, 8]).style(|_, s| btn(false, s)),
             button(text("LIBRARY").font(DATA_FONT).size(12)).on_press(Message::ToggleLibrary).padding([6, 10]).style(move |_, s| btn(self.show_library, s)),
+            button(text("SET").font(DATA_FONT).size(12)).on_press(Message::ToggleSettings).padding([6, 10]).style(move |_, s| btn(self.show_settings, s)),
         ]
-        .spacing(12)
+        .spacing(8)
         .align_y(Alignment::Center)
-        .padding([0, 16]);
+        .padding([0, 12]);
         let top = container(top).height(60).center_y(60).width(Length::Fill).style(|_| bar_style());
 
         // Left: the pattern knobs and settings.
@@ -777,7 +888,32 @@ impl Gui {
                 button(text("roll").font(DATA_FONT).size(11)).on_press(Message::RollMudpie).padding([3, 6]).style(|_, s| btn(false, s)),
             ]
             .spacing(6);
-            row![container(card).padding(10).width(360).height(Length::Fill).style(|_| card_style()), Space::new().width(Length::Fill)].into()
+            // Unison limits and mode (D38), bottom right.
+            let voices = p.unison_voices.value();
+            let detune = p.unison_detune.value();
+            let unison = column![
+                small("UNISON · the seed picks each note within these"),
+                row![
+                    text(format!("voices {voices}")).font(DATA_FONT).size(12).color(INK).width(80),
+                    slider(1..=8, voices, Message::UnisonVoices).height(16).style(|_, _| slider_style()),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                row![
+                    text(format!("detune {detune:.0} ct")).font(DATA_FONT).size(12).color(INK).width(80),
+                    slider(0.0..=60.0, detune, Message::UnisonDetune).on_release(Message::UnisonDetuneReleased).step(0.5_f32).height(16).style(|_, _| slider_style()),
+                    pick(UnisonSpread::variants_list(), p.unison_mode.value(), Message::UnisonMode),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(4);
+            row![
+                container(card).padding(10).width(360).height(Length::Fill).style(|_| card_style()),
+                Space::new().width(Length::Fill),
+                container(unison).padding(10).width(420).height(Length::Fill).style(|_| card_style()),
+            ]
+            .into()
         };
         let toast = text(self.toast.clone()).font(DATA_FONT).size(12).color(DIM);
         let footer = container(column![container(footer).height(Length::Fill), toast].spacing(4)).height(FOOTER_H).padding([8, 24]).width(Length::Fill).style(|_| bar_style());
@@ -785,6 +921,8 @@ impl Gui {
         let mut screen = column![top, body, footer];
         if self.show_library {
             screen = column![top_spacer(), self.library_panel()];
+        } else if self.show_settings {
+            screen = column![top_spacer(), self.settings_panel()];
         }
         let base = container(screen).width(Length::Fill).height(Length::Fill).style(|_| container::Style {
             background: Some(Background::Color(BG)),
@@ -810,6 +948,74 @@ impl Gui {
         } else {
             base.into()
         }
+    }
+
+    fn settings_panel(&self) -> Element<'_, Message> {
+        let p = self.params();
+        let drums = p.mode.value() == Mode::Drums;
+        let bends: Vec<BendItem> = (0..=BEND_RANGES.len() as i32).map(BendItem).collect();
+        let pattern = column![
+            small("PATTERN"),
+            row![text("Phrase").font(DATA_FONT).size(13).color(DIM).width(120), pick(Phrase::variants_list(), p.phrase.value(), Message::Phrase)].align_y(Alignment::Center),
+            row![text("New root").font(DATA_FONT).size(13).color(DIM).width(120), pick(NewRootMode::variants_list(), p.new_root.value(), Message::NewRoot)].align_y(Alignment::Center),
+            row![
+                text("Bend range").font(DATA_FONT).size(13).color(DIM).width(120),
+                pick_list(bends, Some(BendItem(p.bend_range.value())), Message::Bend).font(DATA_FONT).text_size(12).style(|_, _| pick_style()),
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(10);
+
+        let map = |c: usize| self.data.shared.mod_map[if drums { 1 } else { 0 }][c].load(Ordering::Relaxed) as usize;
+        let mut mods = column![small(if drums { "MOD OUT · drums" } else { "MOD OUT · bass" })].spacing(4);
+        for c in 0..MOD_CHANNELS {
+            let current = Source::ALL[map(c) % Source::ALL.len()];
+            mods = mods.push(
+                row![
+                    text(format!("Mod {}", c + 1)).font(DATA_FONT).size(12).color(DIM).width(70),
+                    pick_list(Source::ALL.map(SourceItem).to_vec(), Some(SourceItem(current)), move |s| Message::ModSource(c, s))
+                        .font(DATA_FONT)
+                        .text_size(12)
+                        .width(150)
+                        .style(|_, _| pick_style()),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+
+        let mut folders = column![small("LIBRARY FOLDERS")].spacing(6);
+        if std::env::var_os(worker::LIBRARY_ENV).is_some() {
+            folders = folders.push(small("set by MESH_VST_LIBRARY: edits here apply without it"));
+        }
+        for (i, f) in worker::library_folders().iter().enumerate() {
+            folders = folders.push(
+                row![
+                    text(f.display().to_string()).font(DATA_FONT).size(12).color(INK).width(Length::Fill),
+                    button(text("remove").font(DATA_FONT).size(11)).on_press(Message::RemoveFolder(i)).padding([3, 6]).style(|_, s| btn(false, s)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+        folders = folders.push(
+            row![
+                iced::widget::text_input("/path/to/samples", &self.folder_input)
+                    .on_input(Message::FolderInput)
+                    .on_submit(Message::AddFolder)
+                    .font(DATA_FONT)
+                    .size(12),
+                button(text("add").font(DATA_FONT).size(11)).on_press(Message::AddFolder).padding([3, 6]).style(|_, s| btn(false, s)),
+            ]
+            .spacing(8),
+        );
+        folders = folders.push(button(text("rescan").font(DATA_FONT).size(11)).on_press(Message::Rescan).padding([3, 6]).style(|_, s| btn(false, s)));
+
+        column![
+            row![text("SETTINGS").font(DISPLAY_FONT).size(18).color(DIM), Space::new().width(Length::Fill), button(text("close").font(DATA_FONT).size(12)).on_press(Message::ToggleSettings).style(|_, s| btn(false, s))].padding([12, 24]),
+            row![container(pattern).width(300), scrollable(mods).width(260).height(Length::Fill), container(folders).width(Length::Fill)].spacing(32).padding([12, 24]),
+        ]
+        .into()
     }
 
     fn library_panel(&self) -> Element<'_, Message> {
@@ -971,7 +1177,31 @@ macro_rules! enum_display {
         }
     )*};
 }
-enum_display!(Scale, Rate, DrumStyle, PhaseMode, Mode);
+enum_display!(Scale, Rate, DrumStyle, PhaseMode, Mode, Phrase, NewRootMode, UnisonSpread);
+
+/// A mod-out source in a pick list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceItem(pub Source);
+
+impl std::fmt::Display for SourceItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0.name())
+    }
+}
+
+/// A bend range choice: 0 = the seed's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BendItem(pub i32);
+
+impl std::fmt::Display for BendItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 <= 0 {
+            f.write_str("seed")
+        } else {
+            write!(f, "{} st", BEND_RANGES[(self.0 as usize - 1).min(BEND_RANGES.len() - 1)])
+        }
+    }
+}
 
 fn btn(on: bool, status: button::Status) -> button::Style {
     let hover = matches!(status, button::Status::Hovered | button::Status::Pressed);

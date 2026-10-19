@@ -72,6 +72,8 @@ pub struct PatternLane {
     pub rate: i8,
     /// Mode in the key's family (0 = plain minor or major).
     pub mode: u8,
+    /// Bars of a phrase: the drums fill its last bar (D25).
+    pub phrase_bars: u32,
     /// Generator parameters, indexed like [`LaneGenerator::param_names`].
     pub params: [f32; MAX_GEN_PARAMS],
 }
@@ -104,7 +106,7 @@ impl PatternLane {
     ) -> Self {
         let mut forms = vec![Form::single()];
         forms.extend(DEFAULT_FORMS.iter().map(|f| Form::parse(f).expect("built-in form parses")));
-        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, params }
+        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, phrase_bars: 8, params }
     }
 
     pub fn role(&self) -> Role {
@@ -186,8 +188,10 @@ impl PatternLane {
         if class == SeedClass::Filler {
             boost_filler(names, &mut params);
         }
-        // The drum lane fills the last bar of a filler segment.
-        let fill = self.role == Role::Drums && class == SeedClass::Filler && pos.last_of_segment;
+        // The drum lane fills the last bar of a filler segment, and the last
+        // bar of every phrase (D25).
+        let phrase_end = self.phrase_bars > 1 && (c.bar + 1) % self.phrase_bars as u64 == 0;
+        let fill = self.role == Role::Drums && ((class == SeedClass::Filler && pos.last_of_segment) || phrase_end);
         let no_mask = [0u8; STEPS_PER_BAR];
         let sound_seed = match class {
             SeedClass::Main => self.sound_seed,
@@ -433,6 +437,22 @@ mod tests {
         assert_eq!(f.len(), g.len());
         // The same line, moved by the root (within the register's folding).
         assert!(f.iter().zip(&g).all(|(a, b)| (b - a).rem_euclid(12) == 2), "{f:?} {g:?}");
+    }
+
+    #[test]
+    fn drums_fill_the_last_bar_of_each_phrase() {
+        let key = MusicalKey::new(0, true);
+        let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+        let mut bar = |phrase: u32, b: u64| {
+            let mut lane = PatternLane::drums(DrumLayout::standard(), 4, 4);
+            lane.phrase_bars = phrase;
+            lane.render(b, key, &mut out, &mut scratch);
+            out.events.as_slice().to_vec()
+        };
+        // Bar 3 ends a 4-bar phrase but not a 16-bar one.
+        assert_ne!(bar(4, 3), bar(16, 3));
+        // Bar 2 ends neither.
+        assert_eq!(bar(4, 2), bar(16, 2));
     }
 
     #[test]
