@@ -187,17 +187,40 @@ drive external effects.
     parameter.
 - **R3** Velocity timbre: how to make velocity sound like a different hit (filter tracking,
   transient shaping, round robin, layer crossfade) from one sample. Not started.
-- **R4** Modulation outputs (running): can mesh vst expose its per-note state (velocity, accent,
-  envelope) as something the user maps once onto external effects, in every major DAW? Candidates:
-  output parameters, a control-signal audio output, MIDI CC out, automation write-back. If no
-  mechanism covers the major DAWs, the fallback is built-in processing.
+- **R4** Modulation outputs (done 2026-10-19). No mechanism covers every DAW, and no CLAP or
+  VST3 standard (as of CLAP 1.2.10 and VST3 3.8.1) defines a modulation output.
+  - **Aux control audio output: the widest coverage.** An extra audio output carries the envelope
+    as a signal. The user routes it to a follower that modulates the effect, which costs one
+    mapping per knob.
+    - **Reaper:** audio control signal.
+    - **Bitwig:** Audio Sidechain modulator.
+    - **Live 12:** Max for Live Envelope Follower (needs Suite or the add-on), with up to 8 maps.
+    - **FL:** Peak Controller on the mixer insert, then Link to controller.
+    - **Cubase 14+ Pro:** Envelope Follower modulator. Instrument aux outputs as its source are
+      not verified.
+    - **Reason:** Pulveriser follower into a VST container's CV input.
+    - **No path:** Studio One / Fender Studio Pro, and Logic. Logic is out anyway, since there
+      is no AU.
+    - **nice-plug:** supports aux outputs in both wrappers today.
+    - **Caveats:** followers smooth sharp attacks. The aux must not reach the master: DC at the
+      speakers.
+  - **Output parameters.** Only Reaper can use them as a source. Live needs a custom Max for
+    Live device. nice-plug cannot emit them from the audio thread without a fork.
+  - **MIDI CC out.** Reliable into effects only in Reaper, likely in Bitwig over CLAP. Live and
+    Logic do not route an instrument's MIDI into audio effects. FL and Cubase need the effect's
+    own MIDI learn. nice-plug supports it today.
+  - **Automation write-back.** Works everywhere, but only offline: record, then copy. It cannot
+    follow live per-note state.
+  - **Precedent.** Commercial modulation plugins (LFOTool, MidiShaper) use MIDI CC. No known
+    product uses an audio control bus.
 
 ## 4. Open questions
 
 - **Q1** License: GPL-3.0-or-later (forks stay open) or MIT (anything goes)? The copied Mesh code
   is relicensed by its author.
 - **Q7** UI layout per mode, top bar contents, visualizer.
-- **Q11** Post-processing: waits on R4.
+- **Q11** Post-processing after R4: an aux control output (4 envelope channels) as the main path, the
+  bass voice keeps its own filter and drive, no further built-in processing?
 - **Q13** The two cymbal slots: ride and crash, or two picks from one cymbal pool? Where do shaker
   and top loops go: hats, perc, or break?
 
