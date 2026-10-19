@@ -10,7 +10,8 @@ use std::sync::Arc;
 use mesh_vst_core::event::{EventKind, LiveEvent};
 use mesh_vst_core::gc::gc_handle;
 use mesh_vst_core::kit::{mudpie_bank, share};
-use mesh_vst_core::macros::{self, Knobs, LaneSettings};
+use mesh_vst_core::macros::{self, Centers, Knobs, LaneSettings};
+use mesh_vst_core::modout::{self, BlockInfo, ModOut};
 use mesh_vst_core::pattern::PatternLane;
 use mesh_vst_core::player::{Phase, Player, Transport, TICKS_PER_BEAT};
 use mesh_vst_core::sampler::{LaneSamplerParams, Sampler};
@@ -37,6 +38,26 @@ pub(crate) const BASS_VOICES: usize = 16;
 /// Environment variable that makes the plugin hold a note from activation
 /// (screenshots of the playing editor, without MIDI input).
 const DEMO_ENV: &str = "MESH_VST_DEMO";
+/// Names of the mod-out ports: the bass source / the drum source (D34).
+const MOD_PORT_NAMES: [&str; modout::CHANNELS] = [
+    "Mod 1 velocity",
+    "Mod 2 stab / accent",
+    "Mod 3 amp env / kick",
+    "Mod 4 filter env / snare",
+    "Mod 5 LFO / hats",
+    "Mod 6 scrub / cymbals",
+    "Mod 7 glide / break",
+    "Mod 8 pitch / fill",
+    "Mod 9 beat ramp",
+    "Mod 10 bar ramp",
+    "Mod 11 phrase",
+    "Mod 12 form letter",
+    "Mod 13 density",
+    "Mod 14 intensity",
+    "Mod 15 mod wheel",
+    "Mod 16 pressure",
+];
+
 /// Editor redraws per second.
 const REDRAW_FPS: f32 = 30.0;
 const START_DRUM_GAIN: f32 = 0.4;
@@ -75,6 +96,11 @@ pub struct MeshVst {
     applied: Option<(Mode, Settings)>,
     /// Mod wheel 0..1: pushes Intensity up (D24).
     mod_wheel: f32,
+    /// Channel pressure 0..1 (mod out 16).
+    pressure: f32,
+    /// The knobs' values after the seed's centres (mod out 13, 14).
+    resolved: Knobs,
+    modout: ModOut,
     /// Position of the free clock in beats, while the transport is stopped.
     free_beat: f64,
     free_running: bool,
@@ -98,6 +124,9 @@ impl Default for MeshVst {
             buf: Vec::new(),
             applied: None,
             mod_wheel: 0.0,
+            pressure: 0.0,
+            resolved: Knobs::CENTERED,
+            modout: ModOut::new(48_000.0),
             free_beat: 0.0,
             free_running: false,
             worker: None,
@@ -242,7 +271,11 @@ impl MeshVst {
         }
         let Some(lane) = self.lane_mut(mode) else { return };
         let base = lane.base;
+        let role = lane.player.lane().role();
         let sp = macros::configure(lane.player.lane_mut(), base, &s.lane);
+        let resolved = Centers::of(role, s.lane.pattern_seed, s.lane.sound_seed).resolve(&s.lane.knobs);
+        self.resolved = resolved;
+        let Some(lane) = self.lane_mut(mode) else { return };
         lane.player.minor = s.minor;
         lane.player.phase = s.phase;
         lane.player.sampler_mut().set_params(sp);
@@ -256,6 +289,10 @@ impl MeshVst {
             // A note with the transport stopped starts the free clock.
             self.free_beat = 0.0;
             self.free_running = true;
+        }
+        if let NoteEvent::MidiChannelPressure { pressure, .. } = ev {
+            self.pressure = pressure;
+            return;
         }
         if let NoteEvent::MidiCC { cc: 1, value, .. } = ev {
             self.mod_wheel = value;
@@ -288,7 +325,17 @@ impl MeshVst {
     }
 
     /// Render frames `from..to` of the block into `out`.
-    fn render(&mut self, mode: Mode, out: &mut [&mut [f32]], from: usize, to: usize, transport: Transport, gain: &Smoother<f32>) {
+    #[allow(clippy::too_many_arguments)]
+    fn render(
+        &mut self,
+        mode: Mode,
+        out: &mut [&mut [f32]],
+        aux: &mut AuxiliaryBuffers,
+        from: usize,
+        to: usize,
+        transport: Transport,
+        gain: &Smoother<f32>,
+    ) {
         let n = to - from;
         let lane = match mode {
             Mode::Drums => self.drums.as_mut(),
@@ -298,6 +345,35 @@ impl MeshVst {
         match lane {
             Some(l) => l.player.process(buf, &transport),
             None => buf.fill(StereoSample::silence()),
+        }
+        // The mod outputs, when the host gave their ports.
+        if aux.outputs.len() >= modout::CHANNELS {
+            let mut ports = aux.outputs.iter_mut();
+            let chans: [Option<&mut [f32]>; modout::CHANNELS] =
+                std::array::from_fn(|_| ports.next().and_then(|b| b.as_slice().first_mut().map(|c| &mut c[from..to])));
+            if chans.iter().all(Option::is_some) {
+                let mut chans = chans.map(|c| c.unwrap_or_default());
+                let (role, fired, letter, lfo_hz) = match mode {
+                    Mode::Drums => self.drums.as_ref(),
+                    Mode::Bass => self.bass.as_ref(),
+                }
+                .map_or((mesh_vst_core::role::Role::Drums, &[][..], 0, 3.0), |l| {
+                    let letter = l.player.rendered().map_or(0, |(_, b)| b.letter);
+                    (l.player.lane().role(), l.player.fired(), letter, l.base.modulation.lfo.rate)
+                });
+                let info = BlockInfo {
+                    playing: transport.playing,
+                    beat: transport.beat,
+                    beats_per_frame: transport.bpm / 60.0 / self.sample_rate as f64,
+                    letter,
+                    density: self.resolved.density,
+                    intensity: self.resolved.intensity,
+                    mod_wheel: self.mod_wheel,
+                    pressure: self.pressure,
+                    lfo_hz,
+                };
+                self.modout.render(role, fired, &info, &mut chans);
+            }
         }
         let feed = self.editor_state.is_open();
         for (i, s) in self.buf[..n].iter().enumerate() {
@@ -320,11 +396,21 @@ impl Plugin for MeshVst {
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
-        main_input_channels: None,
-        main_output_channels: NonZeroU32::new(2),
-        ..AudioIOLayout::const_default()
-    }];
+    // Stereo out plus the 16 mono mod-out channels (D32), or stereo only.
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
+        AudioIOLayout {
+            main_input_channels: None,
+            main_output_channels: NonZeroU32::new(2),
+            aux_output_ports: &[new_nonzero_u32(1); modout::CHANNELS],
+            names: PortNames { layout: Some("Stereo + mod out"), main_input: None, main_output: Some("Out"), aux_inputs: &[], aux_outputs: &MOD_PORT_NAMES },
+            ..AudioIOLayout::const_default()
+        },
+        AudioIOLayout {
+            main_input_channels: None,
+            main_output_channels: NonZeroU32::new(2),
+            ..AudioIOLayout::const_default()
+        },
+    ];
 
     const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = false;
@@ -345,6 +431,7 @@ impl Plugin for MeshVst {
         self.sample_rate = config.sample_rate;
         let sr = config.sample_rate.round() as u32;
         self.buf = vec![StereoSample::silence(); config.max_buffer_size as usize];
+        self.modout = ModOut::new(config.sample_rate);
 
         let (layout, bank) = builtin::drum_kit(sr).build();
         let mut sampler = Sampler::new(sr, DRUM_VOICES);
@@ -382,7 +469,7 @@ impl Plugin for MeshVst {
         self.free_running = false;
     }
 
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &mut impl ProcessContext<Self>) -> ProcessStatus {
+    fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &mut impl ProcessContext<Self>) -> ProcessStatus {
         let mode = self.params.mode.value();
         self.take_kits();
         self.ask_kit(mode);
@@ -417,7 +504,7 @@ impl Plugin for MeshVst {
             } else {
                 Transport { playing: self.free_running, beat: self.free_beat, bpm }
             };
-            self.render(mode, out, cursor, next, transport, &params.gain.smoothed);
+            self.render(mode, out, aux, cursor, next, transport, &params.gain.smoothed);
             if !host_playing && self.free_running {
                 self.free_beat += (next - cursor) as f64 * beats_per_frame;
                 self.free_running = gated;

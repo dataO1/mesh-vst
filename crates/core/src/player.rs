@@ -77,7 +77,13 @@ pub struct Player {
     renders: u64,
     /// Pattern bar and 16th step at the end of the last block.
     position: Option<(u64, u32)>,
+    /// Events fired in the last block with their frame offsets (mod outputs).
+    fired: Box<[(u32, LiveEvent); MAX_FIRED]>,
+    fired_len: usize,
 }
+
+/// Events a block keeps for the mod outputs.
+pub const MAX_FIRED: usize = 512;
 
 impl Player {
     pub fn new(lane: PatternLane, sampler: Sampler) -> Self {
@@ -97,6 +103,8 @@ impl Player {
             loop_bpm: None,
             renders: 0,
             position: None,
+            fired: Box::new([(0, LiveEvent::default()); MAX_FIRED]),
+            fired_len: 0,
         }
     }
 
@@ -159,6 +167,11 @@ impl Player {
         self.gate.filter(|g| g.close_at.is_infinite()).map(|g| g.key)
     }
 
+    /// The events the last block fired, with their frame offsets.
+    pub fn fired(&self) -> &[(u32, LiveEvent)] {
+        &self.fired[..self.fired_len]
+    }
+
     /// Bar renders so far.
     pub fn render_count(&self) -> u64 {
         self.renders
@@ -176,6 +189,7 @@ impl Player {
 
     /// Render one block into `out` (overwritten).
     pub fn process(&mut self, out: &mut [StereoSample], t: &Transport) {
+        self.fired_len = 0;
         let n = out.len();
         let bpm = t.bpm.max(1.0);
         let samples_per_tick = self.sample_rate * 60.0 / (bpm * TICKS_PER_BEAT);
@@ -239,6 +253,10 @@ impl Player {
                     fired.cents = fired.cents.saturating_add(loop_cents);
                 }
                 self.sampler.handle_event(&fired, offset);
+                if self.fired_len < MAX_FIRED {
+                    self.fired[self.fired_len] = (offset, fired);
+                    self.fired_len += 1;
+                }
             }
         }
     }

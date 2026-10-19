@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use clack_extensions::audio_ports::{AudioPortInfoBuffer, PluginAudioPorts};
 use clack_extensions::params::{ParamInfoBuffer, PluginParams};
 use clack_host::events::event_types::{NoteOffEvent, NoteOnEvent, ParamValueEvent, TransportEvent, TransportFlags};
 use clack_host::events::EventFlags;
@@ -67,6 +68,8 @@ impl Default for Render {
 /// A rendered stereo signal, interleaved.
 struct Audio {
     samples: Vec<f32>,
+    /// The mod-out channels (D32), one buffer each.
+    mods: Vec<Vec<f32>>,
 }
 
 impl Audio {
@@ -174,19 +177,32 @@ fn render(entry: &PluginEntry, r: &Render) -> Result<Audio, Error> {
         param_events.push(ParamValueEvent::new(0, id, Pckn::match_all(), *value));
     }
 
+    // Every output port the plugin declares: the main stereo pair and its mod outputs.
+    let channels: Vec<u32> = {
+        let mut handle = instance.plugin_handle();
+        match handle.get_extension::<PluginAudioPorts>() {
+            Some(ports) => {
+                let mut buf = AudioPortInfoBuffer::new();
+                (0..ports.count(&mut handle, false)).filter_map(|i| ports.get(&mut handle, i, false, &mut buf).map(|p| p.channel_count)).collect()
+            }
+            None => vec![2],
+        }
+    };
+
     let config = PluginAudioConfiguration { sample_rate: SR, min_frames_count: 1, max_frames_count: BLOCK as u32 };
     let processor = instance.activate(|_, _| (), config)?;
     let mut processor = processor.start_processing()?;
-    let mut out_ports = AudioPorts::with_capacity(2, 1);
-    let (mut out_l, mut out_r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+    let total_channels: u32 = channels.iter().sum();
+    let mut out_ports = AudioPorts::with_capacity(total_channels as usize, channels.len());
+    let mut bufs: Vec<Vec<Vec<f32>>> = channels.iter().map(|&c| vec![vec![0.0f32; BLOCK]; c as usize]).collect();
     let mut out_events = EventBuffer::new();
 
-    let mut block = |events: &EventBuffer, n: usize, out_l: &mut [f32], out_r: &mut [f32]| -> Result<(), Error> {
+    let mut block = |events: &EventBuffer, n: usize, bufs: &mut Vec<Vec<Vec<f32>>>| -> Result<(), Error> {
         let input = InputAudioBuffers::empty();
-        let mut output = out_ports.with_output_buffers([AudioPortBuffer {
+        let mut output = out_ports.with_output_buffers(bufs.iter_mut().map(|port| AudioPortBuffer {
             latency: 0,
-            channels: AudioPortBufferType::f32_output_only([&mut out_l[..n], &mut out_r[..n]].into_iter()),
-        }]);
+            channels: AudioPortBufferType::f32_output_only(port.iter_mut().map(|c| &mut c[..n])),
+        }));
         out_events.clear();
         processor.process(&input, &mut output, &events.as_input(), &mut out_events.as_output(), None, None)?;
         Ok(())
@@ -202,13 +218,14 @@ fn render(entry: &PluginEntry, r: &Render) -> Result<Audio, Error> {
                 events.push(e);
             }
         }
-        block(&events, BLOCK, &mut out_l, &mut out_r)?;
+        block(&events, BLOCK, &mut bufs)?;
         std::thread::sleep(Duration::from_millis(10));
     }
 
     let total = (r.bars * 4.0 * 60.0 / r.bpm * SR) as usize;
     let release = r.release_at.map(|b| (b * 4.0 * 60.0 / r.bpm * SR) as usize);
     let mut samples = Vec::with_capacity(total * 2);
+    let mut mods: Vec<Vec<f32>> = bufs.iter().skip(1).flatten().map(|_| Vec::with_capacity(total)).collect();
     let mut pos = 0usize;
     while pos < total {
         let n = BLOCK.min(total - pos);
@@ -224,17 +241,20 @@ fn render(entry: &PluginEntry, r: &Render) -> Result<Audio, Error> {
         if let Some(at) = release.filter(|&at| at >= pos && at < pos + n) {
             events.push(&NoteOffEvent::new((at - pos) as u32, Pckn::new(0u16, 0u16, r.key, 0u32), 0.0));
         }
-        block(&events, n, &mut out_l, &mut out_r)?;
+        block(&events, n, &mut bufs)?;
         for i in 0..n {
-            samples.push(out_l[i]);
-            samples.push(out_r[i]);
+            samples.push(bufs[0][0][i]);
+            samples.push(bufs[0][1][i]);
+        }
+        for (m, c) in mods.iter_mut().zip(bufs.iter().skip(1).flatten()) {
+            m.extend_from_slice(&c[..n]);
         }
         pos += n;
     }
     drop(block);
     let processor = processor.stop_processing();
     instance.deactivate(processor);
-    Ok(Audio { samples })
+    Ok(Audio { samples, mods })
 }
 
 /// Scenario results.
@@ -334,6 +354,20 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     let bass = render(entry, &Render { mode: "bass", ..base.clone() })?;
     save("builtin-bass", &bass)?;
     rep.healthy("built-in bass plays", &bass);
+
+    // The mod outputs (D32): 16 channels, levels 0..1, following the hits.
+    let range = |a: &Audio| a.mods.iter().flatten().all(|v| (0.0..=1.0).contains(v));
+    let peak = |a: &Audio, ch: usize| a.mods.get(ch).map_or(0.0, |c| c.iter().cloned().fold(0.0, f32::max));
+    rep.check(
+        "drums mod out: 16 channels in range, kick and snare light, the beat ramps",
+        drums.mods.len() == 16 && range(&drums) && peak(&drums, 2) > 0.5 && peak(&drums, 3) > 0.3 && peak(&drums, 8) > 0.95,
+        format!("{} channels, kick {:.2}, snare {:.2}, beat ramp {:.2}", drums.mods.len(), peak(&drums, 2), peak(&drums, 3), peak(&drums, 8)),
+    );
+    rep.check(
+        "bass mod out: amp and filter envelopes, the LFO swings",
+        bass.mods.len() == 16 && range(&bass) && peak(&bass, 2) > 0.3 && peak(&bass, 3) > 0.9 && peak(&bass, 4) > 0.9,
+        format!("amp {:.2}, filter {:.2}, LFO {:.2}", peak(&bass, 2), peak(&bass, 3), peak(&bass, 4)),
+    );
 
     let again = render(entry, &base)?;
     rep.check("same seed renders the same audio", again.samples == drums.samples, format!("{} frames", drums.frames()));

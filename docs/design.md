@@ -455,6 +455,20 @@ Each step is tested before the next one starts.
   - **Not yet.** Trails need a persistent texture. The top bar is not yet modulated by hits.
     Visual sensitivity needs tuning by eye.
 
+- **M6 done (2026-10-19).** The mod outputs (D32, D34) are 16 mono aux outputs next to the stereo
+  out, with a stereo-only layout as the fallback. Ports are named by their bass and drum
+  source (`Mod 3 amp env / kick`).
+  - **Signal.** Every channel is a DC level 0..1, written sample accurately by `core::modout`
+    from the fired events and the transport.
+  - **Drum sources.** Held velocity, accent, per-voice hit envelopes, fill.
+  - **Bass sources.** Held velocity, stab, amp and filter envelopes, LFO, scrub position,
+    glide, pitch.
+  - **Shared sources.** Beat, bar and 8-bar phrase ramps, form letter, density and intensity
+    after the seed's centers, mod wheel, channel pressure.
+  - **Checks.** The e2e host now provides every declared port and checks that both modes'
+    channels stay in range and follow the hits.
+  - **Gap.** Reassigning channels to other sources needs a settings UI (G10).
+
 ## 9. Research R5: automation in the host (2026-10-19)
 
 No CLAP (1.2.10), VST3 (3.8.1) or ARA API lets a plugin write automation points or clips into a

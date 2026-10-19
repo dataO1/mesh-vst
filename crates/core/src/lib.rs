@@ -17,6 +17,7 @@ pub mod library;
 pub mod loader;
 pub mod loudness;
 pub mod macros;
+pub mod modout;
 pub mod motif;
 pub mod pattern;
 pub mod player;
