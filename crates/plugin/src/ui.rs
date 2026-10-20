@@ -1,7 +1,7 @@
 //! State the audio thread shares with the editor: lock-free, written once
 //! per block, read when the editor redraws.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use mesh_vst_core::generator::layout::DrumVoice;
 use mesh_vst_core::pattern::RenderedBar;
@@ -42,6 +42,12 @@ pub struct UiShared {
     pub hit: [AtomicU32; HIT_VALUES],
     /// Hits so far, so the editor sees a new one.
     pub hit_count: AtomicU32,
+    /// Splice (D42): this instance's link id, the host it follows (0 =
+    /// none, [`crate::link::SIDECHAIN`]) and the host's band levels (for the
+    /// overlap view).
+    pub link_id: AtomicU64,
+    pub host: AtomicU64,
+    pub host_bands: [AtomicU8; crate::link::BANDS],
 }
 
 /// Values of [`UiShared::hit`].
@@ -68,6 +74,9 @@ impl Default for UiShared {
             ],
             hit: std::array::from_fn(|_| AtomicU32::new(f32::NAN.to_bits())),
             hit_count: AtomicU32::new(0),
+            link_id: AtomicU64::new(0),
+            host: AtomicU64::new(0),
+            host_bands: std::array::from_fn(|_| AtomicU8::new(0)),
         }
     }
 }
@@ -152,4 +161,10 @@ pub struct UiState {
     /// Mod-out sources per channel (D34); empty = the defaults.
     pub mod_bass: Vec<mesh_vst_core::modout::Source>,
     pub mod_drums: Vec<mesh_vst_core::modout::Source>,
+    /// Splice (D42): this instance's id among the others, and the host it
+    /// follows ([`crate::link::SIDECHAIN`] = the sidechain input).
+    #[serde(default)]
+    pub link_id: u64,
+    #[serde(default)]
+    pub host: Option<u64>,
 }

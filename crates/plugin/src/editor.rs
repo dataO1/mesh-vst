@@ -112,6 +112,7 @@ pub enum Knob {
     Tone,
     Heat,
     Gain,
+    Splice,
 }
 
 impl Knob {
@@ -128,6 +129,7 @@ impl Knob {
             Knob::Tone => &p.tone,
             Knob::Heat => &p.heat,
             Knob::Gain => &p.gain,
+            Knob::Splice => &p.splice,
         }
     }
 }
@@ -180,6 +182,7 @@ pub enum Message {
     UnisonDetune(f32),
     UnisonDetuneReleased,
     UnisonMode(UnisonSpread),
+    Host(HostItem),
     MoveFile(PathBuf, Pool),
     Audition(PathBuf),
 }
@@ -213,10 +216,23 @@ pub struct Gui {
     samples: Vec<f32>,
     /// Kit generation the editor's library copy belongs to.
     seen_generation: u32,
+    /// Splice: the shared table (read only here) and the other instances.
+    link: Option<crate::link::Link>,
+    peers: Vec<crate::link::Peer>,
+    peers_at: std::time::Instant,
 }
 
 fn now_seed() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1
+}
+
+/// A new Splice link id: never 0 (none) or the sidechain.
+pub fn fresh_id() -> u64 {
+    let mut x = now_seed() ^ (std::process::id() as u64).rotate_left(32);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    x ^= x >> 33;
+    if x == 0 || x == crate::link::SIDECHAIN { 1 } else { x }
 }
 
 impl Gui {
@@ -230,6 +246,7 @@ impl Gui {
         }
         let view = std::env::var("MESH_VST_DEMO_VIEW").unwrap_or_default();
         let demo_drag = view == "drag";
+        let link = crate::link::Link::open(data.shared.link_id.load(Ordering::Relaxed)).ok();
         Self {
             data,
             ctx,
@@ -256,6 +273,9 @@ impl Gui {
             started: std::time::Instant::now(),
             samples: Vec::new(),
             seen_generation: 0,
+            link,
+            peers: Vec::new(),
+            peers_at: std::time::Instant::now(),
         }
     }
 
@@ -710,6 +730,17 @@ impl Gui {
                 setter.end_set_parameter(&params.unison_detune);
             }
             Message::UnisonDetuneReleased => self.record(),
+            Message::Host(h) => {
+                let id = match h {
+                    HostItem::None => 0,
+                    HostItem::Sidechain => crate::link::SIDECHAIN,
+                    HostItem::Peer(id, _) => id,
+                };
+                if let Ok(mut u) = self.data.params.ui.lock() {
+                    u.host = (id != 0).then_some(id);
+                }
+                self.data.shared.host.store(id, Ordering::Relaxed);
+            }
             Message::UnisonMode(m) => {
                 self.record();
                 let params = self.data.params.clone();
@@ -732,6 +763,13 @@ impl Gui {
     /// Advance the visual: read the output, decay the slot envelopes, light
     /// the slots that hit on a new step.
     fn animate(&mut self) {
+        // Splice: the other instances, once a second.
+        if self.peers_at.elapsed().as_millis() > 1000 {
+            self.peers_at = std::time::Instant::now();
+            if let Some(l) = self.link.as_ref() {
+                self.peers = l.peers();
+            }
+        }
         // Read the cache again when a scan finished (the kit generation moved)
         // or while the panel waits for the loader's first scan.
         let generation = self.data.shared.kit_generation.load(Ordering::Relaxed);
@@ -797,10 +835,32 @@ impl Gui {
         ((pos - param.unmodulated_normalized_value()).abs() > 0.004).then_some((pos.clamp(0.0, 1.0), self.hit_glow))
     }
 
+    /// Splice: per bin, how much this lane and its host are both loud there
+    /// (the host's band levels spread over the bins). Zero without a host.
+    fn overlap(&self, own: &[f32; crate::visual::BINS]) -> [f32; crate::visual::BINS] {
+        let host = self.data.shared.host.load(Ordering::Relaxed);
+        if host == 0 || host == crate::link::SIDECHAIN {
+            return [0.0; crate::visual::BINS];
+        }
+        let bands: [f32; crate::link::BANDS] = std::array::from_fn(|b| self.data.shared.host_bands[b].load(Ordering::Relaxed) as f32 / 255.0);
+        std::array::from_fn(|i| {
+            let x = (i as f32 + 0.5) / crate::visual::BINS as f32 * crate::link::BANDS as f32 - 0.5;
+            let lo = (x.floor().max(0.0) as usize).min(crate::link::BANDS - 1);
+            let hi = (lo + 1).min(crate::link::BANDS - 1);
+            let t = (x - lo as f32).clamp(0.0, 1.0);
+            let theirs = bands[lo] * (1.0 - t) + bands[hi] * t;
+            // MUSICAL: both above about half their range counts as a clash.
+            let both = own[i].min(theirs);
+            ((both - 0.35) / 0.35).clamp(0.0, 1.0)
+        })
+    }
+
     fn visual_frame(&self, drums: bool) -> crate::visual::Frame {
         let a = self.analyser.as_ref();
+        let levels = a.map_or([0.0; crate::visual::BINS], |a| a.levels());
         crate::visual::Frame {
-            levels: a.map_or([0.0; crate::visual::BINS], |a| a.levels()),
+            overlap: self.overlap(&levels),
+            levels,
             slots: self.slot_env,
             env: a.map_or(0.0, |a| a.env()),
             punch: a.map_or(0.0, |a| a.punch()),
@@ -961,6 +1021,7 @@ impl Gui {
             right = right.push(column![small("RATE"), pick(Rate::variants_list(), p.rate.value(), Message::Rate)].spacing(6));
         }
         right = right.push(Space::new().height(Length::Fill));
+        right = right.push(self.splice_view(p));
         right = right.push(column![small("VISUAL"), row![toggle("FIELD", !locks.low_power, Message::LowPower), toggle("STEPS", locks.low_power, Message::LowPower)].spacing(6)].spacing(6));
         let right = container(right).width(260).height(Length::Fill);
 
@@ -1592,4 +1653,47 @@ pub fn create(editor_state: Arc<IcedEditorState>, data: EditorData) -> Option<Ic
 #[allow(dead_code)]
 fn style_names() -> &'static [&'static str] {
     &DRUM_STYLES
+}
+
+/// A Splice host in the list: none, the sidechain input, or another instance.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HostItem {
+    None,
+    Sidechain,
+    Peer(u64, String),
+}
+
+impl std::fmt::Display for HostItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HostItem::None => write!(f, "no host"),
+            HostItem::Sidechain => write!(f, "sidechain"),
+            HostItem::Peer(_, label) => write!(f, "{label}"),
+        }
+    }
+}
+
+impl Gui {
+    /// Splice (D42): the host to follow and how (stacked .. gaps).
+    fn splice_view<'a>(&'a self, p: &'a MeshParams) -> Element<'a, Message> {
+        let host = self.data.shared.host.load(Ordering::Relaxed);
+        let me = self.data.shared.link_id.load(Ordering::Relaxed);
+        let mut items = vec![HostItem::None, HostItem::Sidechain];
+        // Not the ones following this lane: two never follow each other.
+        items.extend(self.peers.iter().filter(|q| q.follows != me).map(|q| HostItem::Peer(q.id, q.label.clone())));
+        let selected = match host {
+            0 => HostItem::None,
+            crate::link::SIDECHAIN => HostItem::Sidechain,
+            id => items.iter().find(|i| matches!(i, HostItem::Peer(p, _) if *p == id)).cloned().unwrap_or(HostItem::Peer(id, "host gone".into())),
+        };
+        let list = pick_list(items, Some(selected), Message::Host).font(DATA_FONT).text_size(12).width(Length::Fill).style(|_, _| pick_style());
+        column![
+            small("SPLICE · arrange around another lane"),
+            list,
+            knob(p, Knob::Splice, None),
+            row![small("stack"), Space::new().width(Length::Fill), small("gaps")],
+        ]
+        .spacing(6)
+        .into()
+    }
 }

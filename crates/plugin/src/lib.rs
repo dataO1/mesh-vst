@@ -22,6 +22,7 @@ pub mod builtin;
 pub mod editor;
 pub mod params;
 pub mod ui;
+pub mod link;
 pub mod visual;
 pub mod worker;
 
@@ -30,6 +31,11 @@ use worker::{Garbage, Ready, Request, Worker};
 
 /// Tempo when the host gives none.
 const DEFAULT_BPM: f64 = 175.0;
+/// Set by test hosts: `process` waits for each kit load, so renders repeat
+/// exactly and need no warmup on the clock.
+pub const SYNC_LOAD_ENV: &str = "MESH_VST_SYNC_LOAD";
+/// Frames per sidechain level reading (Splice).
+const SIDECHAIN_CHUNK: usize = 64;
 /// Sampler voices per mode.
 pub(crate) const DRUM_VOICES: usize = 48;
 pub(crate) const BASS_VOICES: usize = 48;
@@ -111,6 +117,12 @@ pub struct MeshVst {
     ring: mesh_vst_core::heat::RingMod,
     /// The drums' release tails (Shape).
     tail: mesh_vst_core::tail::Tail,
+    /// Splice (D42): the shared table, the sidechain's hits, this lane's
+    /// band levels and its label there.
+    link: Option<link::Link>,
+    sidechain: link::SidechainOcc,
+    meter: link::BandMeter,
+    label: [u8; 24],
     /// The knob positions and the seed's centres they play around.
     knobs: Knobs,
     centres: Centers,
@@ -129,6 +141,8 @@ pub struct MeshVst {
     /// The output for the editor's visual, and frames since its last redraw.
     audio_tx: Option<rtrb::Producer<f32>>,
     since_redraw: usize,
+    /// Wait for the worker's kits in `process` ([`SYNC_LOAD_ENV`]).
+    sync_load: bool,
 }
 
 
@@ -147,6 +161,10 @@ impl Default for MeshVst {
             heat: mesh_vst_core::heat::Heat::default(),
             ring: mesh_vst_core::heat::RingMod::default(),
             tail: mesh_vst_core::tail::Tail::new(48_000.0),
+            link: None,
+            sidechain: link::SidechainOcc::default(),
+            meter: link::BandMeter::new(48_000.0),
+            label: [0; 24],
             knobs: Knobs::CENTERED,
             centres: Knobs::CENTERED,
             modout: ModOut::new(48_000.0),
@@ -160,6 +178,7 @@ impl Default for MeshVst {
             published: (u64::MAX, u64::MAX),
             audio_tx: None,
             since_redraw: 0,
+            sync_load: std::env::var_os(SYNC_LOAD_ENV).is_some(),
         }
     }
 }
@@ -285,6 +304,21 @@ impl MeshVst {
         }
     }
 
+    /// Test hosts ([`SYNC_LOAD_ENV`]): block until the asked-for kit landed, so
+    /// a render never waits on the clock for the worker. Not RT-safe.
+    fn wait_for_kit(&mut self, mode: Mode) {
+        let key = |s: &Option<(LaneSettings, u32)>| s.as_ref().map(|(s, g)| (calibration_key(s), *g));
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(60) {
+            let Some(l) = self.lane_mut(mode) else { return };
+            if l.requested.is_none() || key(&l.requested) == key(&l.loaded) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            self.take_kits();
+        }
+    }
+
     /// Hand the editor what it shows. Atomics only: RT-safe.
     fn publish(&mut self, mode: Mode, playing: bool, bpm: f64, frames: usize) {
         use std::sync::atomic::Ordering::Relaxed;
@@ -340,6 +374,40 @@ impl MeshVst {
         self.ui.publish_hit(std::array::from_fn(|i| a.get(i).copied().unwrap_or(level)));
     }
 
+    /// Splice (D42): share what this lane plays in the next song bars, and
+    /// follow the host the editor picked. RT-safe.
+    fn splice(&mut self, mode: Mode, beat: f64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let bar = (beat * TICKS_PER_BEAT / mesh_vst_core::TICKS_PER_BAR as f64).floor().max(0.0) as u64;
+        let host = self.ui.host.load(Relaxed);
+        let amount = self.params.splice.value();
+        let Some(link) = self.link.as_mut() else { return };
+        let lane = match mode {
+            Mode::Drums => self.drums.as_mut(),
+            Mode::Bass => self.bass.as_mut(),
+        };
+        let Some(l) = lane else { return };
+        let mut data = link::SlotData { follows: host, bands: self.meter.levels(), label: self.label, ..Default::default() };
+        for (k, b) in data.bars.iter_mut().enumerate() {
+            *b = l.player.occupancy_for(bar + k as u64);
+        }
+        link.publish(&data);
+        let followed = match host {
+            0 => None,
+            link::SIDECHAIN => Some(self.sidechain.bars(bar)),
+            id => link.read(id).map(|d| {
+                for (a, v) in self.ui.host_bands.iter().zip(d.bands) {
+                    a.store(v, Relaxed);
+                }
+                d.bars
+            }),
+        };
+        match followed {
+            Some(bars) => l.player.set_splice(amount, &bars),
+            None => l.player.set_splice(0.5, &[]),
+        }
+    }
+
     /// Re-apply the knobs and settings when they changed. RT-safe.
     fn sync(&mut self, mode: Mode) {
         let s = self.settings();
@@ -364,6 +432,8 @@ impl MeshVst {
         lane.player.new_root = s.new_root;
         lane.player.lane_mut().phrase_bars = s.phrase_bars;
         lane.player.sampler_mut().set_params(sp);
+        let name = if mode == Mode::Drums { "drums" } else { "bass" };
+        self.label = link::label(name, s.lane.sound_seed as i32, self.ui.link_id.load(std::sync::atomic::Ordering::Relaxed));
         self.applied = Some((mode, s));
     }
 
@@ -463,6 +533,20 @@ impl MeshVst {
             0.5
         };
         self.heat.process(buf, self.resolved.heat, tone);
+        self.meter.process(buf);
+        // Splice: the sidechain's level per 16th of the song.
+        if self.ui.host.load(std::sync::atomic::Ordering::Relaxed) == link::SIDECHAIN {
+            if let Some(input) = aux.inputs.first_mut() {
+                let chans = input.as_slice();
+                let ticks_per_frame = transport.bpm / 60.0 / self.sample_rate as f64 * TICKS_PER_BEAT;
+                let tick0 = transport.beat * TICKS_PER_BEAT;
+                for start in (from..to).step_by(SIDECHAIN_CHUNK) {
+                    let end = (start + SIDECHAIN_CHUNK).min(to);
+                    let peak = chans.iter().filter_map(|c| c.get(start..end)).flat_map(|c| c.iter()).fold(0.0f32, |m, v| m.max(v.abs()));
+                    self.sidechain.feed(tick0 + (start - from) as f64 * ticks_per_frame, peak);
+                }
+            }
+        }
         self.publish_hit(mode);
         // The mod outputs, when the host gave their ports.
         if aux.outputs.len() >= modout::CHANNELS {
@@ -532,8 +616,9 @@ impl Plugin for MeshVst {
         AudioIOLayout {
             main_input_channels: None,
             main_output_channels: NonZeroU32::new(2),
+            aux_input_ports: &[new_nonzero_u32(2)],
             aux_output_ports: &[new_nonzero_u32(1); modout::CHANNELS],
-            names: PortNames { layout: Some("Stereo + mod out"), main_input: None, main_output: Some("Out"), aux_inputs: &[], aux_outputs: &MOD_PORT_NAMES },
+            names: PortNames { layout: Some("Stereo + mod out"), main_input: None, main_output: Some("Out"), aux_inputs: &["Sidechain"], aux_outputs: &MOD_PORT_NAMES },
             ..AudioIOLayout::const_default()
         },
         AudioIOLayout {
@@ -566,9 +651,17 @@ impl Plugin for MeshVst {
         self.heat = mesh_vst_core::heat::Heat::new(config.sample_rate);
         self.ring = mesh_vst_core::heat::RingMod::new(config.sample_rate);
         self.tail = mesh_vst_core::tail::Tail::new(config.sample_rate);
-        if let Ok(u) = self.params.ui.lock() {
+        self.meter = link::BandMeter::new(config.sample_rate);
+        if let Ok(mut u) = self.params.ui.lock() {
             self.ui.load_mod_map(&u);
+            // Splice: a stable id for this instance, saved with the project.
+            if u.link_id == 0 || u.link_id == link::SIDECHAIN {
+                u.link_id = editor::fresh_id();
+            }
+            self.ui.link_id.store(u.link_id, std::sync::atomic::Ordering::Relaxed);
+            self.ui.host.store(u.host.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
         }
+        self.link = link::Link::open(self.ui.link_id.load(std::sync::atomic::Ordering::Relaxed)).ok();
 
         let (layout, bank) = builtin::drum_kit(sr).build();
         let mut sampler = Sampler::new(sr, DRUM_VOICES);
@@ -612,6 +705,9 @@ impl Plugin for MeshVst {
         let mode = self.params.mode.value();
         self.take_kits();
         self.ask_kit(mode);
+        if self.sync_load {
+            self.wait_for_kit(mode);
+        }
         self.sync(mode);
         let (bpm, host_playing, block_beat) = {
             let t = context.transport();
@@ -655,6 +751,7 @@ impl Plugin for MeshVst {
             self.handle(mode, ev, tick, host_playing);
             pending = context.next_event();
         }
+        self.splice(mode, block_beat);
         self.publish(mode, host_playing, bpm, frames);
         ProcessStatus::KeepAlive
     }

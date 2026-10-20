@@ -13,7 +13,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use clack_extensions::audio_ports::{AudioPortInfoBuffer, PluginAudioPorts};
 use clack_extensions::params::{ParamInfoBuffer, PluginParams};
@@ -25,6 +24,8 @@ use clack_host::utils::{BeatTime, SecondsTime};
 const PLUGIN_ID: &[u8] = b"io.github.dataO1.mesh-vst";
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 512;
+/// Stopped blocks before a render (see `Render::warmup`).
+const WARMUP_BLOCKS: usize = 4;
 
 type Error = Box<dyn std::error::Error>;
 
@@ -191,16 +192,33 @@ fn render(entry: &PluginEntry, r: &Render) -> Result<Audio, Error> {
         }
     };
 
+    // And every input port (the sidechain): silent, as a host with nothing routed there.
+    let in_channels: Vec<u32> = {
+        let mut handle = instance.plugin_handle();
+        match handle.get_extension::<PluginAudioPorts>() {
+            Some(ports) => {
+                let mut buf = AudioPortInfoBuffer::new();
+                (0..ports.count(&mut handle, true)).filter_map(|i| ports.get(&mut handle, i, true, &mut buf).map(|p| p.channel_count)).collect()
+            }
+            None => Vec::new(),
+        }
+    };
+
     let config = PluginAudioConfiguration { sample_rate: SR, min_frames_count: 1, max_frames_count: BLOCK as u32 };
     let processor = instance.activate(|_, _| (), config)?;
     let mut processor = processor.start_processing()?;
     let total_channels: u32 = channels.iter().sum();
     let mut out_ports = AudioPorts::with_capacity(total_channels as usize, channels.len());
     let mut bufs: Vec<Vec<Vec<f32>>> = channels.iter().map(|&c| vec![vec![0.0f32; BLOCK]; c as usize]).collect();
+    let mut in_ports = AudioPorts::with_capacity(in_channels.iter().sum::<u32>() as usize, in_channels.len());
+    let mut in_bufs: Vec<Vec<Vec<f32>>> = in_channels.iter().map(|&c| vec![vec![0.0f32; BLOCK]; c as usize]).collect();
     let mut out_events = EventBuffer::new();
 
     let mut block = |events: &EventBuffer, n: usize, bufs: &mut Vec<Vec<Vec<f32>>>| -> Result<(), Error> {
-        let input = InputAudioBuffers::empty();
+        let input = in_ports.with_input_buffers(in_bufs.iter_mut().map(|port| AudioPortBuffer {
+            latency: 0,
+            channels: AudioPortBufferType::f32_input_only(port.iter_mut().map(|c| InputChannel::constant(&mut c[..n]))),
+        }));
         let mut output = out_ports.with_output_buffers(bufs.iter_mut().map(|port| AudioPortBuffer {
             latency: 0,
             channels: AudioPortBufferType::f32_output_only(port.iter_mut().map(|c| &mut c[..n])),
@@ -210,9 +228,10 @@ fn render(entry: &PluginEntry, r: &Render) -> Result<Audio, Error> {
         Ok(())
     };
 
-    let started = Instant::now();
+    // Warmup: a few stopped blocks so the kit and its calibration land (the
+    // plugin waits for them, MESH_VST_SYNC_LOAD).
     let mut first = true;
-    while started.elapsed().as_secs_f64() < r.warmup {
+    for _ in 0..if r.warmup > 0.0 { WARMUP_BLOCKS } else { 0 } {
         let mut events = EventBuffer::new();
         events.push(&transport(0.0, r.bpm, false));
         if std::mem::take(&mut first) {
@@ -221,7 +240,6 @@ fn render(entry: &PluginEntry, r: &Render) -> Result<Audio, Error> {
             }
         }
         block(&events, BLOCK, &mut bufs)?;
-        std::thread::sleep(Duration::from_millis(10));
     }
 
     let total = (r.bars * 4.0 * 60.0 / r.bpm * SR) as usize;
@@ -369,7 +387,12 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     rep.check(
         "a new key changes the bass from the switch on",
         switched.samples[..half - 2048] == bass.samples[..half - 2048] && switched.samples[half..] != bass.samples[half..],
-        String::new(),
+        format!(
+            "first difference at frame {:?} of {}, after the switch {}",
+            switched.samples.iter().zip(&bass.samples).position(|(a, b)| a != b).map(|i| i / 2),
+            half / 2,
+            if switched.samples[half..] != bass.samples[half..] { "differs" } else { "the same" }
+        ),
     );
     let octave = render(entry, &Render { mode: "bass", key: base.key + 12, ..base.clone() })?;
     rep.check("an octave up plays other notes", octave.samples != bass.samples, String::new());
@@ -501,6 +524,8 @@ fn main() -> Result<(), Error> {
     std::env::set_var("XDG_CONFIG_HOME", std::env::temp_dir().join("mesh-vst-hostcheck-config"));
     // Fixed starting values, so renders without --seed repeat.
     std::env::set_var("MESH_VST_FIXED_DEFAULTS", "1");
+    // The plugin waits for each kit in `process`: no warmup on the clock.
+    std::env::set_var("MESH_VST_SYNC_LOAD", "1");
     // SAFETY: loading a plugin runs its code; this tool is for our own bundle.
     let entry = unsafe { PluginEntry::load(&bundle)? };
 

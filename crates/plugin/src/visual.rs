@@ -39,6 +39,8 @@ const SENSITIVITY_DB: f32 = 18.0;
 #[derive(Debug, Clone, Copy)]
 pub struct Frame {
     pub levels: [f32; BINS],
+    /// Splice: how much each bin overlaps the host's (0..1), drawn amber.
+    pub overlap: [f32; BINS],
     pub slots: [f32; SLOTS],
     /// Overall envelope and transient amount, 0..1.
     pub env: f32,
@@ -173,6 +175,7 @@ struct Uniforms {
     c: [f32; 4],
     levels: [[f32; 4]; BINS / 4],
     slots: [[f32; 4]; SLOTS / 4],
+    overlap: [[f32; 4]; BINS / 4],
 }
 
 /// How much of the last frame stays each frame: short trails (D33).
@@ -353,6 +356,7 @@ impl shader::Primitive for FieldPrimitive {
             c: [1.0 - TRAIL_KEEP, 0.0, 0.0, 0.0],
             levels: std::array::from_fn(|r| std::array::from_fn(|c| f.levels[r * 4 + c])),
             slots: std::array::from_fn(|r| std::array::from_fn(|c| f.slots[r * 4 + c])),
+            overlap: std::array::from_fn(|r| std::array::from_fn(|c| f.overlap[r * 4 + c])),
         };
         queue.write_buffer(&pipeline.uniforms, 0, bytemuck::bytes_of(&u));
     }
@@ -410,6 +414,7 @@ struct U {
     c: vec4<f32>,
     levels: array<vec4<f32>, 25>,
     slots: array<vec4<f32>, 2>,
+    overlap: array<vec4<f32>, 25>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 
@@ -421,6 +426,15 @@ struct Out {
 
 fn level(b: u32) -> f32 {
     let v = u.levels[b / 4u];
+    let i = b % 4u;
+    if i == 0u { return v.x; }
+    if i == 1u { return v.y; }
+    if i == 2u { return v.z; }
+    return v.w;
+}
+
+fn overlap(b: u32) -> f32 {
+    let v = u.overlap[b / 4u];
     let i = b % 4u;
     if i == 0u { return v.x; }
     if i == 1u { return v.y; }
@@ -491,6 +505,13 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> Out {
         center.x -= split;
         tint = vec3<f32>(0.35, 0.55, 0.98);
         alpha = select(0.0, 0.32 * lv, lv >= 0.12);
+    }
+
+    // Splice: where this lane and its host share a band, the ink turns amber.
+    let ov = overlap(row);
+    if pass_id == 2u && ov > 0.0 {
+        tint = mix(tint, vec3<f32>(1.0, 0.68, 0.22), ov);
+        alpha = min(alpha + 0.25 * ov, 1.0);
     }
 
     // A dot (bass) or a short line along the flow (drums).

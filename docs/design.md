@@ -138,6 +138,17 @@ drive external effects.
   take a cell. The repeating bars of a phrase pick alike, the variation bar re-draws.
   Rate: double speed plays no faster than 16ths and half speed no faster than 8ths (2026-10-20);
   a note closer to the one before goes, and that one holds over it.
+- **D42** **Splice** (2026-10-20): an instance follows a host, another mesh instance in the
+  project or the sidechain input, picked in the SPLICE list (right column). The Splice knob runs
+  from stacked (0) through off (0.5) to the host's gaps (1). The host shares, by song bar, what it
+  plays per 16th; the follower turns it into a focus per step: density, variation and spread
+  lean there, hits outside it move a 16th or an 8th into it or thin out (at most 85 % at the
+  ends, so the extremes play mostly, not only, stacked or in the gaps). One way only: the list
+  hides instances that follow this one. Instances share through a small shared-memory table
+  (`/dev/shm/mesh-vst-link-v1`, the temp dir elsewhere), so it works when the host sandboxes
+  each plugin; nothing but the bars and band levels crosses, and each follower renders from
+  data published a bar ahead, so bounces repeat. The sidechain stands for the next bars with its
+  last bar's levels per 16th. Where both lanes are loud in a band, the field draws amber.
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
 - **D31** Hat, cymbal and shaker pools. The name decides when it carries a keyword: 97% of
