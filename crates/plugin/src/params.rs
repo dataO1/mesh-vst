@@ -87,6 +87,38 @@ impl Rate {
     }
 }
 
+/// How the drums grow their release tail above Shape's middle.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tail {
+    #[name = "VOC"]
+    Vocoder,
+    #[name = "SPEC"]
+    Spectral,
+    #[name = "NOISE"]
+    Noise,
+}
+
+impl Tail {
+    pub fn mode(self) -> mesh_vst_core::tail::TailMode {
+        use mesh_vst_core::tail::TailMode;
+        match self {
+            Tail::Vocoder => TailMode::Vocoder,
+            Tail::Spectral => TailMode::Spectral,
+            Tail::Noise => TailMode::Noise,
+        }
+    }
+
+    /// The sound seed's tail.
+    pub fn seeded(sound_seed: u32) -> Self {
+        use mesh_vst_core::tail::TailMode;
+        match TailMode::seeded(sound_seed) {
+            TailMode::Vocoder => Tail::Vocoder,
+            TailMode::Spectral => Tail::Spectral,
+            TailMode::Noise => Tail::Noise,
+        }
+    }
+}
+
 /// Pitch bend ranges in semitones (D24).
 pub const BEND_RANGES: [i32; 7] = [1, 3, 5, 7, 12, 19, 24];
 /// Ranges the seed picks from for its default (D24), per mode.
@@ -157,6 +189,9 @@ pub struct MeshParams {
 
     #[id = "heat"]
     pub heat: FloatParam,
+
+    #[id = "tail"]
+    pub tail: EnumParam<Tail>,
 
     #[id = "style"]
     pub style: EnumParam<DrumStyle>,
@@ -250,6 +285,7 @@ fn setting(p: IntParam) -> IntParam {
 impl Default for MeshParams {
     fn default() -> Self {
         let fresh = Fresh::new();
+        let sound = fresh.seed();
         Self {
             density: knob_at("Density", fresh.knob()),
             permute: knob_at("Permute", 0.0),
@@ -262,9 +298,10 @@ impl Default for MeshParams {
             tone: knob_at("Tone", fresh.knob()),
             // MUSICAL: a new instance starts warm, below the crush.
             heat: knob_at("Heat", 0.6 * (fresh.knob() - 0.25) + 0.1),
+            tail: EnumParam::new("Tail", Tail::seeded(sound as u32)),
             style: EnumParam::new("Style", DrumStyle::Seed),
             mode: EnumParam::new("Mode", Mode::Drums).non_automatable(),
-            sound_seed: setting(IntParam::new("Sound seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED })),
+            sound_seed: setting(IntParam::new("Sound seed", sound, IntRange::Linear { min: 0, max: MAX_SEED })),
             pattern_seed: setting(IntParam::new("Pattern seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED })),
             form: setting(IntParam::new("Form", 1, IntRange::Linear { min: 0, max: 10 }))
                 .with_value_to_string(std::sync::Arc::new(|v| if v == 0 { "none".into() } else { v.to_string() }))

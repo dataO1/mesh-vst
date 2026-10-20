@@ -109,6 +109,8 @@ pub struct MeshVst {
     heat: mesh_vst_core::heat::Heat,
     /// The drums' ring modulator (Morph).
     ring: mesh_vst_core::heat::RingMod,
+    /// The drums' release tails (Shape).
+    tail: mesh_vst_core::tail::Tail,
     /// The knob positions and the seed's centres they play around.
     knobs: Knobs,
     centres: Centers,
@@ -144,6 +146,7 @@ impl Default for MeshVst {
             resolved: Knobs::CENTERED,
             heat: mesh_vst_core::heat::Heat::default(),
             ring: mesh_vst_core::heat::RingMod::default(),
+            tail: mesh_vst_core::tail::Tail::new(48_000.0),
             knobs: Knobs::CENTERED,
             centres: Knobs::CENTERED,
             modout: ModOut::new(48_000.0),
@@ -450,6 +453,9 @@ impl MeshVst {
         }
         // Drums: the ring modulator on Morph, and Heat focused by Tone.
         let tone = if mode == Mode::Drums {
+            // Release tails above Shape's middle, the shaper in front.
+            let at = (transport.beat * 60.0 / transport.bpm.max(1.0) * self.sample_rate as f64).max(0.0) as u64;
+            self.tail.process(buf, self.resolved.shape, self.params.tail.value().mode(), at);
             let (hz, mix, shape) = macros::ring(self.params.sound_seed.value() as u32, self.resolved.morph);
             self.ring.process(buf, hz, mix, shape, transport.beat * 60.0 / transport.bpm.max(1.0));
             self.resolved.tone
@@ -559,6 +565,7 @@ impl Plugin for MeshVst {
         self.modout = ModOut::new(config.sample_rate);
         self.heat = mesh_vst_core::heat::Heat::new(config.sample_rate);
         self.ring = mesh_vst_core::heat::RingMod::new(config.sample_rate);
+        self.tail = mesh_vst_core::tail::Tail::new(config.sample_rate);
         if let Ok(u) = self.params.ui.lock() {
             self.ui.load_mod_map(&u);
         }

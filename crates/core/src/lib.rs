@@ -26,6 +26,7 @@ pub mod rng;
 pub mod role;
 pub mod sampler;
 pub mod spec;
+pub mod tail;
 pub mod types;
 
 /// Steps (16ths) per bar.

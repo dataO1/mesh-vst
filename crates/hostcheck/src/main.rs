@@ -417,6 +417,13 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
         let db = 20.0 * (rms(&diff) / rms(&lo.samples).max(1e-9)).log10();
         rep.check(&format!("{knob} changes the drums"), db > -20.0, format!("difference {db:.1} dB below the drums"));
     }
+    // The three release tails at full Shape sound apart.
+    let mut tails = Vec::new();
+    for i in 0..3 {
+        tails.push(render(entry, &Render { params: vec![("Shape".into(), 1.0), ("Tail".into(), i as f64)], ..base.clone() })?);
+    }
+    let apart = (0..3).all(|i| (i + 1..3).all(|j| tails[i].samples != tails[j].samples));
+    rep.check("the three release tails differ", apart, String::new());
     let distinct = (0..styles.len()).all(|i| (i + 1..styles.len()).all(|j| styles[i].samples != styles[j].samples));
     rep.check("the drum styles differ", distinct, format!("{} styles", styles.len()));
 

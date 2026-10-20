@@ -23,7 +23,7 @@ use nice_plug_iced::iced::{
 use nice_plug_iced::{application, create_iced_editor, IcedEditor, IcedEditorState, IcedNiceContext, IcedNiceSettings, PersistentState};
 use serde::{Deserialize, Serialize};
 
-use crate::params::{DrumStyle, MeshParams, Mode, NewRootMode, Phrase, PhaseMode, Rate, Scale, UnisonSpread, BEND_RANGES};
+use crate::params::{DrumStyle, MeshParams, Mode, NewRootMode, Phrase, PhaseMode, Rate, Scale, Tail, UnisonSpread, BEND_RANGES};
 use mesh_vst_core::modout::{Source, CHANNELS as MOD_CHANNELS};
 use crate::ui::{UiShared, UiState, ROWS};
 use crate::worker::{self, FileRef, KitState};
@@ -150,6 +150,7 @@ pub enum Message {
     Style(DrumStyle),
     Scale(Scale),
     Rate(Rate),
+    Tail(Tail),
     Phase(PhaseMode),
     RollSound,
     RollPattern,
@@ -504,6 +505,11 @@ impl Gui {
                 let params = self.data.params.clone();
                 self.set_enum(&params.rate, r);
             }
+            Message::Tail(t) => {
+                self.record();
+                let params = self.data.params.clone();
+                self.set_enum(&params.tail, t);
+            }
             Message::Phase(p) => {
                 self.record();
                 let params = self.data.params.clone();
@@ -528,6 +534,10 @@ impl Gui {
                         }
                     }
                     self.set_int(&params.sound_seed, v);
+                    // Drums: the new seed brings its own tail mode.
+                    if !bass {
+                        self.set_enum(&params.tail, Tail::seeded(v as u32));
+                    }
                     // Bass: the new voice shows on the knobs (all but
                     // Permute), to shape by hand.
                     if bass {
@@ -930,7 +940,18 @@ impl Gui {
         let mut right = column![small(if drums { "KIT" } else { "MUDPIE VOICE" })].spacing(12);
         if drums {
             right = right.push(column![small("STYLE"), pick(DrumStyle::variants_list(), p.style.value(), Message::Style)].spacing(6));
-            for k in [Knob::Shape, Knob::Morph, Knob::Tone, Knob::Heat] {
+            right = right.push(knob(p, Knob::Shape, self.hit_marker(Knob::Shape)));
+            // The release tail's method (Shape above its middle).
+            let tail = p.tail.value();
+            right = right.push(
+                row![
+                    toggle("VOC", tail == Tail::Vocoder, Message::Tail(Tail::Vocoder)),
+                    toggle("SPEC", tail == Tail::Spectral, Message::Tail(Tail::Spectral)),
+                    toggle("NOISE", tail == Tail::Noise, Message::Tail(Tail::Noise)),
+                ]
+                .spacing(6),
+            );
+            for k in [Knob::Morph, Knob::Tone, Knob::Heat] {
                 right = right.push(knob(p, k, self.hit_marker(k)));
             }
         } else {
