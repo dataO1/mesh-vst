@@ -849,15 +849,30 @@ impl Feel {
 
 /// Splice: keep `out` before the half bar, take `second` from it on.
 pub fn splice_second_half(out: &mut BarEvents, second: &BarEvents) {
-    let half = TICKS_PER_BAR / 2;
+    splice_from(out, second, TICKS_PER_BAR / 2);
+}
+
+/// `out` up to tick `from`, then `second` (the primed letter, D47).
+pub fn splice_from(out: &mut BarEvents, second: &BarEvents, from: u16) {
     let mut spliced = BarEvents::default();
-    for e in out.as_slice().iter().filter(|e| e.tick < half) {
+    for e in out.as_slice().iter().filter(|e| e.tick < from) {
         spliced.push(*e);
     }
-    for e in second.as_slice().iter().filter(|e| e.tick >= half) {
+    for e in second.as_slice().iter().filter(|e| e.tick >= from) {
         spliced.push(*e);
     }
     *out = spliced;
+}
+
+// MUSICAL: tune by ear (user, 2026-10-21: `'` is one of the operators, so
+// Variation scales it too). Where a primed bar takes the other seed: the
+// last beat at Variation 0, the second half in full.
+const PRIME_FROM_BEATS: (f32, f32) = (3.0, 2.0);
+
+/// The tick a primed bar switches at, for operator amount `amount`.
+pub fn prime_from(amount: f32) -> u16 {
+    let beats = PRIME_FROM_BEATS.0 + (PRIME_FROM_BEATS.1 - PRIME_FROM_BEATS.0) * amount.clamp(0.0, 1.0);
+    (beats.round() as u16) * (TICKS_PER_BAR / BEATS_PER_BAR)
 }
 
 // MUSICAL: first draft, tune by ear (Q32).

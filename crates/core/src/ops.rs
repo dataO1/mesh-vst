@@ -469,7 +469,8 @@ fn apply_one(op: Op, k: u8, notes: &mut Vec<SpanNote>, ctx: &OpCtx) {
             let grid = if op == Op::Dotted { 3 * STEP } else { BAR / 12 };
             let share = lerp(GRID_SHARE, a);
             for (i, n) in notes.iter_mut().enumerate() {
-                if !is_note(n) || is_anchor(n, ctx) || !rng::chance(h(ctx, k, 5, i as u32), share) {
+                // (A downbeat is on every grid; its length moves too.)
+                if !is_note(n) || !rng::chance(h(ctx, k, 5, i as u32), share) {
                     continue;
                 }
                 n.at = (((n.at + grid / 2) / grid) * grid).min(ctx.ticks.saturating_sub(1));
@@ -766,6 +767,71 @@ mod tests {
         assert!([2, 7].contains(&(last.ev.key % 12)) && last.ev.gate < 72, "{:?}", last.ev);
         // Octaves: up an octave.
         assert!(line_keys(&run(Op::OctaveUp, 1.0, &src)).iter().zip(line_keys(&src)).all(|(a, b)| *a == b + 12));
+    }
+
+    fn ats(v: &[SpanNote]) -> Vec<u32> {
+        v.iter().map(|n| n.at).collect()
+    }
+
+    #[test]
+    fn rhythm_operators_move_onsets_and_lengths() {
+        let src = line();
+        // R: the window's rhythm mirrored, the pitch order kept.
+        let r = run(Op::RhythmRetrograde, 1.0, &src);
+        assert_ne!(ats(&r), ats(&src));
+        let line_keys = |v: &[SpanNote]| v.iter().filter(|n| n.at % BAR != 0).map(|n| n.ev.key).collect::<Vec<_>>();
+        assert_eq!(line_keys(&r), line_keys(&src), "pitch order kept");
+        // o: rotated by whole 16ths.
+        let o = run(Op::Rotation, 1.0, &src);
+        let pairs = |v: &[SpanNote]| v.iter().map(|n| (n.at, n.ev.key)).collect::<Vec<_>>();
+        assert!(o.iter().all(|n| n.at % STEP == 0) && pairs(&o) != pairs(&src));
+        // d and e: onsets on the dotted-8th or the 8th-triplet grid.
+        for (op, grid) in [(Op::Dotted, 3 * STEP), (Op::Triplets, BAR / 12)] {
+            let v = run(op, 1.0, &src);
+            assert!(v.iter().all(|n| n.at % grid == 0 || n.at % BAR == 0), "{op:?}: {:?}", ats(&v));
+            assert!(v.iter().all(|n| n.ev.gate as u32 % grid == 0), "{op:?} lengths");
+        }
+        // y: the beats (not the downbeats) a 16th early.
+        let y = run(Op::Syncopate, 1.0, &src);
+        assert!(y.iter().filter(|n| n.at % BAR != 0).all(|n| n.at % BEAT == BEAT - STEP), "{:?}", ats(&y));
+        // h: half time, the first half stretched; x: double time, twice.
+        let h = run(Op::HalfTime, 1.0, &src);
+        assert_eq!(h.len(), src.len() / 2);
+        assert!(h.iter().all(|n| n.at % (2 * BEAT) == 0 && n.ev.gate == 144));
+        let x = run(Op::DoubleTime, 1.0, &src);
+        assert_eq!(x.len(), 2 * src.len());
+        // l: held into the next note; s: short.
+        assert!(run(Op::Legato, 1.0, &src).iter().all(|n| n.ev.gate as u32 == BEAT));
+        assert!(run(Op::Staccato, 1.0, &src).iter().all(|n| n.ev.gate < 30));
+        // n: fewer notes, the beats and roots stay; p: passing notes.
+        let mut off = line();
+        for n in off.iter_mut().skip(1) {
+            n.at += 2 * STEP;
+        }
+        assert!(run(Op::Thin, 1.0, &off).len() < off.len());
+        assert!(run(Op::Passing, 1.0, &src).len() > src.len());
+        // m: at least one note changes, more in full.
+        let diff = |v: &[SpanNote]| src.len().abs_diff(v.len()) + v.iter().zip(&src).filter(|(a, b)| a.ev != b.ev).count();
+        let (little, full) = (diff(&run(Op::Mutate, 0.0, &src)), diff(&run(Op::Mutate, 1.0, &src)));
+        assert!(little >= 1 && full >= little, "{little} .. {full}");
+    }
+
+    #[test]
+    fn operators_chain_left_to_right() {
+        let src = line();
+        let mut v = Vec::with_capacity(64);
+        v.extend_from_slice(&src);
+        let mut chain = OpChain::default();
+        chain.push(Op::Retrograde);
+        chain.push(Op::Dotted);
+        apply(&chain, &mut v, &ctx(1.0));
+        let both = v.clone();
+        let mut w = run(Op::Retrograde, 1.0, &src);
+        let mut d = OpChain::default();
+        d.push(Op::Dotted);
+        apply(&d, &mut w, &ctx(1.0));
+        assert_ne!(ats(&both), ats(&src));
+        assert_eq!(keys(&both).len(), keys(&w).len());
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use crate::event::{flags, BarEvents, EventKind, LiveEvent};
 use crate::sampler::MORPH_REGION;
 use crate::form::{
-    form_chord, letter_offset, letter_seed, prime_seed, splice_second_half, Feel, Form, FormPos, Letter, Play, SeedClass,
+    form_chord, letter_offset, letter_seed, prime_from, prime_seed, splice_from, Feel, Form, FormPos, Letter, Play, SeedClass,
     DEFAULT_FORMS, FILLER_BOOSTS, LETTER_OFFSETS, NOTE_JITTER_SHARE,
 };
 use crate::generator::bass::{self, BassGenerator, BassRules};
@@ -530,7 +530,7 @@ impl PatternLane {
                 scratch.clear();
                 self.generator.render_bar(&bar_ctx, scratch);
                 scratch.sort();
-                splice_second_half(out, scratch);
+                splice_from(out, scratch, prime_from(self.op_amount()));
             }
         } else {
             // Operators (D47): the letter's first bars, transformed over the
@@ -676,7 +676,7 @@ impl PatternLane {
                     span.prime.clear();
                     self.generator.render_bar(&ctx, &mut span.prime);
                     span.prime.sort();
-                    splice_second_half(tmp, &span.prime);
+                    splice_from(tmp, &span.prime, prime_from(amount));
                 }
                 for e in tmp.as_slice() {
                     let at = j as u32 * bar_ticks + e.tick as u32;
