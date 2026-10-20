@@ -260,7 +260,8 @@ impl Default for MeshParams {
             spread: knob_at("Spread", fresh.knob()),
             slide: knob_at("Slide", fresh.knob()),
             tone: knob_at("Tone", fresh.knob()),
-            heat: knob_at("Heat", fresh.knob()),
+            // MUSICAL: a new instance starts warm, below the crush.
+            heat: knob_at("Heat", 0.6 * (fresh.knob() - 0.25) + 0.1),
             style: EnumParam::new("Style", DrumStyle::Seed),
             mode: EnumParam::new("Mode", Mode::Drums).non_automatable(),
             sound_seed: setting(IntParam::new("Sound seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED })),

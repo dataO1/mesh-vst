@@ -537,7 +537,7 @@ impl Gui {
                             self.set_float(p, x);
                         }
                         // Heat mostly warm, rarely crushed.
-                        let x = 0.1 + 0.5 * (self.next_rand() % 1000) as f32 / 1000.0;
+                        let x = 0.1 + 0.4 * (self.next_rand() % 1000) as f32 / 1000.0;
                         self.set_float(&params.heat, x);
                     }
                 }

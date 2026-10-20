@@ -320,11 +320,11 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell; scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
 | **Groove** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts |
 | **Shape** | stabby to sustained: length, expression, filter bite; at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke, loop hold, decay |
-| **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style |
+| **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style; a ring modulator above 400 Hz (the lows stay clean) fades in from a fifth to at most 30 %, its seeded carrier rising an octave and turning from sine to square |
 | **Spread** | width: octave lifts, jump size, notes above the home root spread in stereo (the sub stays centred), deeper filter LFO and envelope | — |
 | **Slide** | how often notes slide (up to 45 % of eligible notes) and the glide time, 30 ms to 250 ms; also the glide of the full-Shape legato; liquid: up to 35 % more held notes tie, filter glide 4 to 160 ms, vibrato on held notes | — |
 | **Tone** | — | the kit's register: low plays more kicks, snares and ghosts and fewer cymbals; high plays more hats, rides, shakers, top loop and break, sparser kicks and snares |
-| **Heat** | clip, then bitcrush, then saturation on the output: soft and transparent low, saturation from a third, bitcrush from two thirds, level-matched | the same |
+| **Heat** | clip, then bitcrush, then saturation on the output: the clip threshold falls all the way up (0.95 to 0.25), saturation from a fifth up to +30 dB drive, the crush fades in from the middle (12 to 4 bits, up to 12 samples held), level-matched within a few dB | the same, and Tone tilts the saturation (12 dB around 700 Hz): low Tone drives the lows, high Tone the highs |
 
 A ninth, stepped and automatable parameter, **Style** (drums), picks the rhythm family
 (D39).

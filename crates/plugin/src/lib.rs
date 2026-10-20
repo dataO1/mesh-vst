@@ -107,6 +107,8 @@ pub struct MeshVst {
     resolved: Knobs,
     /// The Heat stage on the lane's output.
     heat: mesh_vst_core::heat::Heat,
+    /// The drums' ring modulator (Morph).
+    ring: mesh_vst_core::heat::RingMod,
     /// The knob positions and the seed's centres they play around.
     knobs: Knobs,
     centres: Centers,
@@ -127,6 +129,7 @@ pub struct MeshVst {
     since_redraw: usize,
 }
 
+
 impl Default for MeshVst {
     fn default() -> Self {
         Self {
@@ -139,7 +142,8 @@ impl Default for MeshVst {
             mod_wheel: 0.0,
             pressure: 0.0,
             resolved: Knobs::CENTERED,
-            heat: mesh_vst_core::heat::Heat::new(),
+            heat: mesh_vst_core::heat::Heat::default(),
+            ring: mesh_vst_core::heat::RingMod::default(),
             knobs: Knobs::CENTERED,
             centres: Knobs::CENTERED,
             modout: ModOut::new(48_000.0),
@@ -444,7 +448,15 @@ impl MeshVst {
             Some(l) => l.player.process(buf, &transport),
             None => buf.fill(StereoSample::silence()),
         }
-        self.heat.process(buf, self.resolved.heat);
+        // Drums: the ring modulator on Morph, and Heat focused by Tone.
+        let tone = if mode == Mode::Drums {
+            let (hz, mix, shape) = macros::ring(self.params.sound_seed.value() as u32, self.resolved.morph);
+            self.ring.process(buf, hz, mix, shape, transport.beat * 60.0 / transport.bpm.max(1.0));
+            self.resolved.tone
+        } else {
+            0.5
+        };
+        self.heat.process(buf, self.resolved.heat, tone);
         self.publish_hit(mode);
         // The mod outputs, when the host gave their ports.
         if aux.outputs.len() >= modout::CHANNELS {
@@ -545,6 +557,8 @@ impl Plugin for MeshVst {
         let sr = config.sample_rate.round() as u32;
         self.buf = vec![StereoSample::silence(); config.max_buffer_size as usize];
         self.modout = ModOut::new(config.sample_rate);
+        self.heat = mesh_vst_core::heat::Heat::new(config.sample_rate);
+        self.ring = mesh_vst_core::heat::RingMod::new(config.sample_rate);
         if let Ok(u) = self.params.ui.lock() {
             self.ui.load_mod_map(&u);
         }

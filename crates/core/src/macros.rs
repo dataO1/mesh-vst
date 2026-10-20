@@ -82,9 +82,9 @@ pub type Centers = Knobs;
 // falls in, per mode (from the Mesh starter style's defaults and their
 // usual playing range).
 const DRUM_CENTRES: [(f32, f32); KNOBS] =
-    [(0.35, 0.65), (0.5, 0.5), (0.25, 0.55), (0.0, 0.35), (0.35, 0.7), (0.1, 0.7), (0.5, 0.5), (0.5, 0.5), (0.3, 0.7), (0.05, 0.35)];
+    [(0.35, 0.65), (0.5, 0.5), (0.25, 0.55), (0.0, 0.35), (0.35, 0.7), (0.1, 0.7), (0.5, 0.5), (0.5, 0.5), (0.3, 0.7), (0.5, 0.5)];
 const BASS_CENTRES: [(f32, f32); KNOBS] =
-    [(0.35, 0.65), (0.5, 0.5), (0.3, 0.6), (0.2, 0.6), (0.25, 0.75), (0.1, 0.9), (0.05, 0.4), (0.3, 0.7), (0.5, 0.5), (0.1, 0.45)];
+    [(0.35, 0.65), (0.5, 0.5), (0.3, 0.6), (0.2, 0.6), (0.25, 0.75), (0.1, 0.9), (0.05, 0.4), (0.3, 0.7), (0.5, 0.5), (0.5, 0.5)];
 const S_CENTRE: u32 = 0xC40;
 
 impl Centers {
@@ -270,6 +270,24 @@ fn width_and_liquid(p: &mut LaneSamplerParams, spread: f32, slide: f32) {
     m.vib_depth = 30.0 * ((slide - 0.4) / 0.6).max(0.0).powf(1.5);
     m.vib_delay = 0.18;
     m.vib_fade = 0.3;
+}
+
+// MUSICAL: first draft, tune by ear (user: the ring mod comes in gradually,
+// Morph changes its shape, at most 30 %).
+/// Morph value where the drums' ring modulator starts, and the range its
+/// seeded carrier falls in (Hz), moved up to an octave by Morph.
+const RING_FROM: f32 = 0.2;
+const RING_HZ: (f32, f32) = (300.0, 1100.0);
+const S_RING: u32 = 0xC52;
+
+/// The drums' ring modulator for a sound seed at resolved Morph `morph`:
+/// carrier Hz, mix (up to [`crate::heat::RING_MIX_MAX`]) and carrier shape
+/// (sine .. square).
+pub fn ring(sound_seed: u32, morph: f32) -> (f32, f32, f32) {
+    let m = ((morph - RING_FROM) / (1.0 - RING_FROM)).clamp(0.0, 1.0);
+    let base = rng::range_f32(rng::hash(sound_seed, 0, 0, 0, S_RING), RING_HZ.0, RING_HZ.1);
+    let mix = crate::heat::RING_MIX_MAX * m * m * (3.0 - 2.0 * m);
+    (base * 2f32.powf(m), mix, morph.clamp(0.0, 1.0))
 }
 
 /// The drum styles, in the generator's archetype order (design D39).
