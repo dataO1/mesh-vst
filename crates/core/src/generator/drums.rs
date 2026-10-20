@@ -466,7 +466,7 @@ fn smooth(lo: f32, hi: f32, x: f32) -> f32 {
 /// on the 16th level over [`TRIM_16TH`], each hit at its seeded threshold, so
 /// the knob adds them one by one, softer while their level is coming in.
 /// Steps from `until` on (a fill) stay.
-fn metric_trim(density: f32, tone: f32, rng: &PhraseRng, until: usize, out: &mut BarEvents) {
+fn metric_trim(density: f32, tone: f32, focus: &[f32; STEPS_PER_BAR], rng: &PhraseRng, until: usize, out: &mut BarEvents) {
     let until_tick = until as u16 * TICKS_PER_STEP;
     for (vi, voice) in FEEL_VOICES.iter().enumerate() {
         // Tone moves the high voices' density (percussion stays).
@@ -497,7 +497,8 @@ fn metric_trim(density: f32, tone: f32, rng: &PhraseRng, until: usize, out: &mut
                 return true;
             }
             let s = (e.tick / TICKS_PER_STEP) as usize;
-            rng.unit(s as u8, S_FEEL_PRESENCE + 8 + vi as u32) < level_weight[level(s)]
+            // Splice: more hits where the focus is.
+            rng.unit(s as u8, S_FEEL_PRESENCE + 8 + vi as u32) < level_weight[level(s)] * focus[s.min(STEPS_PER_BAR - 1)]
         });
         for e in out.as_mut_slice().iter_mut().filter(|e| of(e)) {
             let w = level_weight[level((e.tick / TICKS_PER_STEP) as usize)];
@@ -1310,7 +1311,7 @@ impl LaneGenerator for DrumGenerator {
         self.shaker(ctx, &p, &recipe, &rng, out);
         self.top(ctx, &p, &recipe, &rng, out);
         if self.rules.feel {
-            metric_trim(p.density, p.tone, &rng, fill_from, out);
+            metric_trim(p.density, p.tone, &ctx.focus, &rng, fill_from, out);
             let add_vel = if self.rules.tiers > 0.0 { FEEL_ADD_VEL } else { 1.0 };
             rate_feel(p.density, &rng, &bb, fill_from, add_vel, out);
         }

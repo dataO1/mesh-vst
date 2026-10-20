@@ -64,7 +64,14 @@ pub fn note_param(ctx: &BarCtx, index: usize, n: u8) -> f32 {
 /// Parameter `index` as a note of `shape` reads it (see [`patterned`]).
 pub fn note_param_for(ctx: &BarCtx, index: usize, shape: NoteShape) -> f32 {
     let amp = ctx.jitter.get(index).copied().unwrap_or(0.0);
-    patterned(param(ctx, index), amp, ctx.seed, ctx.lane, ctx.bar_in_phrase, index, shape)
+    let v = patterned(param(ctx, index), amp, ctx.seed, ctx.lane, ctx.bar_in_phrase, index, shape);
+    // Splice: the focus moves the parameter on its steps.
+    // A negative shift moves the parameter down off the focus only (density:
+    // the line thins outside the focus, it does not crowd it).
+    let shift = ctx.focus_shift.get(index).copied().unwrap_or(0.0);
+    let f = ctx.focus.get(shape.step as usize).copied().unwrap_or(1.0);
+    let d = if shift < 0.0 { (f - 1.0).min(0.0) } else { f - 1.0 };
+    if shift == 0.0 || d == 0.0 { v } else { (v + shift.abs() * d).clamp(0.0, 1.0) }
 }
 
 // MUSICAL: first draft, tune by ear (user: the moves follow the notes, not

@@ -16,6 +16,7 @@ use crate::key::MusicalKey;
 use crate::pattern::{PatternLane, RenderedBar, Scratch};
 use crate::role::Role;
 use crate::sampler::Sampler;
+use crate::splice::{self, Occupancy};
 use crate::types::StereoSample;
 use crate::{TICKS_PER_BAR, TICKS_PER_STEP};
 
@@ -80,7 +81,7 @@ pub struct Player {
     bar: RenderedBar,
     scratch: Scratch,
     /// What `bar` was rendered for: pattern bar, lane version, root key.
-    cached: Option<(u64, u64, u8)>,
+    cached: Option<(u64, u64, u8, u64)>,
     version: u64,
     /// Tempo the break and top loops were recorded at: they play faster or
     /// slower with the host, the pitch following (design D29).
@@ -92,7 +93,18 @@ pub struct Player {
     /// Events fired in the last block with their frame offsets (mod outputs).
     fired: Box<[(u32, LiveEvent); MAX_FIRED]>,
     fired_len: usize,
+    /// Splice: the amount (0.5 = off) and what the host plays, by song bar.
+    splice: f32,
+    host: [Occupancy; HOST_BARS],
+    /// What this lane plays by song bar, for followers: (song bar, version,
+    /// root) it was worked out for, and the result.
+    published: [(u64, u64, u8, Occupancy); HOST_BARS],
+    side: RenderedBar,
+    side_scratch: Scratch,
 }
+
+/// Song bars of a host a follower keeps (the playing one and the next ones).
+pub const HOST_BARS: usize = 4;
 
 /// Events a block keeps for the mod outputs.
 pub const MAX_FIRED: usize = 512;
@@ -118,6 +130,11 @@ impl Player {
             position: None,
             fired: Box::new([(0, LiveEvent::default()); MAX_FIRED]),
             fired_len: 0,
+            splice: 0.5,
+            host: [Occupancy::default(); HOST_BARS],
+            published: [(u64::MAX, 0, 0, Occupancy::default()); HOST_BARS],
+            side: RenderedBar::default(),
+            side_scratch: Scratch::default(),
         }
     }
 
@@ -150,7 +167,7 @@ impl Player {
 
     /// The pattern bar playing, if any (the last block's).
     pub fn rendered(&self) -> Option<(u64, &RenderedBar)> {
-        self.cached.map(|(bar, _, _)| (bar, &self.bar))
+        self.cached.map(|(bar, _, _, _)| (bar, &self.bar))
     }
 
     /// A note starts at song tick `tick` with velocity 0..1. The newest held
@@ -212,6 +229,77 @@ impl Player {
         self.gate.is_some_and(|g| g.close_at.is_infinite())
     }
 
+    /// Splice: follow a host at `amount` (0 stacked .. 0.5 off .. 1 gaps),
+    /// with what it plays by song bar (unknown bars: `song_bar` u64::MAX).
+    /// A bar renders again when the focus it gets changes. RT-safe.
+    pub fn set_splice(&mut self, amount: f32, host: &[Occupancy]) {
+        self.splice = amount;
+        for (dst, src) in self.host.iter_mut().zip(host.iter().chain(std::iter::repeat(&Occupancy::default()))) {
+            *dst = *src;
+        }
+    }
+
+    /// The focus of pattern bar `bar` (bar 0 at song tick `origin`): neutral
+    /// when Splice is off or a song bar under it is unknown.
+    fn focus_for(&self, origin: f64, bar: u64) -> [f32; crate::STEPS_PER_BAR] {
+        let neutral = [1.0; crate::STEPS_PER_BAR];
+        if (self.splice - 0.5).abs() < 1e-3 {
+            return neutral;
+        }
+        let mut occ = [0.0f32; crate::STEPS_PER_BAR];
+        for (s, o) in occ.iter_mut().enumerate() {
+            // The middle of the step, in song ticks.
+            let t = origin + bar as f64 * TICKS_PER_BAR as f64 + (s as f64 + 0.5) * TICKS_PER_STEP as f64;
+            let song_bar = (t / TICKS_PER_BAR as f64).floor().max(0.0) as u64;
+            let step = ((t.rem_euclid(TICKS_PER_BAR as f64)) / TICKS_PER_STEP as f64) as usize;
+            let Some(h) = self.host.iter().find(|h| h.song_bar == song_bar) else { return neutral };
+            *o = h.steps[step.min(crate::STEPS_PER_BAR - 1)] as f32 / 255.0;
+        }
+        splice::focus(self.splice, &occ)
+    }
+
+    /// What this lane plays in song bar `song_bar` (for followers). Silent
+    /// while no note is held. Worked out once per bar and lane version.
+    pub fn occupancy_for(&mut self, song_bar: u64) -> Occupancy {
+        let Some(gate) = self.gate.filter(|g| g.close_at.is_infinite()) else {
+            return Occupancy { song_bar, steps: [0; crate::STEPS_PER_BAR] };
+        };
+        let key = MusicalKey::new(gate.key % 12, self.minor);
+        let want = (song_bar, self.version, key.root);
+        if let Some(p) = self.published.iter().find(|p| (p.0, p.1, p.2) == want) {
+            return p.3;
+        }
+        let bar_ticks = TICKS_PER_BAR as f64;
+        let start = song_bar as f64 * bar_ticks;
+        let mut occ = [0.0f32; crate::STEPS_PER_BAR];
+        // The pattern bars under this song bar (two when the origin is off the bar line).
+        let first = ((start - gate.origin) / bar_ticks).floor();
+        for pb in [first, first + 1.0] {
+            if pb < 0.0 {
+                continue;
+            }
+            let pb = pb as u64;
+            self.lane.focus = self.focus_for(gate.origin, pb);
+            self.lane.render(pb, key, &mut self.side, &mut self.side_scratch);
+            let own = splice::occupancy(self.lane.role(), &self.side.events, self.side.voices);
+            let bar_start = gate.origin + pb as f64 * bar_ticks;
+            for (s, v) in own.iter().enumerate() {
+                let t = bar_start + s as f64 * TICKS_PER_STEP as f64 - start;
+                if (0.0..bar_ticks).contains(&t) {
+                    let i = (t / TICKS_PER_STEP as f64).round() as usize;
+                    if i < crate::STEPS_PER_BAR {
+                        occ[i] = occ[i].max(*v);
+                    }
+                }
+            }
+        }
+        let out = splice::pack(song_bar, &occ);
+        // Keep it in the oldest slot.
+        let slot = self.published.iter().enumerate().min_by_key(|(_, p)| if p.0 == u64::MAX { 0 } else { p.0.wrapping_add(1) }).map_or(0, |(i, _)| i);
+        self.published[slot] = (want.0, want.1, want.2, out);
+        out
+    }
+
     /// Render one block into `out` (overwritten).
     pub fn process(&mut self, out: &mut [StereoSample], t: &Transport) {
         self.fired_len = 0;
@@ -257,8 +345,12 @@ impl Player {
         // Pitched lanes play in the held note's octave (D7).
         let octave_shift = if self.lane.role() == Role::Drums { 0 } else { gate.key as i32 - home_root(key) };
         for bar in first..=last {
-            let want = (bar, self.version, key.root);
+            // Splice: the host's hits under this bar set the focus.
+            let focus = self.focus_for(gate.origin, bar);
+            let stamp = focus.iter().fold(0u64, |h, f| h.rotate_left(5) ^ f.to_bits() as u64);
+            let want = (bar, self.version, key.root, stamp);
             if self.cached != Some(want) {
+                self.lane.focus = focus;
                 self.lane.render(bar, key, &mut self.bar, &mut self.scratch);
                 self.cached = Some(want);
                 self.renders = self.renders.wrapping_add(1);
@@ -353,6 +445,47 @@ mod tests {
         let mut sampler = Sampler::new(SR, 16);
         sampler.set_bank(basedrop::Shared::new(&crate::gc::gc_handle(), mudpie_bank(share(tone(43.65, 8.0, 100.0)))));
         Player::new(PatternLane::bass(seed, seed), sampler)
+    }
+
+    #[test]
+    fn splice_moves_the_follower_onto_or_off_the_host() {
+        let mut host = drum_player(3);
+        host.note_on(29, 1.0, 0.0);
+        let occ: Vec<Occupancy> = (0..HOST_BARS as u64).map(|b| host.occupancy_for(b)).collect();
+        assert!(occ.iter().all(|o| o.steps.iter().any(|s| *s > 0)), "the host plays");
+        let bpm = 175.0;
+        let spb = 60.0 / bpm * SR as f64;
+        // Share of the follower's onsets on the host's strong hits.
+        let on_host = |amount: f32| {
+            let mut f = bass_player(5);
+            f.lane_mut().set_param("density", 0.8);
+            f.set_splice(amount, &occ);
+            f.note_on(29, 1.0, 0.0);
+            let mut buf = vec![StereoSample::silence(); 64];
+            let (mut pos, mut on, mut all) = (0usize, 0.0, 0.0);
+            while (pos as f64) < spb * 4.0 * HOST_BARS as f64 {
+                f.process(&mut buf, &Transport { playing: true, beat: pos as f64 / spb, bpm });
+                for (off, e) in f.fired() {
+                    if e.kind != EventKind::NoteOn {
+                        continue;
+                    }
+                    let tick = ((pos as f64 + *off as f64) / spb * TICKS_PER_BEAT).round();
+                    let bar = (tick / TICKS_PER_BAR as f64) as usize;
+                    let step = ((tick % TICKS_PER_BAR as f64) / TICKS_PER_STEP as f64) as usize;
+                    let Some(o) = occ.get(bar) else { continue };
+                    on += (o.steps[step.min(15)] > 128) as u8 as f32;
+                    all += 1.0;
+                }
+                pos += 64;
+            }
+            on / all
+        };
+        let (stacked, off, gaps) = (on_host(0.0), on_host(0.5), on_host(1.0));
+        assert!(stacked > off + 0.05 && gaps < off - 0.05, "stacked {stacked}, off {off}, gaps {gaps}");
+        // Mostly, not only: the extremes still play on the other side.
+        assert!(stacked < 0.98 && gaps > 0.02, "stacked {stacked}, gaps {gaps}");
+        // Deterministic: the same host gives the same line.
+        assert_eq!(on_host(1.0), gaps);
     }
 
     /// Hold `key` from song start and render `bars` bars at `bpm` in blocks of `block`.

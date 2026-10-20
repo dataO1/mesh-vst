@@ -66,6 +66,10 @@ pub struct BarCtx<'a> {
     /// The drum lane fills this bar (a filler segment's last bar). Motif
     /// leads rest.
     pub drum_fill: bool,
+    /// Splice: the focus per step (1 = as generated, see [`crate::splice`]).
+    pub focus: [f32; STEPS_PER_BAR],
+    /// How far the focus moves each parameter a note reads (per unit of focus).
+    pub focus_shift: [f32; MAX_GEN_PARAMS],
 }
 
 /// One lane's pattern generator.

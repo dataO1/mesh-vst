@@ -222,6 +222,8 @@ mod tests {
             bass_onsets: 0,
             bass_phrase: [0; 4],
             drum_fill: false,
+            focus: [1.0; crate::STEPS_PER_BAR],
+            focus_shift: [0.0; crate::generator::MAX_GEN_PARAMS],
         };
         let mut out = BarEvents::default();
         pattern.render_bar(&ctx, &mut out);

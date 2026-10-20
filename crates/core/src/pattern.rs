@@ -97,6 +97,77 @@ fn groove(out: &mut BarEvents, amount: f32) {
     out.sort();
 }
 
+/// Parameters the Splice focus moves per step, the rest stay.
+const FOCUS_PARAMS: [&str; 3] = ["density", "variation", "spread"];
+const S_SPLICE: u32 = 0xF54;
+
+/// How far the focus moves each generator parameter (negative: only down,
+/// off the focus): none while Splice is off.
+fn focus_shift(names: &[&str], focus: &[f32; STEPS_PER_BAR]) -> [f32; MAX_GEN_PARAMS] {
+    let mut out = [0.0; MAX_GEN_PARAMS];
+    if focus.iter().all(|f| *f == 1.0) {
+        return out;
+    }
+    for (i, name) in names.iter().enumerate().take(MAX_GEN_PARAMS) {
+        if *name == "density" {
+            out[i] = -crate::splice::PARAM_SHIFT;
+        } else if FOCUS_PARAMS.contains(name) {
+            out[i] = crate::splice::PARAM_SHIFT;
+        }
+    }
+    out
+}
+
+/// Splice: hits outside the focus move into it or thin out (seeded per
+/// hit). A hit on a step of low focus moves a 16th or an 8th to a step of
+/// more focus where it does not land on another of its kind; where it can't
+/// it drops, up to [`crate::splice::DROP_MAX`] of them where the focus is
+/// lowest. The bar stays sorted, ties and gates move with their notes.
+fn splice_thin(out: &mut BarEvents, focus: &[f32; STEPS_PER_BAR], seed: u32, lane: u8, bar_in_phrase: u8) {
+    if focus.iter().all(|f| *f >= 1.0) {
+        return;
+    }
+    let step = TICKS_PER_BAR / STEPS_PER_BAR as u16;
+    let mut taken = [0u64; STEPS_PER_BAR];
+    for e in out.as_slice().iter().filter(|e| matches!(e.kind, EventKind::Trigger | EventKind::NoteOn)) {
+        taken[((e.tick / step) as usize).min(STEPS_PER_BAR - 1)] |= 1 << (e.target % 64);
+    }
+    for e in out.as_mut_slice() {
+        if !matches!(e.kind, EventKind::Trigger | EventKind::NoteOn) {
+            continue;
+        }
+        let s = ((e.tick / step) as usize).min(STEPS_PER_BAR - 1);
+        let low = ((1.0 - focus[s]) / crate::splice::FOCUS_RANGE).clamp(0.0, 1.0);
+        let h = rng::hash(seed, lane, bar_in_phrase, (e.tick / 4) as u8 ^ e.target, S_SPLICE);
+        if low <= 0.0 {
+            continue;
+        }
+        let try_move = rng::unit_f32(h) < low * crate::splice::MOVE_MAX;
+        let bit = 1u64 << (e.target % 64);
+        let better = [1i32, -1, 2, -2]
+            .into_iter()
+            .map(|d| s as i32 + d)
+            .filter(|&t| (0..STEPS_PER_BAR as i32).contains(&t))
+            .map(|t| t as usize)
+            .filter(|&t| try_move && focus[t] > focus[s] && taken[t] & bit == 0)
+            .max_by(|a, b| focus[*a].total_cmp(&focus[*b]));
+        match better {
+            Some(t) => {
+                taken[s] &= !bit;
+                taken[t] |= bit;
+                let off = e.tick % step;
+                e.tick = t as u16 * step + off;
+                e.gate = e.gate.min(TICKS_PER_BAR - e.tick);
+            }
+            // No place to go: it drops (velocity 0, removed below).
+            None if rng::unit_f32(h.rotate_left(17)) < low * crate::splice::DROP_MAX => e.vel = 0,
+            None => {}
+        }
+    }
+    out.retain(|_, e| !(matches!(e.kind, EventKind::Trigger | EventKind::NoteOn) && e.vel == 0));
+    out.sort();
+}
+
 /// Chunks a bar is cut into for Permute: half beats.
 pub const PERMUTE_CHUNKS: usize = 8;
 
@@ -212,6 +283,9 @@ pub struct PatternLane {
     pub phrase_bars: u32,
     /// Permute 0..1: how many of the bar's chunks swap places (seeded).
     pub permute: f32,
+    /// Splice: the focus per step the player sets for the next render
+    /// ([`crate::splice::focus`]; all 1 = off).
+    pub focus: [f32; STEPS_PER_BAR],
     /// Generator parameters, indexed like [`LaneGenerator::param_names`].
     pub params: [f32; MAX_GEN_PARAMS],
 }
@@ -244,7 +318,7 @@ impl PatternLane {
     ) -> Self {
         let mut forms = vec![Form::single()];
         forms.extend(DEFAULT_FORMS.iter().map(|f| Form::parse(f).expect("built-in form parses")));
-        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, phrase_bars: 8, permute: 0.0, params }
+        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, phrase_bars: 8, permute: 0.0, focus: [1.0; STEPS_PER_BAR], params }
     }
 
     pub fn role(&self) -> Role {
@@ -370,6 +444,8 @@ impl PatternLane {
             bass_onsets: 0,
             bass_phrase: [0; 4],
             drum_fill: false,
+            focus: self.focus,
+            focus_shift: focus_shift(names, &self.focus),
         };
         self.generator.render_bar(&bar_ctx, out);
         out.sort();
@@ -410,6 +486,7 @@ impl PatternLane {
                 e.pan = (side.signum() * WIDTH_PAN * spread * above * 127.0).round() as i8;
             }
         }
+        splice_thin(out, &self.focus, seed, c.lane, c.bar_in_phrase);
         voices
     }
 }
