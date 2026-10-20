@@ -29,6 +29,8 @@ pub const MAX_GEN_PARAMS: usize = 12;
 /// Everything a generator may read to render one bar.
 #[derive(Debug, Clone, Copy)]
 pub struct BarCtx<'a> {
+    /// The pattern seed: what holds across all letters (the rhythm family).
+    pub style_seed: u32,
     /// Seed of the letter being rendered (see [`super::form`]).
     pub seed: u32,
     /// Seed that picks sounds (drum pools): the master seed in main bars, the

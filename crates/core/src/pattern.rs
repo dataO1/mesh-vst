@@ -241,6 +241,7 @@ impl PatternLane {
             SeedClass::Filler => rng::hash(self.sound_seed, c.lane, pos.letter.index(), 0, S_SOUND) as u32,
         };
         let mut bar_ctx = BarCtx {
+            style_seed: self.pattern_seed,
             seed,
             sound_seed,
             class,

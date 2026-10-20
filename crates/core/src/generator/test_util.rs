@@ -20,6 +20,7 @@ pub(crate) fn ctx<'a>(
     drum_mask: &'a [u8; STEPS_PER_BAR],
 ) -> BarCtx<'a> {
     BarCtx {
+        style_seed: 0,
         sound_seed: 0,
         class: crate::form::SeedClass::Main,
         seed,

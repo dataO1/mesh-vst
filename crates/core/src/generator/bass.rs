@@ -267,11 +267,14 @@ pub struct BassRules {
     /// Rhythm from the built-in groove vocabulary ([`GROOVES`]) and repeats
     /// only as fills; off: the step-importance rhythm everywhere.
     pub scheme: bool,
+    /// Rhythm cells ([`CELLS`]): a seeded share of beats from another grid
+    /// (triplets, dotted, ratchet clusters, sustains); off: the step line only.
+    pub cells: bool,
 }
 
 impl Default for BassRules {
     fn default() -> Self {
-        Self { phrase: true, tiers: 1.0, gaps: 1.0, root: 1.0, motifs: true, persona: true, walk: true, scheme: true }
+        Self { phrase: true, tiers: 1.0, gaps: 1.0, root: 1.0, motifs: true, persona: true, walk: true, scheme: true, cells: true }
     }
 }
 
@@ -287,6 +290,7 @@ impl BassRules {
             persona: option(params, "persona", 1.0) >= 0.5,
             walk: option(params, "walk", 1.0) >= 0.5,
             scheme: option(params, "scheme", 1.0) >= 0.5,
+            cells: option(params, "cells", 1.0) >= 0.5,
         }
     }
 }
@@ -681,6 +685,9 @@ impl LaneGenerator for BassGenerator {
         // Ratchets belong to the stabby side: none at the sustained end. With
         // the groove scheme they are fills: the phrase's last beat and fill
         // bars only.
+        if self.rules.cells {
+            n = rhythm_cells(&mut events, n, ctx, &rng, variation);
+        }
         let ratchet = persona.ratchet * (2.0 * param(ctx, P_STABS)).min(1.0);
         let fill_bar = ctx.fill || ctx.drum_fill;
         let ratchet_at = |step: u8| {
@@ -921,6 +928,181 @@ fn repeat_height(above: i32) -> f32 {
 /// plays again by the figure `figure(step)` ([`FIGURES`]) when the next note
 /// is later than the figure's last repeat. Notes in a slide stay whole.
 /// Returns the new count.
+// Rhythm cells (user, 2026-10-20): the step line lives on one grid, so a
+// seeded share of its beats is replaced by a cell from another one:
+// ratchet clusters, triplets, dotted notes, sustains into a pickup. The
+// pattern seed picks one family of cells for the whole pattern (a style);
+// the filler letters (C, D) play a contrasting family. Variation sets how
+// many beats a cell takes.
+
+/// A rhythmic figure over `beats` beats.
+#[derive(Debug, Clone, Copy)]
+struct Cell {
+    beats: u16,
+    /// Onsets in ticks from the span start.
+    onsets: &'static [u16],
+    /// Gate as a share of the time to the next onset.
+    gate: f32,
+    /// The last note holds to the span end.
+    hold_last: bool,
+    /// Every note repeats the first pitch (a ratchet), else the span's
+    /// pitches cycle.
+    repeat: bool,
+    /// The last note is an accented pickup.
+    pickup: bool,
+}
+
+const BEAT: u16 = TICKS_PER_BAR / 4;
+
+// MUSICAL: first draft, tune by ear.
+const CELLS: [Cell; 12] = [
+    // 0: four 16ths, a ratchet.
+    Cell { beats: 1, onsets: &[0, 24, 48, 72], gate: 0.55, hold_last: false, repeat: true, pickup: false },
+    // 1: three 32nds into a held note.
+    Cell { beats: 1, onsets: &[0, 12, 24], gate: 0.6, hold_last: true, repeat: true, pickup: false },
+    // 2: 8th triplets.
+    Cell { beats: 1, onsets: &[0, 32, 64], gate: 0.85, hold_last: false, repeat: false, pickup: false },
+    // 3: 16th triplets, a fast roll.
+    Cell { beats: 1, onsets: &[0, 16, 32, 48, 64, 80], gate: 0.6, hold_last: false, repeat: true, pickup: false },
+    // 4: quarter triplets over two beats.
+    Cell { beats: 2, onsets: &[0, 64, 128], gate: 0.92, hold_last: false, repeat: false, pickup: false },
+    // 5: dotted 8th and a 16th.
+    Cell { beats: 1, onsets: &[0, 72], gate: 0.95, hold_last: false, repeat: false, pickup: true },
+    // 6: dotted quarter and an 8th.
+    Cell { beats: 2, onsets: &[0, 144], gate: 0.95, hold_last: false, repeat: false, pickup: false },
+    // 7: a held beat into a 16th pickup.
+    Cell { beats: 1, onsets: &[0, 72], gate: 0.97, hold_last: false, repeat: false, pickup: true },
+    // 8: two held beats into a 16th pickup.
+    Cell { beats: 2, onsets: &[0, 168], gate: 0.97, hold_last: false, repeat: false, pickup: true },
+    // 9: one note held over two beats.
+    Cell { beats: 2, onsets: &[0], gate: 0.97, hold_last: true, repeat: false, pickup: false },
+    // 10: two quarters.
+    Cell { beats: 2, onsets: &[0, 96], gate: 0.8, hold_last: false, repeat: false, pickup: false },
+    // 11: four 16th triplets into a held note.
+    Cell { beats: 1, onsets: &[0, 16, 32, 48], gate: 0.6, hold_last: true, repeat: true, pickup: false },
+];
+
+/// Families of cells (weights over [`CELLS`]); family 0 plays the step line
+/// as it is.
+const FAMILIES: [[f32; 12]; 7] = [
+    // Plain.
+    [0.0; 12],
+    // Straight 16ths: ratchets and pickups.
+    [2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 1.0, 1.0, 0.0],
+    // Triplets.
+    [0.0, 0.0, 3.0, 1.0, 2.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 2.0],
+    // Dotted.
+    [0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 2.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+    // Ratchet clusters.
+    [2.0, 3.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+    // Sustained, with pickups.
+    [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 3.0, 3.0, 1.0, 0.0],
+    // Mixed.
+    [1.0; 12],
+];
+/// Chance of each family for a pattern (plain sometimes, not always).
+const FAMILY_WEIGHTS: [f32; 7] = [1.2, 1.0, 1.0, 1.0, 1.0, 1.0, 0.6];
+/// Share of a bar's beats a cell takes at the centred Variation, and how
+/// Variation scales it (0 .. 1).
+const CELL_RATE: f32 = 0.35;
+const CELL_RATE_BY_VARIATION: (f32, f32) = (0.2, 1.8);
+const CELL_RATE_MAX: f32 = 0.85;
+
+const S_FAMILY: u32 = 0x220;
+const S_CELL_AT: u32 = 0x221;
+const S_CELL_KIND: u32 = 0x222;
+
+/// The cell family of this bar: the pattern's own in main letters, a
+/// different one (by the letter) in filler letters.
+fn cell_family(ctx: &BarCtx) -> usize {
+    let main = rng::weighted_pick(rng::hash(ctx.style_seed, ctx.lane, 0, 0, S_FAMILY), &FAMILY_WEIGHTS).unwrap_or(0);
+    if ctx.class == crate::form::SeedClass::Main {
+        return main;
+    }
+    // Any other family but plain.
+    let others = FAMILIES.len() as u32 - 2;
+    let k = 1 + rng::below(rng::hash(ctx.seed, ctx.lane, 0, 1, S_FAMILY), others) as usize;
+    if k >= main.max(1) { k + 1 } else { k }
+}
+
+/// Replace a seeded share of the bar's beats with cells of the bar's family
+/// (see [`CELLS`]). A beat without a note stays a rest. The repeating bars of
+/// a phrase choose alike; the variation bar re-draws.
+fn rhythm_cells(events: &mut [LiveEvent; 2 * STEPS_PER_BAR], n: usize, ctx: &BarCtx, rng: &PhraseRng, variation: f32) -> usize {
+    let family = cell_family(ctx);
+    let weights = &FAMILIES[family.min(FAMILIES.len() - 1)];
+    if weights.iter().all(|&w| w <= 0.0) || n == 0 {
+        return n;
+    }
+    let rate = (CELL_RATE * lerp(CELL_RATE_BY_VARIATION.0, CELL_RATE_BY_VARIATION.1, variation)).min(CELL_RATE_MAX);
+    let mut out = [LiveEvent::default(); 2 * STEPS_PER_BAR];
+    let mut m = 0usize;
+    let mut i = 0usize;
+    let mut beat = 0u16;
+    while beat < 4 {
+        let from = beat * BEAT;
+        let step = (from / TICKS_PER_STEP) as u8;
+        let in_beat = |t: u16, beats: u16| t >= from && t < from + beats * BEAT;
+        let cell = rng.chance(step, S_CELL_AT, rate).then(|| rng::weighted_pick(rng.at(step, S_CELL_KIND), weights)).flatten().map(|k| CELLS[k]);
+        let cell = cell.filter(|c| beat + c.beats <= 4);
+        // The notes the span holds.
+        let span = cell.map_or(1, |c| c.beats);
+        let mut j = i;
+        while j < n && in_beat(events[j].tick, span) {
+            j += 1;
+        }
+        let notes = &events[i..j];
+        match cell {
+            Some(c) if !notes.is_empty() && m + c.onsets.len() + (n - j) <= out.len() => {
+                let end = from + c.beats * BEAT;
+                let template = notes[0];
+                for (k, &off) in c.onsets.iter().enumerate() {
+                    let mut e = template;
+                    e.tick = from + off;
+                    let next = c.onsets.get(k + 1).map_or(end, |&o| from + o);
+                    let last = k + 1 == c.onsets.len();
+                    e.gate = if last && c.hold_last {
+                        ((end - e.tick) as f32 * 0.97) as u16
+                    } else {
+                        (((next - e.tick) as f32 * c.gate) as u16).max(GATE_MIN_TICKS as u16)
+                    };
+                    if !c.repeat {
+                        e.key = notes[k % notes.len()].key;
+                    }
+                    // A cell sets its own lengths: no stab cuts them short.
+                    e.flags &= !flags::STAB;
+                    if k > 0 {
+                        e.flags &= !(flags::TIE | flags::ACCENT | flags::STAB);
+                        e.glide = 0;
+                        e.note_id = 0x80 + beat * 16 + k as u16;
+                    }
+                    if last && c.pickup && k > 0 {
+                        e.flags |= flags::ACCENT;
+                    }
+                    out[m] = e;
+                    m += 1;
+                }
+            }
+            _ => {
+                for e in notes {
+                    out[m] = *e;
+                    m += 1;
+                }
+            }
+        }
+        i = j;
+        beat += span;
+    }
+    // Anything after the last beat (none in a normal bar).
+    while i < n && m < out.len() {
+        out[m] = events[i];
+        m += 1;
+        i += 1;
+    }
+    *events = out;
+    m
+}
+
 fn ratchets(
     events: &mut [LiveEvent; 2 * STEPS_PER_BAR],
     n: usize,
@@ -1012,8 +1194,13 @@ mod tests {
     const EMPTY: [u8; 16] = [0; 16];
 
     /// The plain generator (no seed character, pool pitches), for the rule tests.
+    /// The step line alone: the cells have their own tests.
+    fn test_rules() -> BassRules {
+        BassRules { cells: false, ..BassRules::default() }
+    }
+
     fn generator() -> BassGenerator {
-        BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, walk: false, scheme: false, ..BassRules::default() }, Vec::new())
+        BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, walk: false, scheme: false, ..test_rules() }, Vec::new())
     }
 
     fn params(edit: impl FnOnce(&mut [f32; MAX_GEN_PARAMS])) -> [f32; MAX_GEN_PARAMS] {
@@ -1156,7 +1343,7 @@ mod tests {
 
     #[test]
     fn root_rule_off_spreads_pitches() {
-        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { root: 0.0, walk: false, scheme: false, ..BassRules::default() }, Vec::new());
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { root: 0.0, walk: false, scheme: false, ..test_rules() }, Vec::new());
         let (mut root, mut total) = (0, 0);
         for seed in 0..200 {
             for e in bar(&g, seed, 0, &PARAM_DEFAULTS, &TWO_STEP) {
@@ -1238,7 +1425,7 @@ mod tests {
                 .count()
         };
         let follow = generator();
-        let ignore = BassGenerator::new(PARAM_DEFAULTS, BassRules { gaps: 0.0, scheme: false, ..BassRules::default() }, Vec::new());
+        let ignore = BassGenerator::new(PARAM_DEFAULTS, BassRules { gaps: 0.0, scheme: false, ..test_rules() }, Vec::new());
         assert!(count_on_odd(&follow) < count_on_odd(&ignore));
     }
 
@@ -1278,7 +1465,7 @@ mod tests {
 
     #[test]
     fn spread_sizes_the_walk() {
-        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, ..BassRules::default() }, Vec::new());
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, ..test_rules() }, Vec::new());
         let intervals = |spread: f32| -> Vec<i32> {
             let p = params(|p| {
                 p[P_SPREAD] = spread;
@@ -1302,7 +1489,7 @@ mod tests {
 
     #[test]
     fn leaps_favour_consonant_intervals_and_turn_back() {
-        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, ..BassRules::default() }, Vec::new());
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, ..test_rules() }, Vec::new());
         let p = params(|p| {
             p[P_SPREAD] = 1.0;
             p[P_DENSITY] = 0.8;
@@ -1331,7 +1518,7 @@ mod tests {
 
     #[test]
     fn high_notes_repeat_less() {
-        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { scheme: false, ..BassRules::default() }, Vec::new());
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { scheme: false, ..test_rules() }, Vec::new());
         let p = params(|p| {
             p[P_SPREAD] = 1.0;
             p[P_DENSITY] = 0.6;
@@ -1360,7 +1547,7 @@ mod tests {
 
     #[test]
     fn grooves_follow_the_vocabulary_and_fill_only_at_phrase_ends() {
-        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, ..BassRules::default() }, Vec::new());
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, ..test_rules() }, Vec::new());
         let count = |density: f32| -> f32 {
             let p = params(|p| p[P_DENSITY] = density);
             (0..200).map(|seed| bar(&g, seed, 0, &p, &EMPTY).len()).sum::<usize>() as f32 / 200.0
@@ -1387,7 +1574,7 @@ mod tests {
             p[P_STABS] = 1.0;
             p[P_DENSITY] = 0.8;
         });
-        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules::default(), Vec::new());
+        let g = BassGenerator::new(PARAM_DEFAULTS, test_rules(), Vec::new());
         let reps = |bar_in: u8| (0..300).flat_map(|seed| bar(&g, seed, bar_in, &stab, &EMPTY)).filter(|e| e.note_id > STEPS_PER_BAR as u16).count();
         assert_eq!(reps(0), 0);
         assert!(reps(VARIATION_BAR) > 0);
@@ -1407,7 +1594,7 @@ mod tests {
 
     #[test]
     fn seeds_carry_their_own_rhythmic_character() {
-        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { scheme: false, ..BassRules::default() }, Vec::new());
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { scheme: false, ..test_rules() }, Vec::new());
         let p = params(|p| p[P_DENSITY] = 0.7);
         let (mut ratchets, mut half_beats, mut slides) = (0, 0, Vec::new());
         let mut figures_seen = false;
@@ -1555,7 +1742,7 @@ mod tests {
         for (s, l) in [(0, 255), (3, 200), (6, 150), (11, 90)] {
             levels[s] = l;
         }
-        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, walk: false, scheme: false, ..BassRules::default() }, vec![LevelMap::bar(levels)]);
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules { persona: false, walk: false, scheme: false, ..test_rules() }, vec![LevelMap::bar(levels)]);
         let free = |d: f32| {
             params(|p| {
                 p[P_DENSITY] = d;
@@ -1640,9 +1827,86 @@ mod tests {
     #[test]
     fn motifs_can_be_switched_off_by_the_rules() {
         let motifs = crate::generator::test_util::starter_motifs();
-        let off = BassGenerator::new(PARAM_DEFAULTS, BassRules { motifs: false, persona: false, walk: false, scheme: false, ..BassRules::default() }, Vec::new()).with_motifs(motifs);
+        let off = BassGenerator::new(PARAM_DEFAULTS, BassRules { motifs: false, persona: false, walk: false, scheme: false, ..test_rules() }, Vec::new()).with_motifs(motifs);
         assert!(off.motif_phrase(1, 1).is_none());
         assert_eq!(bar(&off, 1, 0, &PARAM_DEFAULTS, &TWO_STEP), bar(&generator(), 1, 0, &PARAM_DEFAULTS, &TWO_STEP));
+    }
+
+    /// A bar of the full generator (cells on) for pattern seed `style`.
+    fn cell_bar(style: u32, class: crate::form::SeedClass, bar_in: u8, variation: f32) -> Vec<LiveEvent> {
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules::default(), Vec::new());
+        let p = params(|p| {
+            p[P_DENSITY] = 0.7;
+            p[P_VARIATION] = variation;
+        });
+        let mut c = ctx(style.wrapping_mul(31), bar_in, &p, &EMPTY);
+        c.lane = 1;
+        c.style_seed = style;
+        c.class = class;
+        render(&g, &c).as_slice().to_vec()
+    }
+
+    #[test]
+    fn seeds_play_triplets_dotted_notes_ratchets_and_sustains() {
+        use crate::form::SeedClass::Main;
+        let (mut triplet, mut dotted, mut fast, mut held, mut plain) = (0, 0, 0, 0, 0);
+        for style in 0..100 {
+            let ev: Vec<LiveEvent> = (0..4).flat_map(|b| cell_bar(style, Main, b, 0.5)).collect();
+            assert!(ev.len() <= 4 * 2 * STEPS_PER_BAR && ev.windows(2).all(|w| w[0].tick <= w[1].tick || w[1].tick < 96));
+            let has = |f: &dyn Fn(&LiveEvent) -> bool| ev.iter().any(f);
+            triplet += has(&|e| e.tick % 32 == 0 && e.tick % TICKS_PER_STEP != 0) as u32;
+            dotted += has(&|e| e.tick % BEAT == 72 && e.flags & flags::ACCENT != 0) as u32;
+            fast += has(&|e| e.tick % 12 == 0 && e.tick % TICKS_PER_STEP != 0 || e.tick % 16 == 0 && e.tick % 32 != 0) as u32;
+            held += has(&|e| e.gate >= BEAT + BEAT / 2) as u32;
+            plain += (cell_family(&ctx_for(style, Main)) == 0) as u32;
+        }
+        // Each kind in a good share of seeds, the plain step line sometimes.
+        for (name, k) in [("triplet", triplet), ("dotted", dotted), ("fast", fast), ("held", held)] {
+            assert!(k >= 12, "{name}: {k} of 100");
+        }
+        assert!((5..40).contains(&plain), "plain: {plain}");
+    }
+
+    fn ctx_for(style: u32, class: crate::form::SeedClass) -> BarCtx<'static> {
+        static P: [f32; MAX_GEN_PARAMS] = PARAM_DEFAULTS;
+        let mut c = ctx(style.wrapping_mul(31), 0, &P, &EMPTY);
+        c.lane = 1;
+        c.style_seed = style;
+        c.class = class;
+        c
+    }
+
+    #[test]
+    fn letters_keep_the_family_and_fillers_contrast() {
+        use crate::form::SeedClass::{Filler, Main};
+        for style in 0..60 {
+            let main = cell_family(&ctx_for(style, Main));
+            let mut other = ctx_for(style, Main);
+            other.seed ^= 0xABCD;
+            assert_eq!(cell_family(&other), main, "one family across the main letters");
+            let mut c = ctx_for(style, Filler);
+            let fills: std::collections::BTreeSet<usize> = (0..8u32)
+                .map(|k| {
+                    c.seed = k.wrapping_mul(977);
+                    cell_family(&c)
+                })
+                .collect();
+            assert!(!fills.contains(&main) && !fills.contains(&0), "style {style}: {main} vs {fills:?}");
+            assert!(fills.len() > 1, "filler letters differ");
+        }
+    }
+
+    #[test]
+    fn variation_sets_how_much_the_cells_take() {
+        use crate::form::SeedClass::Main;
+        let off_grid = |v: f32| {
+            (0..100)
+                .flat_map(|s| cell_bar(s, Main, 0, v))
+                .filter(|e| e.tick % TICKS_PER_STEP != 0 || e.gate >= 2 * BEAT - 12)
+                .count()
+        };
+        let (low, high) = (off_grid(0.0), off_grid(1.0));
+        assert!(high > 2 * low, "{low} {high}");
     }
 
     #[test]

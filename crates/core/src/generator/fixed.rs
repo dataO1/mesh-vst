@@ -205,6 +205,7 @@ mod tests {
     fn render(pattern: &FixedPattern, seed: u32, key: MusicalKey, chord: u8, fill: bool) -> Vec<LiveEvent> {
         let params = pattern.param_defaults();
         let ctx = BarCtx {
+            style_seed: 0,
             sound_seed: 0,
             class: crate::form::SeedClass::Main,
             seed,

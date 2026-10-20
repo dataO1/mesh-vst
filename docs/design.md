@@ -129,6 +129,13 @@ drive external effects.
   picks), Half time, Two step, Rolling, Jungle, Hardcore. These are the Mesh live archetypes,
   each played exactly, not blended. Morph no longer moves the style. It chops and rewrites
   inside it.
+- **D41** Bass **rhythm cells** (2026-10-20): a seeded share of the bass line's beats is replaced by a
+  cell from another grid: 16th and 32nd ratchets, 8th, 16th and quarter triplets, dotted notes,
+  held beats into a 16th pickup, a note held over two beats, triplets into a held note. The
+  pattern seed picks one family for the whole pattern (plain, straight 16ths, triplets, dotted,
+  ratchet clusters, sustained, mixed; plain about 1 in 6). Filler letters (C, D) play another
+  family each, with the filler boosts (more variation and spread). Variation sets how many beats
+  take a cell. The repeating bars of a phrase pick alike, the variation bar re-draws.
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
 - **D31** Hat, cymbal and shaker pools. The name decides when it carries a keyword: 97% of
@@ -308,7 +315,7 @@ suggested settings. Turning a knob or automating it moves away from that center.
 |---|---|---|
 | **Density** | notes, note length | hits, voices coming in (tops included), loop gating |
 | **Permute** | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
-| **Variation** | syncopation, rewrites, fills; scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
+| **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell; scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
 | **Swing** | swing | swing |
 | **Shape** | stabby to sustained: length, expression, filter bite | tight to open: choke, loop hold, decay |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style |
