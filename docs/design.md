@@ -117,7 +117,7 @@ drive external effects.
 - **D25** Energy over time comes from the DAW: automate Permute, Variation and Density, place notes for
   sections. The plugin adds a phrase length (4/8/16 bars, fills at phrase ends counted from song
   position) and the Mesh **form**: letter seeds A/B (main) and C/D (fillers) placed by a form
-  string such as `A15 C1`. The form is a parameter with the Mesh default forms as presets, and
+  string such as `A15 C1`. The form is a parameter with ten built-in forms as presets (D47), and
   rolling the pattern seed rolls the form too. Each letter has its own seed and moves the
   parameters around the knobs, the right-hand knobs (Shape, Morph, Spread, Slide), Permute (when
   on) and Groove most, scaled 0.6 to 1.4 by Variation; the knobs show each hit's values
@@ -204,10 +204,61 @@ drive external effects.
   - A drum host gives the blocks and the rhythm; the sidechain gives the rhythm only. The link
     table moved to `mesh-vst-link-v2`: instances of this version and older ones do not see
     each other.
-- **D47** **Form operators** (2026-10-21): see the form section below.
-  - **TODO: better drum operators.** The drum meanings are a first draft (m ghosts and drops,
-    o an 8th displacement, q/a open and closed endings, r/R the kit's rhythm mirrored, d/e/x
-    the grid and double-time operators); the user wants better ones later.
+- **D47** **Form operators** (2026-10-21). The form stays the deterministic big picture: 64
+  bars a pass, a varied second pass (128 bars). A and B are distinct motifs that can ask and
+  answer each other (`A1q B1a`); C and D are the stark changes, mostly at the transitions (the
+  16-bar seams, the end of 64). Related material comes only from **operators**: marks after a
+  letter that play its motif changed, often and in short steps, between focused repetitions.
+  - **Grammar.** A segment is a letter, its marks and a length in any order, the length one run
+    of digits: `A2r`, `Ar2`, `A'7`, `A2'r`, `A3rd`, `Bq.5`. Marks chain left to right (`rd`:
+    reversed, then dotted); a later mark wins where two set the same thing. `'` (another seed's
+    second half) and `*` (another sound) are marks like the others. Up to six per segment.
+  - **Reference.** A segment with operators plays its letter's **first bars** (as the letter's
+    segment first plays them: its chords, fills, its first bar's phrase), as many as the segment
+    is long, transformed over the **whole segment** (a 3-bar `r` reverses three bars as one), and
+    each bar plays its part. So a variant can be any length: `A A Ar Am A2r B`. Spans hold up to
+    16 bars (longer ones repeat); the transformed span is cached while its bars render. The
+    knobs, the letter's parameter moves, its block speed and sound apply as always; the Splice
+    filter applies after.
+  - **Operators** (pitch ones on the mid line in the key's scale; the downbeat roots stay):
+
+    | Mark | Variant | At Variation 0 | At 100 % |
+    |---|---|---|---|
+    | `r` | the pitch order reversed, the rhythm kept | the last beat | the whole span |
+    | `i` | inversion: the steps mirrored in the scale around the first note | the steps at half size | full mirror |
+    | `t` | sequence: moved by seeded scale steps (2, 3, −2, 4, −3, 1) | the second half | the whole span |
+    | `c` | counter line: contrary moves (at most 3 steps) | every second move | every move |
+    | `u` / `w` | the line an octave up or down | the last beat | the whole span |
+    | `q` | question: the ending opens (the 2nd or the 5th, half the length) | the last note | the last 3 notes stepping to it |
+    | `a` | answer: the ending closes (the root, held to the end) | the last note | the last 3 notes stepping to it |
+    | `R` | the rhythm mirrored, the pitch order kept | the last beat | the whole span |
+    | `o` | rotation by seeded 16ths | by one 16th | up to a bar |
+    | `d` / `e` | onsets and lengths on the dotted-8th or 8th-triplet grid | 30 % of the notes | all |
+    | `y` | the beats (not the downbeats) a 16th early (anticipation) | 30 % | all |
+    | `h` / `x` | half time (the first half stretched) or double time (compressed, twice) | the last bar or beat | the whole span |
+    | `l` / `s` | held into the next note, or short (×0.7 .. ×0.3) | a little | in full |
+    | `n` / `p` | weak notes dropped (15 % .. 60 %), or passing notes in wider steps (20 % .. all) | | |
+    | `m` | mutation: seeded notes change (a neighbour, an octave, half or twice as long, gone) | one note | a third of them |
+    | `'` | another seed from this beat on | the last beat | the second half |
+    | `?` | the seed picks one by the segment's place: double time (or `h d e n`) before a change, an answer (or `i q m r`) at a period's end, a mutation (or `r o y l`) on a repeat, else any | | |
+
+    Variation sets how far every operator goes, from a little (0 %, never nothing) to the full
+    variant; the form's second pass goes 15 % further (it escalates). Standalone, no rule
+    keeps notes off the snare steps.
+  - **Drums.** `m` turns hits into ghosts, drops off-beat hits or adds a ghost after one; `o`
+    displaces by an 8th; `q` opens the ending (the last hits gone), `a` closes it (a strong hit
+    on the last beat); `r` and `R` mirror the kit's rhythm; `d e y h x n s` work on the hits; the
+    pitch operators do nothing. **TODO: better drum operators** (the user wants better ones).
+  - **Splice.** A follower plays its host's form position (D46), so its host's operators too.
+    Towards the counter end its questions and answers swap roles with the host's (the chance
+    rises with the relation). Against a pitched host each bar as it plays (after the operators,
+    the speed and the thinning) is fitted to the host's line again: each note (not the downbeat
+    root) may move up to two scale steps, or to the host's move followed or mirrored, when that
+    fits the relation clearly better (the walk's weights).
+  - **Forms.** Ten 64-bar forms, each its own character, one line per 16 bars ending on a
+    transition: steady roller, question and answer (2-bar periods, answers in the last half
+    bar), slow build, two-step cells, breakdown (fillers in half time), B-led, stabs and cells,
+    space (thinned and held), switch-up (the second drop re-cuts the motifs), bounce.
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
 - **D31** Hat, cymbal and shaker pools. The name decides when it carries a keyword: 97% of
