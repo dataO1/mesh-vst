@@ -130,7 +130,7 @@ pub fn load_drums(lib: &Library, picks: &DrumPicks, sample_rate: u32) -> LoadedD
     let mut break_bpm = None;
     for (&slot, path) in picks {
         // One-shots start at their onset; a break keeps its grid.
-        let trim = if slot == Slot::Break { Trim::None } else { Trim::Edges };
+        let trim = if slot == Slot::Break { Trim::None } else { Trim::FirstHit };
         let sample = match load_trimmed(path, HIT_ROOT, sample_rate, slot_offset_db(slot), trim) {
             Ok(s) => s,
             Err(e) => {
@@ -179,6 +179,9 @@ enum Trim {
     Edges,
     /// The edges and every silent stretch inside.
     Gaps,
+    /// A one-shot: the first hit only, up to its first silent stretch, and
+    /// at most [`ONE_SHOT_MAX_SECS`] (a file of several hits plays one).
+    FirstHit,
 }
 
 // MUSICAL: first draft, tune by ear.
@@ -190,6 +193,9 @@ const MIN_GAP_SECS: f64 = 0.05;
 const KEEP_SECS: f64 = 0.02;
 /// Crossfade where a gap was cut.
 const JOIN_SECS: f64 = 0.005;
+/// Longest one-shot, faded out over [`ONE_SHOT_FADE_SECS`] at the end.
+const ONE_SHOT_MAX_SECS: f64 = 3.0;
+const ONE_SHOT_FADE_SECS: f64 = 0.03;
 
 /// Cut silence from `frames` as `trim` says.
 fn trim_silence(frames: Vec<StereoSample>, rate: f64, trim: Trim) -> Vec<StereoSample> {
@@ -222,7 +228,8 @@ fn trim_silence(frames: Vec<StereoSample>, rate: f64, trim: Trim) -> Vec<StereoS
     // Runs of blocks to keep.
     let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut start = first;
-    if trim == Trim::Gaps {
+    let mut first_only = false;
+    if matches!(trim, Trim::Gaps | Trim::FirstHit) {
         // A silent stretch of at least `min_gap` blocks splits two runs.
         let min_gap = (MIN_GAP_SECS * rate / block as f64).ceil() as usize;
         let mut i = first;
@@ -233,13 +240,20 @@ fn trim_silence(frames: Vec<StereoSample>, rate: f64, trim: Trim) -> Vec<StereoS
             }
             let gap = on[i..=last].iter().take_while(|&&b| !b).count();
             if gap >= min_gap {
+                if trim == Trim::FirstHit {
+                    runs.push((start, i));
+                    first_only = true;
+                    break;
+                }
                 runs.push((start, i));
                 start = i + gap;
             }
             i += gap;
         }
     }
-    runs.push((start, last + 1));
+    if !first_only {
+        runs.push((start, last + 1));
+    }
     let join = (JOIN_SECS * rate) as usize;
     // The file starts at its onset to the sample (a block is 10 ms), less a
     // millisecond.
@@ -263,7 +277,25 @@ fn trim_silence(frames: Vec<StereoSample>, rate: f64, trim: Trim) -> Vec<StereoS
             }
         }
     }
+    if trim == Trim::FirstHit {
+        cap_one_shot(&mut out, rate);
+    }
     out
+}
+
+/// Cut a one-shot to [`ONE_SHOT_MAX_SECS`] with a short fade.
+fn cap_one_shot(frames: &mut Vec<StereoSample>, rate: f64) {
+    let max = (ONE_SHOT_MAX_SECS * rate) as usize;
+    if frames.len() <= max {
+        return;
+    }
+    frames.truncate(max);
+    let fade = ((ONE_SHOT_FADE_SECS * rate) as usize).min(max);
+    for (k, s) in frames[max - fade..].iter_mut().enumerate() {
+        let g = 1.0 - (k as f32 + 0.5) / fade as f32;
+        s.left *= g;
+        s.right *= g;
+    }
 }
 
 /// Decode, normalize to [`SAMPLE_LOUDNESS_TARGET`] plus `offset_db` and
@@ -354,6 +386,19 @@ mod tests {
         assert!(lead <= 48, "starts within 1 ms of the onset: {lead}");
         assert!((edges.len() as f64 / rate - 4.51).abs() < 0.05, "{}", edges.len() as f64 / rate);
         assert_eq!(trim_silence(f.clone(), rate, Trim::None).len(), f.len());
+    }
+
+    #[test]
+    fn a_one_shot_of_several_hits_plays_the_first() {
+        let rate = 48_000.0;
+        // A "kick" file that is a run of kicks.
+        let run = pieces(&[(false, 0.05), (true, 0.2), (false, 0.3), (true, 0.2), (false, 0.3), (true, 0.2)]);
+        let secs = trim_silence(run, rate, Trim::FirstHit).len() as f64 / rate;
+        assert!((0.2..0.25).contains(&secs), "{secs}");
+        // A long ringing one-shot stops at the cap, faded.
+        let long = trim_silence(pieces(&[(true, 5.0)]), rate, Trim::FirstHit);
+        assert_eq!(long.len() as f64 / rate, ONE_SHOT_MAX_SECS);
+        assert_eq!(long.last().map(|s| s.left.abs() < 0.01), Some(true));
     }
 
     fn write_wav(path: &Path, secs: f32, freq: f32, amp: f32) {

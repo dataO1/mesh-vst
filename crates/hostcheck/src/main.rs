@@ -453,6 +453,15 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     sorted.sort_by(f64::total_cmp);
     let (low, median) = (sorted[0], sorted[sorted.len() / 2]);
     rep.check("every library mudpie bar is heard", low > median - 12.0, format!("quietest bar {low:.1} dBFS, median {median:.1} dBFS over 8 seeds"));
+    // Library one-shots end: no voices pile up and ring on after the release
+    // (a "kick" file can be a run of kicks).
+    let mut tail = f64::NEG_INFINITY;
+    for seed in [1, 2, 3, 4, 7443] {
+        let a = render(entry, &Render { seed: Some(seed), bars: 8.0, release_at: Some(4.0), warmup: 2.0, ..base.clone() })?;
+        let off = 4.0 * 4.0 * 60.0 / base.bpm;
+        tail = tail.max(a.rms_db(off + 3.2, off + 4.0));
+    }
+    rep.check("library drums stop after the release", tail < -60.0, format!("loudest tail 3.2 s after the release {tail:.1} dBFS"));
     for bpm in [140.0, 174.0] {
         let a = render(entry, &Render { bpm, warmup: 2.0, ..base.clone() })?;
         rep.healthy(&format!("library drums at {bpm} bpm"), &a);
