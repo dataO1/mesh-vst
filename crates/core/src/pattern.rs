@@ -295,6 +295,11 @@ pub struct PatternLane {
     /// Splice: the focus per step the player sets for the next render
     /// ([`crate::splice::focus`]; all 1 = off).
     pub focus: [f32; STEPS_PER_BAR],
+    /// Splice: the pitched host's line under the next render (D46).
+    pub host_line: crate::splice::HostLine,
+    /// Splice: the host's form position for the next render, so the blocks
+    /// change together (D46); `None` plays the lane's own.
+    pub follow: Option<FormFollow>,
     /// Generator parameters, indexed like [`LaneGenerator::param_names`].
     pub params: [f32; MAX_GEN_PARAMS],
 }
@@ -327,7 +332,23 @@ impl PatternLane {
     ) -> Self {
         let mut forms = vec![Form::single()];
         forms.extend(DEFAULT_FORMS.iter().map(|f| Form::parse(f).expect("built-in form parses")));
-        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, phrase_bars: 8, permute: 0.0, focus: [1.0; STEPS_PER_BAR], params }
+        Self {
+            role,
+            generator,
+            layout,
+            forms,
+            form: 0,
+            pattern_seed,
+            sound_seed,
+            rate: 0,
+            mode: 0,
+            phrase_bars: 8,
+            permute: 0.0,
+            focus: [1.0; STEPS_PER_BAR],
+            host_line: crate::splice::HostLine::default(),
+            follow: None,
+            params,
+        }
     }
 
     pub fn role(&self) -> Role {
@@ -353,6 +374,16 @@ impl PatternLane {
         &self.forms[self.form]
     }
 
+    /// The index of the form the lane plays (see [`Self::select_form`]).
+    pub fn form_index(&self) -> usize {
+        self.form
+    }
+
+    /// The lane index its form positions are varied for.
+    pub fn form_lane(&self) -> u8 {
+        lane_index(self.role)
+    }
+
     /// Play `form` (it takes slot 0).
     pub fn set_form(&mut self, form: Form) {
         self.forms[0] = form;
@@ -370,7 +401,11 @@ impl PatternLane {
     /// family) into `out`.
     pub fn render(&self, bar: u64, key: MusicalKey, out: &mut RenderedBar, scratch: &mut Scratch) {
         let lane = lane_index(self.role);
-        let (parts, n_parts) = self.forms[self.form].parts(bar, self.pattern_seed, lane);
+        // Splice: the host's form position, so the blocks change with its.
+        let (parts, n_parts) = match self.follow {
+            Some(f) => self.forms[(f.form as usize).min(self.forms.len() - 1)].parts(f.bar, f.seed, f.lane),
+            None => self.forms[self.form].parts(bar, self.pattern_seed, lane),
+        };
         let pos = parts[0].pos;
         let seed = letter_seed(self.pattern_seed, lane, pos.letter);
         let mut harmony = HarmonyCtx { key, chord_degree: 0, progression: 0, mode: self.mode };
@@ -469,6 +504,14 @@ impl PatternLane {
             drum_fill: false,
             focus: self.focus,
             focus_shift: focus_shift(names, &self.focus),
+            // The host's line as the generator's bar will play after the
+            // speed (half speed plays a part of it stretched).
+            host: if self.role == Role::Drums {
+                self.host_line
+            } else {
+                let block = if self.role == Role::Bass { block_rate(seed, c.lane, class) } else { 0 };
+                host_in_render(&self.host_line, self.rate + BASE_RATE + block, c.bar)
+            },
         };
         self.generator.render_bar(&bar_ctx, out);
         out.sort();
@@ -507,6 +550,28 @@ impl PatternLane {
             let rate = self.rate + BASE_RATE;
             apply_speed(out, rate + block, c.bar, scratch);
             limit_speed(out, rate, rate + block);
+            // Splice: the lengths alike or against a pitched host's (D46),
+            // as the bar plays. The bar's first note is the anchor (music
+            // theory §3.3); figures and slid notes keep theirs.
+            if self.host_line.on {
+                let ev = out.as_mut_slice();
+                let mut first = true;
+                for i in 0..ev.len() {
+                    if ev[i].kind != EventKind::NoteOn {
+                        continue;
+                    }
+                    if std::mem::take(&mut first) {
+                        continue;
+                    }
+                    let next = ev[i + 1..].iter().find(|e| e.kind == EventKind::NoteOn);
+                    if ev[i].has(flags::FIGURE) || next.is_some_and(|n| n.has(flags::TIE)) {
+                        continue;
+                    }
+                    let room = next.map_or(TICKS_PER_BAR, |n| n.tick).saturating_sub(ev[i].tick);
+                    let s = (ev[i].tick / crate::TICKS_PER_STEP) as usize;
+                    ev[i].gate = crate::splice::contrast_gate(&self.host_line, s, ev[i].gate, room);
+                }
+            }
             // Each note moves Morph a touch, as its shape says.
             let played = BarParams { seed, lane: c.lane, bar_in_phrase: c.bar_in_phrase, root: c.harmony.key.root, reach, ..BarParams::default() };
             // Spread is width too: notes above the home root spread out in
@@ -524,6 +589,16 @@ impl PatternLane {
         splice_thin(out, &self.focus, seed, c.lane, c.bar_in_phrase);
         voices
     }
+}
+
+/// A host's form position a follower plays (Splice, D46): its form, the
+/// seed and lane index it varies the form with, its pattern bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormFollow {
+    pub form: u8,
+    pub seed: u32,
+    pub lane: u8,
+    pub bar: u64,
 }
 
 /// Buffers [`PatternLane::render`] works in, allocated once.
@@ -755,6 +830,36 @@ fn busy_part(events: &[LiveEvent], k: u16, next: u16) -> u16 {
     if score(next) < QUIET_PART * busiest.1 { busiest.0 } else { next }
 }
 
+/// A host's line (per played step) in the frame of a bar rendered for
+/// `2^exponent` speed ([`apply_speed`]): at slow speeds the part bar `bar`
+/// plays (and the other parts repeating it), at double speed the first
+/// half; lengths stay in host steps ([`crate::splice::HostLine::step_ticks`]).
+fn host_in_render(line: &crate::splice::HostLine, exponent: i8, bar: u64) -> crate::splice::HostLine {
+    let e = exponent.clamp(-3, 1);
+    if e == 0 || !line.on {
+        return *line;
+    }
+    let k = if e < 0 { (1u32 << (-e) as u32) as f32 } else { 0.5 };
+    let mut out = crate::splice::HostLine { on: true, relation: line.relation, step_ticks: line.step_ticks / k, ..Default::default() };
+    for r in 0..STEPS_PER_BAR {
+        // The played steps rendered step `r` covers.
+        let (from, width, len) = if e < 0 {
+            let k = 1usize << (-e) as usize;
+            let part = STEPS_PER_BAR / k;
+            let first = (bar % k as u64) as usize * part;
+            (((r + STEPS_PER_BAR - first) % part) * k, k, line.lens[((r + STEPS_PER_BAR - first) % part) * k])
+        } else {
+            ((r / 2) % STEPS_PER_BAR, 1, line.lens[(r / 2) % STEPS_PER_BAR])
+        };
+        out.keys[r] = line.keys[from];
+        out.lens[r] = len;
+        if (from..(from + width).min(STEPS_PER_BAR)).any(|p| line.onsets & (1 << p) != 0) {
+            out.onsets |= 1 << r;
+        }
+    }
+    out
+}
+
 /// The fastest notes a speed keeps (user, 2026-10-20): double speed stays
 /// at 16ths and half speed at 8ths, instead of everything scaled (`rate`
 /// and `exponent` with [`BASE_RATE`] in them: the Normal setting is half). A note
@@ -819,6 +924,37 @@ mod tests {
             }
             assert!(fastest >= min && fastest < u16::MAX, "rate {rate}: fastest {fastest} ticks");
         }
+    }
+
+    #[test]
+    fn splice_lengths_follow_or_answer_the_host() {
+        use crate::splice::HostLine;
+        // Mean gate of the notes after each bar's first, over seeds and bars.
+        let gates = |host: HostLine| {
+            let (mut sum, mut n) = (0.0f32, 0.0f32);
+            for seed in 0..12 {
+                let mut lane = PatternLane::bass(seed, seed);
+                lane.set_param("density", 0.8);
+                lane.host_line = host;
+                for bar in render_all(&lane, 8) {
+                    for e in bar.iter().filter(|e| e.kind == EventKind::NoteOn).skip(1) {
+                        sum += e.gate as f32;
+                        n += 1.0;
+                    }
+                }
+            }
+            sum / n
+        };
+        let long = HostLine { on: true, keys: [40; 16], lens: [8; 16], onsets: 1 | 1 << 8, ..Default::default() };
+        let short = HostLine { on: true, keys: [40; 16], lens: [1; 16], onsets: 0xFFFF, ..Default::default() };
+        let at = |l: HostLine, relation: f32| gates(HostLine { relation, ..l });
+        let (ll, lc) = (at(long, -1.0), at(long, 1.0));
+        let (sl, sc) = (at(short, -1.0), at(short, 1.0));
+        assert!(ll > 1.3 * lc, "a long host: layered {ll} vs countered {lc}");
+        assert!(sc > 1.3 * sl, "a short host: countered {sc} vs layered {sl}");
+        // The middle sits in between, nearer the counter end.
+        let (lm, sm) = (at(long, 0.0), at(short, 0.0));
+        assert!(lm < ll && lm > lc * 0.9 && sm > sl && sm < sc * 1.1, "middle: long {lm}, short {sm}");
     }
 
     #[test]

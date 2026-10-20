@@ -13,7 +13,7 @@ use crate::event::{EventKind, LiveEvent};
 use crate::generator::bass::home_root;
 use crate::generator::layout::{DrumVoice, BREAK_BASE};
 use crate::key::MusicalKey;
-use crate::pattern::{PatternLane, RenderedBar, Scratch};
+use crate::pattern::{FormFollow, PatternLane, RenderedBar, Scratch};
 use crate::role::Role;
 use crate::sampler::Sampler;
 use crate::splice::{self, Occupancy};
@@ -263,11 +263,73 @@ impl Player {
         splice::focus(self.splice, &occ)
     }
 
+    /// The host's data under song tick `t`: its occupancy and the step.
+    fn host_at(&self, t: f64) -> Option<(&Occupancy, usize)> {
+        let song_bar = (t / TICKS_PER_BAR as f64).floor().max(0.0) as u64;
+        let step = ((t.rem_euclid(TICKS_PER_BAR as f64)) / TICKS_PER_STEP as f64) as usize;
+        self.host.iter().find(|h| h.song_bar == song_bar).map(|h| (h, step.min(crate::STEPS_PER_BAR - 1)))
+    }
+
+    /// A pitched host's line under pattern bar `bar` (bar 0 at `origin`),
+    /// its keys moved into this lane's key frame (`shift`: the held note
+    /// over the home root), and the relation the Splice amount sets (D46).
+    fn host_line_for(&self, origin: f64, bar: u64, shift: i32) -> splice::HostLine {
+        let mut line = splice::HostLine { relation: 2.0 * self.splice.clamp(0.0, 1.0) - 1.0, ..Default::default() };
+        for s in 0..crate::STEPS_PER_BAR {
+            let t = origin + bar as f64 * TICKS_PER_BAR as f64 + (s as f64 + 0.5) * TICKS_PER_STEP as f64;
+            let Some((h, step)) = self.host_at(t) else { return splice::HostLine::default() };
+            if h.flags & splice::PITCHED == 0 {
+                return splice::HostLine::default();
+            }
+            if h.keys[step] != 0 {
+                line.keys[s] = (h.keys[step] as i32 - shift).clamp(1, 127) as u8;
+                line.lens[s] = h.lens[step];
+            }
+            if h.onsets & (1 << step) != 0 {
+                line.onsets |= 1 << s;
+            }
+        }
+        // Between its notes the host's line is where it last was: carry the
+        // last note on (from the bar's end into its start: a looping line).
+        splice::carry(&mut line);
+        line.on = true;
+        line
+    }
+
+    /// The host's form position at the start of pattern bar `bar` (D46).
+    fn follow_for(&self, origin: f64, bar: u64) -> Option<FormFollow> {
+        let t = origin + bar as f64 * TICKS_PER_BAR as f64;
+        let song_bar = (t / TICKS_PER_BAR as f64).floor().max(0.0) as u64;
+        let h = self.host.iter().find(|h| h.song_bar == song_bar && h.flags & splice::FORMED != 0)?;
+        let into = h.form_offset as f64 + (t - song_bar as f64 * TICKS_PER_BAR as f64);
+        let host_bar = h.form_bar as u64 + (into / TICKS_PER_BAR as f64 + 1e-6).floor() as u64;
+        Some(FormFollow { form: h.form, seed: h.form_seed, lane: h.form_lane, bar: host_bar })
+    }
+
+    /// Set what Splice gives pattern bar `bar` for the next render: the
+    /// focus, the host's line and form position. Returns a stamp of them.
+    fn prepare(&mut self, origin: f64, bar: u64, shift: i32) -> u64 {
+        let focus = self.focus_for(origin, bar);
+        let line = self.host_line_for(origin, bar, shift);
+        let follow = self.follow_for(origin, bar);
+        let mut stamp = focus.iter().fold(0u64, |h, f| h.rotate_left(5) ^ f.to_bits() as u64);
+        if line.on {
+            stamp = line.keys.iter().chain(&line.lens).fold(stamp.rotate_left(7) ^ line.relation.to_bits() as u64, |h, v| h.rotate_left(3) ^ *v as u64);
+        }
+        if let Some(f) = follow {
+            stamp = stamp.rotate_left(11) ^ f.bar ^ ((f.form as u64) << 56) ^ ((f.seed as u64) << 24);
+        }
+        self.lane.focus = focus;
+        self.lane.host_line = line;
+        self.lane.follow = follow;
+        stamp
+    }
+
     /// What this lane plays in song bar `song_bar` (for followers). Silent
     /// while no note is held. Worked out once per bar and lane version.
     pub fn occupancy_for(&mut self, song_bar: u64) -> Occupancy {
         let Some(gate) = self.gate.filter(|g| g.close_at.is_infinite()) else {
-            return Occupancy { song_bar, steps: [0; crate::STEPS_PER_BAR] };
+            return Occupancy { song_bar, ..Occupancy::default() };
         };
         let key = MusicalKey::new(gate.key % 12, self.minor);
         let want = (song_bar, self.version, key.root);
@@ -277,6 +339,9 @@ impl Player {
         let bar_ticks = TICKS_PER_BAR as f64;
         let start = song_bar as f64 * bar_ticks;
         let mut occ = [0.0f32; crate::STEPS_PER_BAR];
+        let pitched = self.lane.role() != Role::Drums;
+        let shift = if pitched { gate.key as i32 - home_root(key) } else { 0 };
+        let (mut keys, mut lens, mut onsets) = ([0u8; crate::STEPS_PER_BAR], [0u8; crate::STEPS_PER_BAR], 0u16);
         // The pattern bars under this song bar (two when the origin is off the bar line).
         let first = ((start - gate.origin) / bar_ticks).floor();
         for pb in [first, first + 1.0] {
@@ -284,9 +349,10 @@ impl Player {
                 continue;
             }
             let pb = pb as u64;
-            self.lane.focus = self.focus_for(gate.origin, pb);
+            self.prepare(gate.origin, pb, shift);
             self.lane.render(pb, key, &mut self.side, &mut self.side_scratch);
             let own = splice::occupancy(self.lane.role(), &self.side.events, self.side.voices);
+            let (own_keys, own_lens, own_onsets) = splice::line(&self.side.events);
             let bar_start = gate.origin + pb as f64 * bar_ticks;
             for (s, v) in own.iter().enumerate() {
                 let t = bar_start + s as f64 * TICKS_PER_STEP as f64 - start;
@@ -294,11 +360,33 @@ impl Player {
                     let i = (t / TICKS_PER_STEP as f64).round() as usize;
                     if i < crate::STEPS_PER_BAR {
                         occ[i] = occ[i].max(*v);
+                        if pitched && own_keys[s] != 0 {
+                            keys[i] = (own_keys[s] as i32 + shift).clamp(1, 127) as u8;
+                            lens[i] = own_lens[s];
+                        }
+                        if own_onsets & (1 << s) != 0 {
+                            onsets |= 1 << i;
+                        }
                     }
                 }
             }
         }
-        let out = splice::pack(song_bar, &occ);
+        let mut out = splice::pack(song_bar, &occ);
+        if pitched {
+            out.keys = keys;
+            out.lens = lens;
+            out.onsets = onsets;
+            out.flags |= splice::PITCHED;
+        }
+        // The form position: the pattern bar under the song bar's start.
+        if first >= 0.0 {
+            out.form_bar = first as u32;
+            out.form_offset = (start - (gate.origin + first * bar_ticks)).round().clamp(0.0, u16::MAX as f64) as u16;
+            out.form = self.lane.form_index() as u8;
+            out.form_seed = self.lane.pattern_seed;
+            out.form_lane = self.lane.form_lane();
+            out.flags |= splice::FORMED;
+        }
         // Keep it in the oldest slot.
         let slot = self.published.iter().enumerate().min_by_key(|(_, p)| if p.0 == u64::MAX { 0 } else { p.0.wrapping_add(1) }).map_or(0, |(i, _)| i);
         self.published[slot] = (want.0, want.1, want.2, out);
@@ -357,12 +445,10 @@ impl Player {
         // Pitched lanes play in the held note's octave (D7).
         let octave_shift = if self.lane.role() == Role::Drums { 0 } else { gate.key as i32 - home_root(key) };
         for bar in first..=last {
-            // Splice: the host's hits under this bar set the focus.
-            let focus = self.focus_for(gate.origin, bar);
-            let stamp = focus.iter().fold(0u64, |h, f| h.rotate_left(5) ^ f.to_bits() as u64);
+            // Splice: the host's hits, line and form position under this bar.
+            let stamp = self.prepare(gate.origin, bar, octave_shift);
             let want = (bar, self.version, key.root, stamp);
             if self.cached != Some(want) {
-                self.lane.focus = focus;
                 self.lane.render(bar, key, &mut self.bar, &mut self.scratch);
                 self.cached = Some(want);
                 self.renders = self.renders.wrapping_add(1);
@@ -498,6 +584,130 @@ mod tests {
         assert!(stacked < 0.98 && gaps > 0.02, "stacked {stacked}, gaps {gaps}");
         // Deterministic: the same host gives the same line.
         assert_eq!(on_host(1.0), gaps);
+    }
+
+    /// The follower's published bars against a pitched host at `amount`
+    /// (D46): the host's and the follower's occupancy per song bar.
+    fn against_host(amount: f32, bars: u64) -> Vec<(Occupancy, Occupancy)> {
+        let mut host = bass_player(3);
+        host.lane_mut().set_param("density", 0.7);
+        host.lane_mut().set_param("spread", 0.7);
+        // Long and short notes both.
+        host.lane_mut().set_param("length", 0.8);
+        host.lane_mut().set_param("stabs", 0.5);
+        host.lane_mut().select_form(2);
+        host.note_on(29, 1.0, 0.0);
+        let mut f = bass_player(5);
+        f.lane_mut().set_param("density", 0.8);
+        f.lane_mut().set_param("spread", 0.7);
+        f.note_on(29, 1.0, 0.0);
+        (0..bars)
+            .map(|b| {
+                let occ: Vec<Occupancy> = (0..HOST_BARS as u64).map(|k| host.occupancy_for(b + k)).collect();
+                f.set_splice(amount, &occ);
+                (occ[0], f.occupancy_for(b))
+            })
+            .collect()
+    }
+
+    /// Motion of the follower's notes against the host, over consecutive
+    /// follower onsets with a host note under both: (contrary, similar or
+    /// parallel, parallel perfect, perfect intervals at the onsets, pairs).
+    fn motions(pairs: &[(Occupancy, Occupancy)]) -> (f32, f32, f32, f32, f32) {
+        let perfect = |a: i32, b: i32| matches!((a - b).rem_euclid(12), 0 | 7);
+        let (mut contrary, mut same, mut par, mut perf, mut n, mut notes) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let mut prev: Option<(i32, i32)> = None;
+        for (h, f) in pairs {
+            // The host's line carried between its notes, as the follower hears it.
+            let mut line = splice::HostLine { keys: h.keys, lens: h.lens, ..Default::default() };
+            splice::carry(&mut line);
+            for s in 0..crate::STEPS_PER_BAR {
+                if f.onsets & (1 << s) == 0 || f.keys[s] == 0 {
+                    continue;
+                }
+                let (fk, hk) = (f.keys[s] as i32, line.keys[s] as i32);
+                if hk == 0 {
+                    prev = None;
+                    continue;
+                }
+                notes += 1.0;
+                perf += perfect(fk, hk) as u8 as f32;
+                if let Some((pf, ph)) = prev {
+                    let (df, dh) = (fk - pf, hk - ph);
+                    if df != 0 && dh != 0 {
+                        n += 1.0;
+                        if df.signum() != dh.signum() {
+                            contrary += 1.0;
+                        } else {
+                            same += 1.0;
+                            if perfect(fk, hk) && perfect(pf, ph) {
+                                par += 1.0;
+                            }
+                        }
+                    }
+                }
+                prev = Some((fk, hk));
+            }
+        }
+        (contrary / n.max(1.0), same / n.max(1.0), par / n.max(1.0), perf / notes.max(1.0), n)
+    }
+
+    #[test]
+    fn splice_layers_complements_or_counters_a_pitched_host() {
+        let bars = 64;
+        let (layer, mid, counter) = (against_host(0.0, bars), against_host(0.5, bars), against_host(1.0, bars));
+        assert!(layer.iter().all(|(h, _)| h.flags & splice::PITCHED != 0 && h.onsets != 0), "the host shares its line");
+        let (l, m, c) = (motions(&layer), motions(&mid), motions(&counter));
+        assert!(l.4 > 20.0 && m.4 > 20.0 && c.4 > 20.0, "enough moving pairs: {l:?} {m:?} {c:?}");
+        // Contrary motion rises towards the counter end, similar motion falls.
+        assert!(c.0 > m.0 && m.0 > l.0 - 0.05 && c.0 > 0.55, "contrary {l:?} {m:?} {c:?}");
+        assert!(l.1 > c.1, "similar or parallel {:.2} vs {:.2}", l.1, c.1);
+        // Unisons, octaves and fifths on the onsets: most when layered.
+        assert!(l.3 > m.3 + 0.05 && l.3 > c.3 + 0.03, "perfect intervals {:.2} {:.2} {:.2}", l.3, m.3, c.3);
+        // No parallel octaves or fifths at the counter end.
+        assert!(c.2 < 0.03 && c.2 < l.2, "parallel perfect {:.3} vs layered {:.3}", c.2, l.2);
+        // Deterministic.
+        assert_eq!(against_host(1.0, 4), counter[..4].to_vec());
+    }
+
+    #[test]
+    fn splice_blocks_change_with_the_host() {
+        let bpm = 175.0;
+        let spb = 60.0 / bpm * SR as f64;
+        let letters = |follow: bool| {
+            let mut host = bass_player(3);
+            host.lane_mut().select_form(3);
+            host.note_on(29, 1.0, 0.0);
+            let mut f = drum_player(9);
+            f.lane_mut().select_form(8);
+            f.note_on(29, 1.0, 0.0);
+            let mut buf = vec![StereoSample::silence(); 256];
+            let (mut pos, mut same, mut bars) = (0usize, 0, 0);
+            let mut last = u64::MAX;
+            while (pos as f64) < spb * 4.0 * 48.0 {
+                let bar = (pos as f64 / spb / 4.0) as u64;
+                if follow {
+                    let occ: Vec<Occupancy> = (0..HOST_BARS as u64).map(|k| host.occupancy_for(bar + k)).collect();
+                    f.set_splice(0.5, &occ);
+                }
+                let t = Transport { playing: true, beat: pos as f64 / spb, bpm };
+                host.process(&mut buf, &t);
+                f.process(&mut buf, &t);
+                if let (Some((hb, h)), Some((fb, fr))) = (host.rendered(), f.rendered()) {
+                    if hb == fb && fb != last {
+                        last = fb;
+                        bars += 1;
+                        same += (h.letter == fr.letter) as u32;
+                    }
+                }
+                pos += 256;
+            }
+            (same, bars)
+        };
+        let (same, bars) = letters(true);
+        assert!(bars > 40 && same == bars, "the follower plays the host's letters: {same} of {bars}");
+        let (own, _) = letters(false);
+        assert!(own < bars, "its own form differs: {own} of {bars}");
     }
 
     /// Hold `key` from song start and render `bars` bars at `bpm` in blocks of `block`.

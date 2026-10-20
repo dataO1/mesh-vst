@@ -70,6 +70,8 @@ pub struct BarCtx<'a> {
     pub focus: [f32; STEPS_PER_BAR],
     /// How far the focus moves each parameter a note reads (per unit of focus).
     pub focus_shift: [f32; MAX_GEN_PARAMS],
+    /// Splice: a pitched host's line under this bar (D46; off by default).
+    pub host: crate::splice::HostLine,
 }
 
 /// One lane's pattern generator.

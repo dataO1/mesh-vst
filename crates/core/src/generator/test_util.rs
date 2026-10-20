@@ -38,6 +38,7 @@ pub(crate) fn ctx<'a>(
         bass_phrase: [0; 4],
         drum_fill: false,
         focus: [1.0; crate::STEPS_PER_BAR],
+        host: crate::splice::HostLine::default(),
         focus_shift: [0.0; crate::generator::MAX_GEN_PARAMS],
     }
 }

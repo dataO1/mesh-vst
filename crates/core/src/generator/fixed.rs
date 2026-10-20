@@ -224,6 +224,7 @@ mod tests {
             drum_fill: false,
             focus: [1.0; crate::STEPS_PER_BAR],
             focus_shift: [0.0; crate::generator::MAX_GEN_PARAMS],
+            host: crate::splice::HostLine::default(),
         };
         let mut out = BarEvents::default();
         pattern.render_bar(&ctx, &mut out);

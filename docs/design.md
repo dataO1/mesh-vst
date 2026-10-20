@@ -155,7 +155,7 @@ drive external effects.
   lean there, hits outside it move a 16th or an 8th into it or thin out (at most 85 % at the
   ends, so the extremes play mostly, not only, stacked or in the gaps). One way only: the list
   hides instances that follow this one. Instances share through a small shared-memory table
-  (`/dev/shm/mesh-vst-link-v1`, the temp dir elsewhere), so it works when the host sandboxes
+  (`/dev/shm/mesh-vst-link-v2` since D46, the temp dir elsewhere), so it works when the host sandboxes
   each plugin; nothing but the bars and band levels crosses, and each follower renders from
   data published a bar ahead, so bounces repeat. The sidechain stands for the next bars with its
   last bar's levels per 16th. Where both lanes are loud in a band, the field draws amber.
@@ -184,6 +184,26 @@ drive external effects.
   tempo. Groove also gives the lane's own times (the sampler's, not the effects') a feel:
   triplet below 35 %, straight to 65 %, dotted above. Anti-click fades, smoothing and analysis
   windows stay in milliseconds.
+- **D46** **Splice as a relation** (2026-10-21): besides its hits, a pitched host (a bass
+  instance) shares its line, the key and length of the note on each 16th, and every mesh host
+  its form position (form, pattern seed, pattern bar). The Splice knob is then one relation
+  axis; the rhythm stays as D42 says (neutral in the middle).
+  - **Blocks (B2).** The follower plays the host's form position, so its blocks (letters,
+    swaps, fills) change with the host's; its own letter seeds give the content.
+  - **Pitch (B7).** Each note of the bass walk is weighed by how it moves against the host's
+    line, the host's last note carried through its rests. Stacked (0): unisons, octaves and
+    fifths and motion the host's way are favoured. The middle: free lines, but no parallel
+    octaves, fifths or unisons. Gaps (1): contrary motion, holding while the host moves fast,
+    similar motion rare and parallel perfect intervals almost never (music-theory §2). The
+    weights blend smoothly along the knob and stay seeded, so bounces repeat; the register and
+    root rules stay (the bar's first note is the root, the sub does not jump octaves).
+  - **Length (B1).** The share of stabs and, after the speed, each note's length move towards
+    the host's (stacked), some contrast (middle) or the opposite (gaps: a stab against a long
+    host note, a held note against a short one). The bar's first note stays an anchor
+    (music-theory §3.3); figures and slid notes keep theirs.
+  - A drum host gives the blocks and the rhythm; the sidechain gives the rhythm only. The link
+    table moved to `mesh-vst-link-v2`: instances of this version and older ones do not see
+    each other.
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
 - **D31** Hat, cymbal and shaker pools. The name decides when it carries a keyword: 97% of

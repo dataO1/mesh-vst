@@ -27,7 +27,8 @@ pub const BANDS: usize = 16;
 pub const SIDECHAIN: u64 = u64::MAX;
 /// A slot whose heartbeat is older than this is free again.
 const STALE_MS: u64 = 3000;
-const MAGIC: u64 = 0x4d45_5348_4c4e_4b31; // "MESHLNK1"
+// v2 (2026-10-21): the bars carry a pitched lane's line and the form position (D46).
+const MAGIC: u64 = 0x4d45_5348_4c4e_4b32; // "MESHLNK2"
 
 /// What one instance shares.
 #[repr(C)]
@@ -88,7 +89,7 @@ unsafe impl Sync for Link {}
 fn path() -> PathBuf {
     let shm = PathBuf::from("/dev/shm");
     let dir = if shm.is_dir() { shm } else { std::env::temp_dir() };
-    dir.join("mesh-vst-link-v1")
+    dir.join("mesh-vst-link-v2")
 }
 
 fn now_ms() -> u64 {
@@ -354,11 +355,16 @@ mod tests {
         let mut a = Link::open(0xA11CE).unwrap();
         let mut b = Link::open(0xB0B).unwrap();
         let mut data = SlotData { label: label("drums", 7, 0xA11CE), ..Default::default() };
-        data.bars[0] = Occupancy { song_bar: 3, steps: [9; STEPS_PER_BAR] };
+        data.bars[0] = Occupancy { song_bar: 3, steps: [9; STEPS_PER_BAR], ..Default::default() };
+        // A pitched lane's line and the form position cross too (D46).
+        data.bars[0].keys[3] = 40;
+        data.bars[0].form_bar = 17;
+        data.bars[0].flags = mesh_vst_core::splice::PITCHED | mesh_vst_core::splice::FORMED;
         a.publish(&data);
         b.publish(&SlotData { label: label("bass", 8, 0xB0B), ..Default::default() });
         let seen = b.read(0xA11CE).expect("b reads a");
         assert_eq!(seen.bars[0].song_bar, 3);
+        assert_eq!((seen.bars[0].keys[3], seen.bars[0].form_bar, seen.bars[0].flags), (40, 17, 3));
         assert!(b.peers().iter().any(|p| p.id == 0xA11CE && p.label.starts_with("drums 0007")));
         assert!(!b.peers().iter().any(|p| p.id == 0xB0B), "not itself");
         a.release();

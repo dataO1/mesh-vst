@@ -598,10 +598,13 @@ impl LaneGenerator for BassGenerator {
             let su = s as u8;
             let first = prev.is_none() && self.rules.root >= 0.5;
             let note_spread = note_param(ctx, P_SPREAD, su);
+            // Splice: how each candidate moves against a pitched host (D46).
+            let prev_note = prev.map(|(ps, _)| (ps, events[n - 1].key as i32));
+            let fit = |d: i32| crate::splice::motion_weight(&ctx.host, s, prev_note, ctx.harmony.resolve(d, octave) as i32);
             let mut degree = if first {
                 0
             } else if self.rules.walk {
-                walk_step(walked, last_move, rng.at(su, S_PITCH), note_spread, persona.tonal)
+                walk_step(walked, last_move, rng.at(su, S_PITCH), note_spread, persona.tonal, &fit)
             } else {
                 self.pick_degree(rng.at(su, S_PITCH), note_spread)
             };
@@ -663,6 +666,9 @@ impl LaneGenerator for BassGenerator {
                 + STABS_SHIFT * (note_param(ctx, P_STABS, su) - 0.5);
             // No stabs at all at the sustained end (stabs 0).
             let stab_share = stab_share.clamp(STABS_RANGE.0, STABS_RANGE.1) * (2.0 * note_param(ctx, P_STABS, su)).min(1.0);
+            // Splice: lengths alike or against a pitched host's (D46). The
+            // bar's first note stays as it is, an anchor (music theory §3.3).
+            let stab_share = if first { stab_share } else { crate::splice::short_share(&ctx.host, s, stab_share) };
             let short = rng.chance(su, S_LENGTH, stab_share);
             let gate_ticks = if short {
                 let span = ((next - s).min(SHORT_LENGTH.2 as usize) as u16 * TICKS_PER_STEP) as f32;
@@ -782,8 +788,9 @@ const GAP_FILL_LEAP: f32 = 0.3;
 /// The next degree of the walk from `from` (`last` the previous move): up to
 /// `max` degrees, small moves far more likely, leaps to consonant intervals
 /// and stable tones (`tonal`: how much stability counts, per seed), a leap
-/// followed by a step back, within the range.
-fn walk_step(from: i32, last: i32, h: u64, spread: f32, tonal: f32) -> i32 {
+/// followed by a step back, within the range. `fit` weighs each target
+/// degree on top (Splice counterpoint; 1 = no say).
+fn walk_step(from: i32, last: i32, h: u64, spread: f32, tonal: f32, fit: &dyn Fn(i32) -> f32) -> i32 {
     let spread = spread.clamp(0.0, 1.0);
     let max = lerp(WALK_MAX.0, WALK_MAX.1, spread * spread).round() as i32;
     let tau = lerp(WALK_TAU.0, WALK_TAU.1, spread);
@@ -801,6 +808,7 @@ fn walk_step(from: i32, last: i32, h: u64, spread: f32, tonal: f32) -> i32 {
         x *= STABILITY[to.rem_euclid(SCALE_LEN) as usize].powf(tonal);
         // Pull back towards the root: lines circle home, high notes are rare.
         x *= (-(to.max(0) as f32) * gravity).exp();
+        x *= fit(to);
         if after_leap && d != 0 {
             if d.signum() == last.signum() {
                 x *= GAP_FILL_SAME_WAY;
