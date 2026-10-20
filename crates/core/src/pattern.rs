@@ -387,9 +387,23 @@ fn splice_range(out: &mut BarEvents, part: &BarEvents, from: u16, to: u16, scrat
     }
 }
 
-// MUSICAL: first draft, tune by ear (user: Variation widens the range).
-/// Scale of the letter and note moves at Variation 0 and 1 (1 in the middle).
+// MUSICAL: first draft, tune by ear (user: Variation widens the range of
+// the sound knobs, the right-hand ones, not of the pattern knobs).
+/// Scale of the letter and note moves of [`REACHED`] at Variation 0 and 1
+/// (1 in the middle).
 const VARIATION_REACH: (f32, f32) = (0.3, 1.7);
+/// The parameters of the right-hand knobs (Shape, Morph, Spread, Slide):
+/// Variation sets how far they move. The pattern knobs' parameters move
+/// as the form says.
+const REACHED: [&str; 4] = ["length", "chop", "spread", "slide"];
+// MUSICAL: first draft, tune by ear.
+/// Per-note moves of parameters the letters leave alone, at reach 1.
+const NOTE_ONLY_MOVES: [(&str, f32); 1] = [("length", 0.12)];
+
+/// The reach of parameter `name`.
+fn reach_of(name: &str, reach: f32) -> f32 {
+    if REACHED.contains(&name) { reach } else { 1.0 }
+}
 
 /// How far letters and notes move the parameters, from the lane's Variation.
 fn variation_reach(names: &[&str], params: &[f32; MAX_GEN_PARAMS]) -> f32 {
@@ -404,7 +418,7 @@ fn vary_letter(names: &[&str], seed: u32, lane: u8, letter: Letter, second: bool
             if let Some(p) = params.get_mut(i) {
                 // A parameter above 0 stays above it, so a block never falls silent.
                 let floor = if *p > 0.0 { LETTER_FLOOR.min(*p) } else { 0.0 };
-                *p = (*p + reach * letter_offset(seed, lane, letter, k, second)).clamp(floor, 1.0);
+                *p = (*p + reach_of(name, reach) * letter_offset(seed, lane, letter, k, second)).clamp(floor, 1.0);
             }
         }
     }
@@ -414,10 +428,11 @@ fn vary_letter(names: &[&str], seed: u32, lane: u8, letter: Letter, second: bool
 /// letter offsets).
 fn note_jitter(names: &[&str], reach: f32) -> [f32; MAX_GEN_PARAMS] {
     let mut out = [0.0; MAX_GEN_PARAMS];
-    for (name, max) in LETTER_OFFSETS {
+    let moves = LETTER_OFFSETS.iter().map(|(n, m)| (*n, NOTE_JITTER_SHARE * m)).chain(NOTE_ONLY_MOVES);
+    for (name, amp) in moves {
         if let Some(i) = names.iter().position(|n| *n == name) {
             if let Some(j) = out.get_mut(i) {
-                *j = reach * NOTE_JITTER_SHARE * max;
+                *j = reach_of(name, reach) * amp;
             }
         }
     }

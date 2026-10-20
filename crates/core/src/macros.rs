@@ -138,6 +138,16 @@ pub fn hit_knobs(role: Role, centres: &Centers, knobs: &Knobs, names: &[&str], b
                 None => knobs.slide,
             },
             morph: knob_of(around(knobs.morph, c.morph) + bar.morph_move(ev), c.morph),
+            // Shape: the note's Length (step and height), back on the knob's
+            // 0.4 .. 1 range.
+            shape: match index("length") {
+                Some(i) => {
+                    let shape = crate::generator::blocks::NoteShape { gate: None, ..bar.shape_of(ev) };
+                    let length = crate::generator::bass::held_length(bar.values[i], bar.at(i, shape));
+                    knob_of((length - 0.4) / 0.6, c.shape)
+                }
+                None => knobs.shape,
+            },
             ..*knobs
         },
     }
@@ -490,7 +500,8 @@ mod style_tests {
                 }
                 for h in &hits {
                     assert!(h.as_array().iter().all(|v| (0.0..=1.0).contains(v)), "{h:?}");
-                    assert_eq!((h.permute, h.shape), (knobs.permute, knobs.shape));
+                    assert_eq!(h.permute, knobs.permute);
+                    assert!((h.shape - knobs.shape).abs() < 0.25, "{h:?}");
                     // Morph moves, very slightly.
                     assert!((h.morph - knobs.morph).abs() < 0.08, "{h:?}");
                     if (h.variation - knobs.variation).abs() < 1e-3 {
@@ -508,11 +519,11 @@ mod style_tests {
     }
 
     #[test]
-    fn variation_widens_the_per_hit_range() {
+    fn variation_widens_the_sound_knobs_moves_only() {
         use crate::event::EventKind;
         let spread = |variation: f32| {
             let knobs = Knobs { density: 0.5, variation, ..Knobs::CENTERED };
-            let (mut sum, mut n) = (0.0, 0);
+            let (mut density, mut spread, mut n) = (0.0, 0.0, 0);
             for seed in 1..=10 {
                 let mut lane = PatternLane::bass(seed, seed);
                 let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: 1, rate: 0, mode: 0, style: None, unison: Default::default() };
@@ -523,15 +534,18 @@ mod style_tests {
                     lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
                     for e in out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn) {
                         let h = hit_knobs(Role::Bass, &centres, &knobs, lane.param_names(), &out.params, e);
-                        sum += (h.density - knobs.density).abs();
+                        density += (h.density - knobs.density).abs();
+                        spread += (h.spread - knobs.spread).abs();
                         n += 1;
                     }
                 }
             }
-            sum / n as f32
+            (density / n as f32, spread / n as f32)
         };
         let (low, high) = (spread(0.0), spread(1.0));
-        assert!(high > 2.0 * low, "density moves {low} at Variation 0, {high} at 1");
+        assert!(high.1 > 2.0 * low.1, "Spread moves {} at Variation 0, {} at 1", low.1, high.1);
+        // The pattern knobs move as the form says, whatever Variation.
+        assert!(high.0 < 1.5 * low.0 && low.0 < 1.5 * high.0, "Density moves {} at Variation 0, {} at 1", low.0, high.0);
     }
 
     /// Eight bars of drums at style `style` with `knobs`, as (bar, tick, target).

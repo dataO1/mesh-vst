@@ -421,7 +421,7 @@ impl BassGenerator {
             n += 1;
             prev = Some((p.tick, key));
         }
-        shape_notes(&mut events[..n], param(ctx, P_LENGTH), param(ctx, P_EXPRESSION), slide_glide(param(ctx, P_SLIDE)), |step| rng.unit(step, S_LEGATO));
+        shape_notes(&mut events[..n], |e| note_length(ctx, e), param(ctx, P_EXPRESSION), slide_glide(param(ctx, P_SLIDE)), |step| rng.unit(step, S_LEGATO));
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -719,7 +719,7 @@ impl LaneGenerator for BassGenerator {
             |step, key| ratchet_at(step) && rng.chance(step, S_RATCHET, RATCHET_FILL_BOOST * ratchet * repeat_height(key as i32 - root_key)),
             |step| rng::weighted_pick(rng.at(step, S_FIGURE), &figure_weights).unwrap_or(0),
         );
-        shape_notes(&mut events[..n], param(ctx, P_LENGTH), param(ctx, P_EXPRESSION), slide_glide(param(ctx, P_SLIDE)), |step| rng.unit(step, S_LEGATO));
+        shape_notes(&mut events[..n], |e| note_length(ctx, e), param(ctx, P_EXPRESSION), slide_glide(param(ctx, P_SLIDE)), |step| rng.unit(step, S_LEGATO));
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -1218,20 +1218,34 @@ fn ratchets(
     m
 }
 
+/// The Length a note reads: its own move (step and height) around the
+/// lane's, fading out towards full length so long lines stay held.
+fn note_length(ctx: &BarCtx, ev: &LiveEvent) -> f32 {
+    let shape = NoteShape { step: ev.step, gate: None, pitch_class: Some((ev.key as i32 - ctx.harmony.key.root as i32).rem_euclid(12) as u8) };
+    held_length(param(ctx, P_LENGTH), note_param_for(ctx, P_LENGTH, shape))
+}
+
+/// A note's Length from the lane's `base` and its `moved` value: the move
+/// fades out over the top quarter, none at full length.
+pub fn held_length(base: f32, moved: f32) -> f32 {
+    base + (moved - base) * (4.0 * (1.0 - base)).clamp(0.0, 1.0)
+}
+
 /// `length` and `expression` (0.5 = unchanged). Length below 0.5 shortens
 /// notes towards stabs, above 0.5 holds them towards the next onset, from
 /// [`LEGATO_FROM`] a rising share of held notes ties into it and glides. Expression scales each note's
 /// filter offset (0 = none, 1 = double).
-fn shape_notes(events: &mut [LiveEvent], length: f32, expression: f32, glide: u8, roll: impl Fn(u8) -> f32) {
+fn shape_notes(events: &mut [LiveEvent], length_of: impl Fn(&LiveEvent) -> f32, expression: f32, glide: u8, roll: impl Fn(u8) -> f32) {
     if expression != 0.5 {
         for ev in events.iter_mut() {
             ev.cutoff = (ev.cutoff as f32 * expression * 2.0).round().clamp(-127.0, 127.0) as i8;
         }
     }
-    if length == 0.5 {
-        return;
-    }
     for i in 0..events.len() {
+        let length = length_of(&events[i]);
+        if length == 0.5 {
+            continue;
+        }
         let next = events.get(i + 1).map_or(TICKS_PER_BAR, |e| e.tick);
         // A slid-from note already holds into the next one.
         if events.get(i + 1).is_some_and(|e| e.flags & flags::TIE != 0) {
