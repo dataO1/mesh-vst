@@ -38,7 +38,7 @@ cargo run -p mesh-vst-core --release --example render -- --mode drums --kick k.w
 ```sh
 nix run .#play              # the standalone editor with sound; the VMPK keyboard window plays it
 MESH_VST_DEMO=1 nix run .#play   # the same, holding a note from the start
-nix run .#qtractor          # Qtractor (own config) with this build on its CLAP and VST3 paths
+nix run .#qtractor          # Qtractor (own config) opening the testbed: drums + bass following them (Splice), 64 bars looped
 ```
 
 In Qtractor: Track > Add Track > MIDI, then the track's Plugins tab > Add > "mesh vst", then draw one long note in the clip.

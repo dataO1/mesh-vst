@@ -612,13 +612,24 @@ impl Plugin for MeshVst {
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     // Stereo out plus the 16 mono mod-out channels (D32), or stereo only.
+    // The first layout is what most hosts take: stereo and the Splice
+    // sidechain. The mod outs come in the second (some hosts, Qtractor among
+    // them, hand empty buffers for ports they do not route, which nice-plug
+    // does not survive).
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
         AudioIOLayout {
             main_input_channels: None,
             main_output_channels: NonZeroU32::new(2),
             aux_input_ports: &[new_nonzero_u32(2)],
+            names: PortNames { layout: Some("Stereo + sidechain"), main_input: None, main_output: Some("Out"), aux_inputs: &["Sidechain"], aux_outputs: &[] },
+            ..AudioIOLayout::const_default()
+        },
+        AudioIOLayout {
+            main_input_channels: None,
+            main_output_channels: NonZeroU32::new(2),
+            aux_input_ports: &[new_nonzero_u32(2)],
             aux_output_ports: &[new_nonzero_u32(1); modout::CHANNELS],
-            names: PortNames { layout: Some("Stereo + mod out"), main_input: None, main_output: Some("Out"), aux_inputs: &["Sidechain"], aux_outputs: &MOD_PORT_NAMES },
+            names: PortNames { layout: Some("Stereo + sidechain + mod out"), main_input: None, main_output: Some("Out"), aux_inputs: &["Sidechain"], aux_outputs: &MOD_PORT_NAMES },
             ..AudioIOLayout::const_default()
         },
         AudioIOLayout {

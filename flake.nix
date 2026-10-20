@@ -202,6 +202,15 @@
           grep -q '^\[Plugins\]$' "$conf" || printf '\n[Plugins]\n' >> "$conf"
           ${pkgs.gnused}/bin/sed -i 's|^\[Plugins\]$|[Plugins]\nClapPaths=${plugin}/lib/clap\nVst3Paths=${plugin}/lib/vst3|' "$conf"
           export LD_LIBRARY_PATH="${jackLibs}"
+          # The testbed project (nix/testbed: a drums and a bass instance, the
+          # bass following the drums with Splice; one F1 held over 64 bars,
+          # looped), copied fresh on every start. Arguments open another one.
+          if [ $# -eq 0 ]; then
+            rm -rf "$XDG_CONFIG_HOME/testbed"
+            cp -r ${./nix/testbed} "$XDG_CONFIG_HOME/testbed"
+            chmod -R u+w "$XDG_CONFIG_HOME/testbed"
+            set -- "$XDG_CONFIG_HOME/testbed/mesh-testbed.qtr"
+          fi
           exec ${pkgs.qtractor}/bin/qtractor "$@"
         '';
 
@@ -277,9 +286,10 @@
             nix run .#play                 editor with sound, no DAW; the VMPK keyboard window plays it
                                            (hold a key: it gates the pattern and sets the root)
             MESH_VST_DEMO=1 nix run .#play  same, holding a note from the start (no keyboard needed)
-            nix run .#qtractor             Qtractor (FOSS DAW, CLAP + VST3) with this build on its plugin
-                                           paths (own config); Track > Add Track > MIDI, Plugins tab > Add >
-                                           "mesh vst", then draw one long note
+            nix run .#qtractor             Qtractor (own config) opening the testbed: a drums and a bass
+                                           instance (bass follows the drums with Splice), one F1 held
+                                           over 64 bars, looped; press space
+            nix run .#qtractor -- x.qtr    Qtractor with another session
             nix run .#screenshot -- out.png [drums|bass] [drag|settings|library]
                                            the editor on a virtual X server, playing a demo note
 

@@ -8,6 +8,6 @@ description = "Headless CLAP host: plays the bundled plugin with a held note aga
 
 [dependencies]
 clack-host = { git = "https://github.com/prokopyl/clack.git", rev = "27ca283" }
-clack-extensions = { git = "https://github.com/prokopyl/clack.git", rev = "27ca283", features = ["params", "audio-ports", "clack-host"] }
+clack-extensions = { git = "https://github.com/prokopyl/clack.git", rev = "27ca283", features = ["params", "audio-ports", "audio-ports-config", "clack-host"] }
 hound = "3.5"
 mesh-vst-core = { path = "../core" }

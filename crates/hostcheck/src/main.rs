@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use clack_extensions::audio_ports::{AudioPortInfoBuffer, PluginAudioPorts};
+use clack_extensions::audio_ports_config::PluginAudioPortsConfig;
+use clack_host::utils::ClapId;
 use clack_extensions::params::{ParamInfoBuffer, PluginParams};
 use clack_host::events::event_types::{NoteOffEvent, NoteOnEvent, ParamValueEvent, TransportEvent, TransportFlags};
 use clack_host::events::EventFlags;
@@ -26,6 +28,8 @@ const SR: f64 = 48_000.0;
 const BLOCK: usize = 512;
 /// Stopped blocks before a render (see `Render::warmup`).
 const WARMUP_BLOCKS: usize = 4;
+/// The plugin's port layout with the 16 mod outputs.
+const MOD_OUT_LAYOUT: u32 = 1;
 
 type Error = Box<dyn std::error::Error>;
 
@@ -180,6 +184,14 @@ fn render(entry: &PluginEntry, r: &Render) -> Result<Audio, Error> {
         param_events.push(ParamValueEvent::new(0, id, Pckn::match_all(), *value));
     }
 
+    // The port layout with the mod outs (the second one: hosts take the first,
+    // stereo and the sidechain).
+    {
+        let handle = instance.plugin_handle();
+        if let Some(configs) = handle.get_extension::<PluginAudioPortsConfig>() {
+            configs.select(&handle, ClapId::new(MOD_OUT_LAYOUT)).map_err(|_| "the plugin refused the mod-out port layout")?;
+        }
+    }
     // Every output port the plugin declares: the main stereo pair and its mod outputs.
     let channels: Vec<u32> = {
         let mut handle = instance.plugin_handle();

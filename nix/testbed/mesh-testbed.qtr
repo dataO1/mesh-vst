@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE qtractorSession>
+<session version="qtractor 1.6.4" name="mesh-testbed">
+ <properties>
+  <description>mesh vst testbed: drums and a bass following them (Splice)</description>
+  <sample-rate>48000</sample-rate>
+  <tempo>175</tempo>
+  <ticks-per-beat>960</ticks-per-beat>
+  <beats-per-bar>4</beats-per-bar>
+  <beat-divisor>2</beat-divisor>
+ </properties>
+ <state>
+  <loop-start>0</loop-start>
+  <loop-end>4213029</loop-end>
+  <punch-in>0</punch-in>
+  <punch-out>0</punch-out>
+ </state>
+ <tracks>
+  <track name="mesh drums" type="midi">
+   <properties>
+    <input-bus>Master</input-bus>
+    <output-bus>Master</output-bus>
+    <midi-omni>true</midi-omni>
+    <midi-channel>0</midi-channel>
+    <midi-drums>false</midi-drums>
+   </properties>
+   <state>
+    <mute>false</mute>
+    <solo>false</solo>
+    <record>false</record>
+    <monitor>false</monitor>
+    <gain>1</gain>
+    <panning>0</panning>
+   </state>
+   <view>
+    <height>96</height>
+    <background-color>#7fb8c9</background-color>
+    <foreground-color>#000000</foreground-color>
+   </view>
+   <controllers/>
+   <clips>
+    <clip name="mesh drums">
+     <properties>
+      <name>mesh drums</name>
+      <start>0</start>
+      <offset>0</offset>
+      <length>4213029</length>
+      <gain>1</gain>
+      <panning>0</panning>
+      <mute>false</mute>
+      <fade-in type="Linear">0</fade-in>
+      <fade-out type="Linear">0</fade-out>
+     </properties>
+     <midi-clip>
+      <filename>note.mid</filename>
+      <track-channel>0</track-channel>
+      <revision>1</revision>
+     </midi-clip>
+    </clip>
+   </clips>
+   <plugins>
+    <plugin type="CLAP">
+     <filename>mesh vst.clap</filename>
+     <index>0</index>
+     <activated>true</activated>
+     <configs>
+      <config key="state">AAAA4nicZc3RCoMwDAXQf8mzSNVtzP7KHKWzlRVjI42dD9J/X5UxBnsKOZfcbPCygR15kCDKqhRQwKyDnhjkBhMZu0/X1CBFKoBndP1Bw0HlOWUdnEVzHESXe7YOmKI3CqkfrelADhrZFl1uXhYb/H+AtKqZVht+LD9XD82c6Xb/7CbE6Qvo/KjcXlNXVXtpxPXUZn4SL9l8REyQ0htWL0pE</config>
+     </configs>
+     <params/>
+    </plugin>
+    <audio-output-bus>false</audio-output-bus>
+   </plugins>
+  </track>
+  <track name="mesh bass (splice: drums)" type="midi">
+   <properties>
+    <input-bus>Master</input-bus>
+    <output-bus>Master</output-bus>
+    <midi-omni>true</midi-omni>
+    <midi-channel>0</midi-channel>
+    <midi-drums>false</midi-drums>
+   </properties>
+   <state>
+    <mute>false</mute>
+    <solo>false</solo>
+    <record>false</record>
+    <monitor>false</monitor>
+    <gain>1</gain>
+    <panning>0</panning>
+   </state>
+   <view>
+    <height>96</height>
+    <background-color>#d6ded9</background-color>
+    <foreground-color>#000000</foreground-color>
+   </view>
+   <controllers/>
+   <clips>
+    <clip name="mesh bass (splice: drums)">
+     <properties>
+      <name>mesh bass (splice: drums)</name>
+      <start>0</start>
+      <offset>0</offset>
+      <length>4213029</length>
+      <gain>1</gain>
+      <panning>0</panning>
+      <mute>false</mute>
+      <fade-in type="Linear">0</fade-in>
+      <fade-out type="Linear">0</fade-out>
+     </properties>
+     <midi-clip>
+      <filename>note.mid</filename>
+      <track-channel>0</track-channel>
+      <revision>1</revision>
+     </midi-clip>
+    </clip>
+   </clips>
+   <plugins>
+    <plugin type="CLAP">
+     <filename>mesh vst.clap</filename>
+     <index>0</index>
+     <activated>true</activated>
+     <configs>
+      <config key="state">AAAA6HicZc3RCoMwDAXQf8mzSKvb0P7KHKWzlRVrI02dD9J/X5UxhD2FnEtuNnibQBY9CGAlLxkUMKugJgKxwYTa7NPWFQieCqDZ2f6gYSdWNinrYI3Tx8Fic8/WAeHitXTYj0Z3IAblyBRdbo7RBP8fOFzljKsJJ8vP5VMRZbo/vrsOy/QDZ/0o7V5Tcd7eatZcWeYXUjzZpU2Q0gcJ0EqQ</config>
+     </configs>
+     <params/>
+    </plugin>
+    <audio-output-bus>false</audio-output-bus>
+   </plugins>
+  </track>
+ </tracks>
+</session>
