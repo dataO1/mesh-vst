@@ -43,7 +43,7 @@
 use std::collections::BTreeMap;
 
 use super::blocks::{
-    density_attack_in, lerp, note_param, step_motif, level_unit, note, option, param, reveals, step_tick, stream_start, velocity, LevelMap,
+    density_attack_in, lerp, note_param, note_param_for, NoteShape, step_motif, level_unit, note, option, param, reveals, step_tick, stream_start, velocity, LevelMap,
     PhraseRng, Tier, BASS_ATTACK_BY_DENSITY,
 };
 use super::blocks::{VARIATION_BAR, VEL_ACCENT};
@@ -207,6 +207,11 @@ const SLIDE_SECS: (f32, f32) = (0.03, 0.25);
 /// The glide byte of a slide at Slide `slide`.
 fn slide_glide(slide: f32) -> u8 {
     crate::sampler::glide_value(lerp(SLIDE_SECS.0, SLIDE_SECS.1, slide.clamp(0.0, 1.0)))
+}
+
+/// The Slide value a slide's glide byte came from ([`slide_glide`] inverted).
+pub fn slide_of_glide(glide: u8) -> f32 {
+    ((crate::sampler::glide_secs(glide) - SLIDE_SECS.0) / (SLIDE_SECS.1 - SLIDE_SECS.0)).clamp(0.0, 1.0)
 }
 /// Ticks a slid-from note overlaps the next one so the tie finds it held.
 const TIE_OVERLAP_TICKS: u16 = 2;
@@ -390,7 +395,8 @@ impl BassGenerator {
         for (i, p) in plan.as_slice().iter().enumerate() {
             let step = p.step() as u8;
             let key = motif::note_key(ctx, octave, fold, p).clamp(0, 127);
-            let random_accent = rng.chance(step, S_ACCENT, note_param(ctx, P_ACCENT, step) * ACCENT_PROB_MAX);
+            let shape = NoteShape::note(step, p.gate, key, ctx.harmony.key.root);
+            let random_accent = rng.chance(step, S_ACCENT, note_param_for(ctx, P_ACCENT, shape) * ACCENT_PROB_MAX);
             let accented = random_accent || p.vel >= MOTIF_ACCENT_VEL;
             let vel = if random_accent { p.vel.max(VEL_ACCENT) } else { p.vel };
             let mut ev = note(p.tick, key as u8, vel, p.gate, i as u16 + 1);
@@ -403,10 +409,10 @@ impl BassGenerator {
             if let Some((prev_tick, prev_key)) = prev {
                 if p.tick - prev_tick <= SLIDE_MAX_GAP_STEPS as u16 * TICKS_PER_STEP
                     && key != prev_key
-                    && rng.chance(step, S_SLIDE, note_param(ctx, P_SLIDE, step) * SLIDE_PROB_MAX)
+                    && rng.chance(step, S_SLIDE, note_param_for(ctx, P_SLIDE, shape) * SLIDE_PROB_MAX)
                 {
                     ev.flags |= flags::TIE;
-                    ev.glide = slide_glide(note_param(ctx, P_SLIDE, step));
+                    ev.glide = slide_glide(note_param_for(ctx, P_SLIDE, shape));
                     // Hold the previous note into this one.
                     events[n - 1].gate = p.tick - prev_tick + TIE_OVERLAP_TICKS;
                 }
@@ -662,7 +668,8 @@ impl LaneGenerator for BassGenerator {
                 (span * gate_frac.max(0.85)).max(GATE_MIN_TICKS).round() as u16
             };
 
-            let accented = rng.chance(su, S_ACCENT, note_param(ctx, P_ACCENT, su) * ACCENT_PROB_MAX);
+            let shape = NoteShape::note(su, gate_ticks, key, ctx.harmony.key.root);
+            let accented = rng.chance(su, S_ACCENT, note_param_for(ctx, P_ACCENT, shape) * ACCENT_PROB_MAX);
             let tier = if accented { Tier::Accent } else { Tier::Normal };
             let vel = velocity(tier, rng.unit(su, S_VEL), self.rules.tiers);
             let mut ev = note(step_tick(s), key.clamp(0, 127) as u8, vel, gate_ticks, s as u16 + 1);
@@ -679,10 +686,10 @@ impl LaneGenerator for BassGenerator {
                 if s - prev_step <= SLIDE_MAX_GAP_STEPS
                     && degree != prev_degree
                     && key != events[n - 1].key as i32
-                    && rng.chance(su, S_SLIDE, note_param(ctx, P_SLIDE, su) * SLIDE_PROB_MAX * persona.slide)
+                    && rng.chance(su, S_SLIDE, note_param_for(ctx, P_SLIDE, shape) * SLIDE_PROB_MAX * persona.slide)
                 {
                     ev.flags |= flags::TIE;
-                    ev.glide = slide_glide(note_param(ctx, P_SLIDE, su));
+                    ev.glide = slide_glide(note_param_for(ctx, P_SLIDE, shape));
                     // Hold the previous note into this one.
                     events[n - 1].gate = (s - prev_step) as u16 * TICKS_PER_STEP + TIE_OVERLAP_TICKS;
                 }

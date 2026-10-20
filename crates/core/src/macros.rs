@@ -113,7 +113,8 @@ pub fn knob_of(value: f32, centre: f32) -> f32 {
 pub fn hit_knobs(role: Role, centres: &Centers, knobs: &Knobs, names: &[&str], bar: &BarParams, ev: &LiveEvent) -> Knobs {
     let index = |name: &str| names.iter().position(|n| *n == name);
     let per_bar = |name: &str, own: f32, c: f32| index(name).map_or(own, |i| knob_of(bar.values[i], c));
-    let per_note = |name: &str, own: f32, c: f32| index(name).map_or(own, |i| knob_of(bar.at(i, ev.step), c));
+    let at_step = crate::generator::blocks::NoteShape::at(ev.step);
+    let per_note = |name: &str, own: f32, c: f32| index(name).map_or(own, |i| knob_of(bar.at(i, at_step), c));
     let c = centres;
     match role {
         Role::Drums => Knobs {
@@ -129,7 +130,14 @@ pub fn hit_knobs(role: Role, centres: &Centers, knobs: &Knobs, names: &[&str], b
             variation: per_bar("variation", knobs.variation, c.variation),
             swing: per_bar("syncopation", knobs.swing, c.swing),
             spread: per_note("spread", knobs.spread, c.spread),
-            slide: per_note("slide", knobs.slide, c.slide),
+            // A slide shows the Slide its glide came from; other notes the
+            // Slide their shape reads.
+            slide: match index("slide") {
+                Some(_) if ev.has(crate::event::flags::TIE) => knob_of(crate::generator::bass::slide_of_glide(ev.glide), c.slide),
+                Some(i) => knob_of(bar.at(i, bar.shape_of(ev)), c.slide),
+                None => knobs.slide,
+            },
+            morph: knob_of(around(knobs.morph, c.morph) + bar.morph_move(ev), c.morph),
             ..*knobs
         },
     }
@@ -463,23 +471,35 @@ mod style_tests {
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
             for b in 0..16 {
                 lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
-                let hits: Vec<Knobs> = out
-                    .events
-                    .as_slice()
-                    .iter()
-                    .filter(|e| e.kind == EventKind::NoteOn)
-                    .map(|e| hit_knobs(Role::Bass, &centres, &knobs, lane.param_names(), &out.params, e))
-                    .collect();
+                let notes: Vec<_> = out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn).copied().collect();
+                let hits: Vec<Knobs> = notes.iter().map(|e| hit_knobs(Role::Bass, &centres, &knobs, lane.param_names(), &out.params, e)).collect();
+                // Notes on the same kind of step read the same density: a
+                // pattern, not chance.
+                let class = |s: u8| match s % 8 {
+                    0 => 0,
+                    4 => 1,
+                    2 | 6 => 2,
+                    _ => 3,
+                };
+                for (a, ha) in notes.iter().zip(&hits) {
+                    for (b, hb) in notes.iter().zip(&hits) {
+                        if class(a.step) == class(b.step) {
+                            assert!((ha.density - hb.density).abs() < 1e-5, "steps {} and {}", a.step, b.step);
+                        }
+                    }
+                }
                 for h in &hits {
                     assert!(h.as_array().iter().all(|v| (0.0..=1.0).contains(v)), "{h:?}");
-                    assert_eq!((h.permute, h.shape, h.morph), (knobs.permute, knobs.shape, knobs.morph));
+                    assert_eq!((h.permute, h.shape), (knobs.permute, knobs.shape));
+                    // Morph moves, very slightly.
+                    assert!((h.morph - knobs.morph).abs() < 0.08, "{h:?}");
                     if (h.variation - knobs.variation).abs() < 1e-3 {
                         on_knob += 1;
                     } else if (h.variation - knobs.variation).abs() > 0.1 {
                         moved += 1;
                     }
                 }
-                // Notes of one bar read density on their own.
+                // Notes on different kinds of step read density on their own.
                 varied_bars += hits.windows(2).any(|w| (w[0].density - w[1].density).abs() > 1e-3) as u32;
             }
         }

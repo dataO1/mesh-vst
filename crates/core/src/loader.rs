@@ -176,6 +176,7 @@ pub fn load_mudpie(lib: &Library, path: &Path, sample_rate: u32) -> Result<Share
 enum Trim {
     None,
     /// Before the onset and after the tail.
+    #[cfg(test)]
     Edges,
     /// The edges and every silent stretch inside.
     Gaps,

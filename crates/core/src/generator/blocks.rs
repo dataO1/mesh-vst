@@ -33,21 +33,66 @@ pub fn param(ctx: &BarCtx, index: usize) -> f32 {
     if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
 }
 
-/// Parameter `index` as note `n` reads it: the value moved by up to the
-/// parameter's jitter ([`BarCtx::jitter`]), seeded per seed, note and bar
-/// of the phrase, so notes within a block differ and a phrase repeats.
-pub fn note_param(ctx: &BarCtx, index: usize, n: u8) -> f32 {
-    let amp = ctx.jitter.get(index).copied().unwrap_or(0.0);
-    jittered(param(ctx, index), amp, ctx.seed, ctx.lane, ctx.bar_in_phrase, index, n)
+/// What a note's own parameter move follows: its place in the bar and,
+/// where the generator knows them yet, its length and its height in the key.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct NoteShape {
+    /// 16th step 0..16.
+    pub step: u8,
+    /// Gate in ticks.
+    pub gate: Option<u16>,
+    /// Semitones above the key root, 0..12.
+    pub pitch_class: Option<u8>,
 }
 
-/// [`note_param`] from its parts: `v` moved by up to `amp` for note `n`.
-pub fn jittered(v: f32, amp: f32, seed: u32, lane: u8, bar_in_phrase: u8, index: usize, n: u8) -> f32 {
+impl NoteShape {
+    pub fn at(step: u8) -> Self {
+        Self { step, ..Self::default() }
+    }
+
+    /// A note of `gate` ticks on `key`, in a key rooted on pitch class `root`.
+    pub fn note(step: u8, gate: u16, key: i32, root: u8) -> Self {
+        Self { step, gate: Some(gate), pitch_class: Some((key - root as i32).rem_euclid(12) as u8) }
+    }
+}
+
+/// Parameter `index` as the note at step `n` reads it (see [`patterned`]).
+pub fn note_param(ctx: &BarCtx, index: usize, n: u8) -> f32 {
+    note_param_for(ctx, index, NoteShape::at(n))
+}
+
+/// Parameter `index` as a note of `shape` reads it (see [`patterned`]).
+pub fn note_param_for(ctx: &BarCtx, index: usize, shape: NoteShape) -> f32 {
+    let amp = ctx.jitter.get(index).copied().unwrap_or(0.0);
+    patterned(param(ctx, index), amp, ctx.seed, ctx.lane, ctx.bar_in_phrase, index, shape)
+}
+
+// MUSICAL: first draft, tune by ear (user: the moves follow the notes, not
+// chance). Shares of a note's move: its place in the bar, the block's arc,
+// its length, its height.
+const MOVE_SHARES: [f32; 4] = [0.55, 0.15, 0.15, 0.15];
+
+/// `v` moved by up to `amp` for a note of `shape`: notes on the same kind
+/// of step (downbeat, beat, 8th, 16th) move alike, the block's bars build or
+/// fall, long and short notes and high and low ones lean their own ways. The
+/// letter seed sets each way per parameter, so a block plays one pattern.
+pub fn patterned(v: f32, amp: f32, seed: u32, lane: u8, bar_in_phrase: u8, index: usize, shape: NoteShape) -> f32 {
     if amp <= 0.0 {
         return v;
     }
-    let h = rng::hash(seed, lane, n, bar_in_phrase.wrapping_mul(16).wrapping_add(index as u8), S_NOTE_PARAM);
-    (v + amp * (2.0 * rng::unit_f32(h) - 1.0)).clamp(0.0, 1.0)
+    let way = |k: u8| 2.0 * rng::unit_f32(rng::hash(seed, lane, k, index as u8, S_NOTE_PARAM)) - 1.0;
+    let place = way(match shape.step % 8 {
+        0 => 0,
+        4 => 1,
+        2 | 6 => 2,
+        _ => 3,
+    });
+    let arc = way(4) * ((bar_in_phrase % 4) as f32 / 1.5 - 1.0);
+    // Short (-1) .. two beats and longer (+1).
+    let length = shape.gate.map_or(0.0, |g| way(5) * ((g as f32 / (2 * TICKS_PER_STEP) as f32).min(4.0) / 2.0 - 1.0).clamp(-1.0, 1.0));
+    let height = shape.pitch_class.map_or(0.0, |pc| way(6) * (pc.min(11) as f32 / 5.5 - 1.0));
+    let [p, a, l, h] = MOVE_SHARES;
+    (v + amp * (p * place + a * arc + l * length + h * height).clamp(-1.0, 1.0)).clamp(0.0, 1.0)
 }
 
 /// Defaults for `names`, taken from the style's `generator.params` where

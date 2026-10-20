@@ -1377,7 +1377,8 @@ fn slider_style() -> slider::Style {
     }
 }
 
-/// The last hit's mark on a knob slider: a thin bar where the hit played it.
+/// The last hit's mark on a knob slider: a soft ink line where the hit
+/// played it, split red and blue at its edges like the field's points.
 struct HitMarker {
     at: f32,
     glow: f32,
@@ -1389,9 +1390,18 @@ impl canvas::Program<Message> for HitMarker {
     fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
         // The handle's centre travels HANDLE_W / 2 .. width − HANDLE_W / 2.
-        let x = HANDLE_W / 2.0 + self.at * (bounds.width - HANDLE_W) - 1.0;
-        let color = Color::from_rgba(0.95, 0.45, 0.32, 0.35 + 0.65 * self.glow);
-        frame.fill_rectangle(Point::new(x, 1.0), Size::new(2.0, bounds.height - 2.0), color);
+        let x = HANDLE_W / 2.0 + self.at * (bounds.width - HANDLE_W);
+        let a = 0.1 + 0.25 * self.glow;
+        let h = bounds.height - 6.0;
+        let bar = |frame: &mut Frame, dx: f32, w: f32, color: Color| {
+            frame.fill_rectangle(Point::new(x + dx - w / 2.0, 3.0), Size::new(w, h), color);
+        };
+        // A blur: wide and faint to narrow and brighter.
+        for (w, k) in [(7.0, 0.15), (4.0, 0.3), (1.5, 0.6)] {
+            bar(&mut frame, 0.0, w, Color { a: a * k, ..INK });
+        }
+        bar(&mut frame, -1.5, 1.0, Color::from_rgba(0.95, 0.35, 0.32, a * 0.35));
+        bar(&mut frame, 1.5, 1.0, Color::from_rgba(0.35, 0.55, 0.98, a * 0.35));
         vec![frame.into_geometry()]
     }
 }

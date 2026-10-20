@@ -23,7 +23,7 @@ const CHOKE_OPEN_SECS: f32 = 0.5;
 /// Width of the region around the generator's position the Morph knob moves
 /// a stream's notes over, as a share of the sample (knob centre = the
 /// position, the ends half the region either side, wrapping).
-const MORPH_REGION: f64 = 0.4;
+pub const MORPH_REGION: f64 = 0.4;
 
 /// UI-facing lane meters. Written by the RT thread once per block, read from
 /// any thread through the `Arc` returned by [`Sampler::meters`].

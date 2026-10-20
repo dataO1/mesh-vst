@@ -26,7 +26,7 @@ mod voice;
 mod tests;
 
 pub use data::{decode_mono, SampleBank, SampleData, Slice, SliceType, SlotDef, LEVEL_PARTS, MAX_LAYERS};
-pub use engine::{Sampler, SamplerMeters};
+pub use engine::{Sampler, SamplerMeters, MORPH_REGION};
 pub use interp::{sinc_tables, Interpolation, SincTables};
 pub use unison::{Unison, UnisonMode, MAX_UNISON};
 pub use params::{

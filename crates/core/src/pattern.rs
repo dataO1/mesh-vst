@@ -11,13 +11,14 @@
 
 use std::collections::BTreeMap;
 
-use crate::event::{flags, BarEvents, EventKind};
+use crate::event::{flags, BarEvents, EventKind, LiveEvent};
+use crate::sampler::MORPH_REGION;
 use crate::form::{
     form_chord, letter_offset, letter_seed, prime_seed, splice_second_half, Feel, Form, FormPos, Letter, Play, SeedClass,
     DEFAULT_FORMS, FILLER_BOOSTS, LETTER_OFFSETS, NOTE_JITTER_SHARE,
 };
 use crate::generator::bass::{self, BassGenerator, BassRules};
-use crate::generator::blocks::{defaults_from_spec, jittered};
+use crate::generator::blocks::{defaults_from_spec, patterned, NoteShape};
 use crate::generator::drums::{self, DrumGenerator, DrumRules};
 use crate::generator::{idiom, BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use crate::harmony::{HarmonyCtx, BARS_PER_PHRASE};
@@ -92,6 +93,12 @@ pub struct RenderedBar {
     pub params: BarParams,
 }
 
+// MUSICAL: first draft, tune by ear (user: very slight).
+/// Largest Morph move of a bass note, in knob values (at Variation's middle).
+pub const MORPH_NOTE: f32 = 0.04;
+/// Seed index of the Morph move, past the generator parameters.
+const MORPH_INDEX: usize = MAX_GEN_PARAMS;
+
 /// The generator parameters a bar played with, after its letter and filler
 /// moves (the editor shows them per hit).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -102,16 +109,30 @@ pub struct BarParams {
     seed: u32,
     lane: u8,
     bar_in_phrase: u8,
+    /// Pitch class of the key root.
+    root: u8,
+    /// How far Variation lets letters and notes move the parameters.
+    reach: f32,
     /// Drums: the swing every off 16th plays (the knob's and the letter's).
     pub swing: f32,
 }
 
 impl BarParams {
     /// Parameter `index` as a generator reading it per note read it for a
-    /// note at `step` ([`LiveEvent::step`](crate::event::LiveEvent::step)).
-    pub fn at(&self, index: usize, step: u8) -> f32 {
+    /// note of `shape`.
+    pub fn at(&self, index: usize, shape: NoteShape) -> f32 {
         let (Some(v), Some(amp)) = (self.values.get(index), self.jitter.get(index)) else { return 0.0 };
-        jittered(*v, *amp, self.seed, self.lane, self.bar_in_phrase, index, step)
+        patterned(*v, *amp, self.seed, self.lane, self.bar_in_phrase, index, shape)
+    }
+
+    /// The shape of a played note `ev` (its step, gate and height).
+    pub fn shape_of(&self, ev: &LiveEvent) -> NoteShape {
+        NoteShape::note(ev.step, ev.gate, ev.key as i32, self.root)
+    }
+
+    /// The Morph move of bass note `ev`, in knob values (see [`MORPH_NOTE`]).
+    pub fn morph_move(&self, ev: &LiveEvent) -> f32 {
+        patterned(0.5, MORPH_NOTE * self.reach, self.seed, self.lane, self.bar_in_phrase, MORPH_INDEX, self.shape_of(ev)) - 0.5
     }
 }
 
@@ -309,13 +330,19 @@ impl PatternLane {
         let mut feel = Feel::of(seed, c.lane, class);
         feel.swing = (feel.swing + knob_swing).min(1.0);
         if let Some(p) = played {
-            *p = BarParams { values: params, jitter: bar_ctx.jitter, seed, lane: c.lane, bar_in_phrase: c.bar_in_phrase, swing: feel.swing };
+            *p = BarParams { values: params, jitter: bar_ctx.jitter, seed, lane: c.lane, bar_in_phrase: c.bar_in_phrase, root: c.harmony.key.root, reach, swing: feel.swing };
         }
         feel.apply(out, seed, c.lane);
         if self.role != Role::Drums {
             let block = if self.role == Role::Bass { block_rate(seed, c.lane, class) } else { 0 };
             apply_speed(out, self.rate + block, c.bar, scratch);
             limit_speed(out, self.rate, self.rate + block);
+            // Each note moves Morph a touch, as its shape says.
+            let played = BarParams { seed, lane: c.lane, bar_in_phrase: c.bar_in_phrase, root: c.harmony.key.root, reach, ..BarParams::default() };
+            for e in out.as_mut_slice().iter_mut().filter(|e| e.kind == EventKind::NoteOn) {
+                let at = e.start as f64 / u16::MAX as f64 + played.morph_move(e) as f64 * MORPH_REGION;
+                e.start = (at.rem_euclid(1.0) * u16::MAX as f64) as u16;
+            }
         }
         voices
     }
