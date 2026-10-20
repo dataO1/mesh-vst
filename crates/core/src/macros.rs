@@ -54,7 +54,7 @@ pub type Centers = Knobs;
 const DRUM_CENTRES: [(f32, f32); 8] =
     [(0.35, 0.65), (0.5, 0.5), (0.25, 0.55), (0.0, 0.35), (0.35, 0.7), (0.1, 0.7), (0.5, 0.5), (0.5, 0.5)];
 const BASS_CENTRES: [(f32, f32); 8] =
-    [(0.35, 0.65), (0.5, 0.5), (0.3, 0.6), (0.0, 0.25), (0.25, 0.75), (0.1, 0.9), (0.05, 0.4), (0.3, 0.7)];
+    [(0.35, 0.65), (0.5, 0.5), (0.3, 0.6), (0.2, 0.6), (0.25, 0.75), (0.1, 0.9), (0.05, 0.4), (0.3, 0.7)];
 const S_CENTRE: u32 = 0xC40;
 
 impl Centers {
@@ -224,6 +224,8 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
     lane.set_param("complexity", lerp(0.3, 0.9, v.variation));
     lane.set_param("accent", lerp(0.2, 0.9, accent));
     lane.set_param("spread", v.spread);
+    // Swing: how far the line leaves the beat (syncopation).
+    lane.set_param("syncopation", v.swing);
     lane.set_param("slide", v.slide);
     // Shape: stabby, accented and moving .. sustained and calm.
     lane.set_param("length", lerp(0.4, 0.95, v.shape));
@@ -401,3 +403,5 @@ mod style_tests {
         }
     }
 }
+
+

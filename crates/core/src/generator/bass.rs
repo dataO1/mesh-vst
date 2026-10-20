@@ -50,7 +50,7 @@ use super::blocks::{VARIATION_BAR, VEL_ACCENT};
 use super::layout::MASK_KICK_MIN;
 use super::motif::{self, Plan, Play, Shape};
 use super::{BarCtx, LaneGenerator, MAX_GEN_PARAMS};
-use crate::event::{flags, BarEvents, LiveEvent};
+use crate::event::{flags, BarEvents, EventKind, LiveEvent};
 use crate::harmony::SCALE_LEN;
 use crate::motif::Motif;
 use crate::rng;
@@ -58,8 +58,8 @@ use crate::sampler::CUTOFF_OFFSET_OCTAVES;
 use crate::{STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
 use crate::key::MusicalKey;
 
-pub const PARAM_NAMES: [&str; 11] =
-    ["density", "complexity", "variation", "kick_mode", "register", "slide", "accent", "spread", "length", "expression", "stabs"];
+pub const PARAM_NAMES: [&str; 12] =
+    ["density", "complexity", "variation", "kick_mode", "register", "slide", "accent", "spread", "length", "expression", "stabs", "syncopation"];
 const P_DENSITY: usize = 0;
 const P_COMPLEXITY: usize = 1;
 const P_VARIATION: usize = 2;
@@ -71,6 +71,7 @@ const P_SPREAD: usize = 7;
 const P_LENGTH: usize = 8;
 const P_EXPRESSION: usize = 9;
 const P_STABS: usize = 10;
+const P_SYNCOPATION: usize = 11;
 
 // MUSICAL: first draft, tune by ear.
 pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.5, 0.4, 0.5, 0.0, 0.5, 0.5, 0.5, 0.3, 0.5, 0.5, 0.5, 0.0];
@@ -688,6 +689,7 @@ impl LaneGenerator for BassGenerator {
         if self.rules.cells {
             n = rhythm_cells(&mut events, n, ctx, &rng, variation);
         }
+        syncopate(&mut events[..n], param(ctx, P_SYNCOPATION), &rng);
         let ratchet = persona.ratchet * (2.0 * param(ctx, P_STABS)).min(1.0);
         let fill_bar = ctx.fill || ctx.drum_fill;
         let ratchet_at = |step: u8| {
@@ -1101,6 +1103,56 @@ fn rhythm_cells(events: &mut [LiveEvent; 2 * STEPS_PER_BAR], n: usize, ctx: &Bar
     }
     *events = out;
     m
+}
+
+// MUSICAL: first draft, tune by ear.
+/// Share of on-beat notes pushed off the beat at syncopation 1.
+const SYNC_MAX: f32 = 0.9;
+/// How a pushed note moves, in ticks (− = early): a 16th early (an
+/// anticipation), an 8th early, a 16th late.
+const SYNC_MOVES: [(i32, f32); 3] = [(-24, 0.5), (-48, 0.25), (24, 0.25)];
+const S_SYNC: u32 = 0x223;
+const S_SYNC_MOVE: u32 = 0x224;
+
+/// Syncopation (user, 2026-10-20; the Swing knob): a seeded share of the
+/// notes on the 8th grid moves off it, mostly ahead of the beat, holding to
+/// where it would have ended. The bar's first note stays (the anchor). The
+/// repeating bars of a phrase move alike; the bar stays sorted.
+fn syncopate(events: &mut [LiveEvent], amount: f32, rng: &PhraseRng) {
+    if amount <= 0.0 {
+        return;
+    }
+    let weights = SYNC_MOVES.map(|(_, w)| w);
+    for i in 1..events.len() {
+        let e = events[i];
+        if e.kind != EventKind::NoteOn || e.tick % (2 * TICKS_PER_STEP) != 0 {
+            continue;
+        }
+        let step = (e.tick / TICKS_PER_STEP) as u8;
+        if !rng.chance(step, S_SYNC, amount * SYNC_MAX) {
+            continue;
+        }
+        let prev = events[i - 1].tick as i32;
+        let next = events.get(i + 1).map_or(TICKS_PER_BAR as i32, |x| x.tick as i32);
+        // The seeded move, else the next one that fits between the neighbours.
+        let first = rng::weighted_pick(rng.at(step, S_SYNC_MOVE), &weights).unwrap_or(0);
+        let fits = |s: i32| {
+            let to = e.tick as i32 + s;
+            to > prev && to < next && to < TICKS_PER_BAR as i32
+        };
+        let Some(shift) = (0..SYNC_MOVES.len()).map(|k| SYNC_MOVES[(first + k) % SYNC_MOVES.len()].0).find(|&s| fits(s)) else { continue };
+        let to = e.tick as i32 + shift;
+        let ev = &mut events[i];
+        ev.tick = to as u16;
+        ev.gate = (ev.gate as i32 - shift).clamp(GATE_MIN_TICKS as i32, (next - to).max(GATE_MIN_TICKS as i32)) as u16;
+        // A pushed note lands as an accent.
+        ev.flags |= flags::ACCENT;
+        // The note before it ends in time.
+        let p = &mut events[i - 1];
+        if p.tick as i32 + p.gate as i32 > to && p.flags & flags::TIE == 0 {
+            p.gate = (to - p.tick as i32).max(GATE_MIN_TICKS as i32) as u16;
+        }
+    }
 }
 
 fn ratchets(
@@ -1874,6 +1926,27 @@ mod tests {
         c.style_seed = style;
         c.class = class;
         c
+    }
+
+    #[test]
+    fn syncopation_moves_notes_off_the_beat() {
+        let g = generator();
+        let off_beat = |sync: f32| {
+            let p = params(|p| {
+                p[P_DENSITY] = 0.7;
+                p[P_SYNCOPATION] = sync;
+            });
+            let mut off = 0;
+            for seed in 0..200 {
+                let ev = bar(&g, seed, 0, &p, &EMPTY);
+                assert!(ev.windows(2).all(|w| w[0].tick < w[1].tick), "sorted");
+                assert_eq!(ev.first().map(|e| e.tick), bar(&g, seed, 0, &params(|p| p[P_DENSITY] = 0.7), &EMPTY).first().map(|e| e.tick), "the anchor stays");
+                off += ev.iter().filter(|e| e.tick % (2 * TICKS_PER_STEP) != 0).count();
+            }
+            off
+        };
+        let (none, some, full) = (off_beat(0.0), off_beat(0.5), off_beat(1.0));
+        assert!(some > none + none / 10 && full > some + some / 10, "{none} {some} {full}");
     }
 
     #[test]

@@ -277,6 +277,7 @@ impl PatternLane {
         if self.role != Role::Drums {
             let block = if self.role == Role::Bass { block_rate(seed, c.lane, class) } else { 0 };
             apply_speed(out, self.rate + block, c.bar, scratch);
+            limit_speed(out, self.rate, self.rate + block);
         }
         voices
     }
@@ -409,6 +410,39 @@ fn apply_speed(out: &mut BarEvents, exponent: i8, bar: u64, scratch: &mut BarEve
     std::mem::swap(out, scratch);
 }
 
+/// The fastest notes a speed keeps (user, 2026-10-20): double speed stays
+/// at 16ths and half speed at 8ths, instead of everything scaled. A note
+/// closer than that to the previous one goes; the previous one holds over it.
+fn limit_speed(out: &mut BarEvents, rate: i8, exponent: i8) {
+    // The Rate setting decides; a block at double speed stays at 16ths too.
+    let min = if rate >= 1 || exponent >= 1 {
+        TICKS_PER_BAR / 16
+    } else if rate <= -1 {
+        TICKS_PER_BAR / 8
+    } else {
+        return;
+    };
+    let events = out.as_mut_slice();
+    let mut kept = 0usize;
+    let mut last: Option<usize> = None;
+    for i in 0..events.len() {
+        let e = events[i];
+        if e.kind == EventKind::NoteOn {
+            if let Some(l) = last {
+                if e.tick < events[l].tick + min {
+                    let p = &mut events[l];
+                    p.gate = p.gate.max((e.tick + e.gate).saturating_sub(p.tick));
+                    continue;
+                }
+            }
+            last = Some(kept);
+        }
+        events[kept] = e;
+        kept += 1;
+    }
+    out.truncate(kept);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +457,22 @@ mod tests {
                 out.events.as_slice().to_vec()
             })
             .collect()
+    }
+
+    #[test]
+    fn double_speed_stays_at_16ths_and_half_speed_at_8ths() {
+        for (rate, min) in [(1i8, TICKS_PER_BAR / 16), (-1, TICKS_PER_BAR / 8)] {
+            let mut fastest = u16::MAX;
+            for seed in 0..40 {
+                let mut lane = PatternLane::bass(seed, seed);
+                lane.rate = rate;
+                for bar in render_all(&lane, 8) {
+                    let on: Vec<u16> = bar.iter().filter(|e| e.kind == EventKind::NoteOn).map(|e| e.tick).collect();
+                    fastest = on.windows(2).map(|w| w[1] - w[0]).fold(fastest, u16::min);
+                }
+            }
+            assert!(fastest >= min && fastest < u16::MAX, "rate {rate}: fastest {fastest} ticks");
+        }
     }
 
     #[test]

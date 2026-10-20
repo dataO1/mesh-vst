@@ -145,6 +145,11 @@ impl BarEvents {
         self.len = n as _;
     }
 
+    /// Keep the first `len` events.
+    pub fn truncate(&mut self, len: usize) {
+        self.len = self.len.min(len as u16);
+    }
+
     /// Edit events in place. Callers keep them sorted by tick.
     pub fn as_mut_slice(&mut self) -> &mut [LiveEvent] {
         &mut self.events[..self.len as usize]

@@ -136,6 +136,8 @@ drive external effects.
   ratchet clusters, sustained, mixed; plain about 1 in 6). Filler letters (C, D) play another
   family each, with the filler boosts (more variation and spread). Variation sets how many beats
   take a cell. The repeating bars of a phrase pick alike, the variation bar re-draws.
+  Rate: double speed plays no faster than 16ths and half speed no faster than 8ths (2026-10-20);
+  a note closer to the one before goes, and that one holds over it.
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
 - **D31** Hat, cymbal and shaker pools. The name decides when it carries a keyword: 97% of
@@ -316,7 +318,7 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | **Density** | notes, note length | hits, voices coming in (tops included), loop gating |
 | **Permute** | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
 | **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell; scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
-| **Swing** | swing | swing |
+| **Swing** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays) | swing of every off 16th |
 | **Shape** | stabby to sustained: length, expression, filter bite | tight to open: choke, loop hold, decay |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style |
 | **Spread** | octave lifts, jump size | — |
