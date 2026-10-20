@@ -897,6 +897,60 @@ mod tests {
         }
     }
 
+    fn kit() -> Vec<SpanNote> {
+        // Kick, hats on the 8ths, snare on 2 and 4, two bars.
+        let mut v = Vec::with_capacity(128);
+        for bar in 0..2u32 {
+            for step in 0..16u32 {
+                let at = bar * BAR + step * STEP;
+                let target = match step {
+                    0 | 10 => Some(0),
+                    4 | 12 => Some(1),
+                    s if s % 2 == 0 => Some(2),
+                    _ => None,
+                };
+                if let Some(t) = target {
+                    let ev = LiveEvent { kind: EventKind::Trigger, target: t, vel: 100, ..Default::default() };
+                    v.push(SpanNote { at, seq: v.len() as u32, ev });
+                }
+            }
+        }
+        v
+    }
+
+    fn drums(op: Op, amount: f32) -> Vec<SpanNote> {
+        let mut v = Vec::with_capacity(128);
+        v.extend_from_slice(&kit());
+        let mut chain = OpChain::default();
+        chain.push(op);
+        apply(&chain, &mut v, &OpCtx { drums: true, ..ctx(amount) });
+        v
+    }
+
+    #[test]
+    fn drum_operators_have_their_own_meanings() {
+        let src = kit();
+        // m: ghosts, drops or a ghost after a hit.
+        let m = drums(Op::Mutate, 1.0);
+        assert!(m.len() != src.len() || m.iter().any(|n| n.ev.vel < 100));
+        // o: an 8th displacement.
+        let o = drums(Op::Rotation, 1.0);
+        let hits = |v: &[SpanNote]| v.iter().map(|n| (n.at, n.ev.target)).collect::<Vec<_>>();
+        assert_ne!(hits(&o), hits(&src));
+        assert!(o.iter().all(|n| n.at % STEP == 0));
+        // q: the ending opens (the last hits gone); a: a strong hit on the
+        // last beat closes it.
+        let q = drums(Op::Question, 1.0);
+        assert!(q.iter().all(|n| n.at < 2 * BAR - BEAT) && q.len() < src.len());
+        let a = drums(Op::Answer, 1.0);
+        let last = a.iter().filter(|n| n.at >= 2 * BAR - BEAT).collect::<Vec<_>>();
+        assert!(last.len() == 1 && last[0].ev.vel >= 110 && last[0].ev.target == 0, "{last:?}");
+        // r and R: the kit's rhythm mirrored.
+        for op in [Op::Retrograde, Op::RhythmRetrograde] {
+            assert_ne!(ats(&drums(op, 1.0)), ats(&src), "{op:?}");
+        }
+    }
+
     #[test]
     fn the_seeded_operator_follows_the_place() {
         let most = |place: Place| {

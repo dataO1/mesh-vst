@@ -204,6 +204,10 @@ drive external effects.
   - A drum host gives the blocks and the rhythm; the sidechain gives the rhythm only. The link
     table moved to `mesh-vst-link-v2`: instances of this version and older ones do not see
     each other.
+- **D47** **Form operators** (2026-10-21): see the form section below.
+  - **TODO: better drum operators.** The drum meanings are a first draft (m ghosts and drops,
+    o an 8th displacement, q/a open and closed endings, r/R the kit's rhythm mirrored, d/e/x
+    the grid and double-time operators); the user wants better ones later.
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
 - **D31** Hat, cymbal and shaker pools. The name decides when it carries a keyword: 97% of
