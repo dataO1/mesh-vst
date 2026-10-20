@@ -24,6 +24,7 @@ use crate::generator::layout::DrumVoice;
 use crate::generator::{idiom, BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use crate::harmony::{HarmonyCtx, BARS_PER_PHRASE};
 use crate::key::MusicalKey;
+use crate::ops::{self, Op, OpChain, OpCtx, SpanNote, MAX_SPAN_BARS};
 use crate::role::Role;
 use crate::{rng, STEPS_PER_BAR, TICKS_PER_BAR};
 
@@ -421,21 +422,26 @@ impl PatternLane {
         };
         out.events.clear();
         out.params = BarParams::default();
-        out.voices = self.render_part(&ctx, &pos, &mut out.events, &mut scratch.second, Some(&mut out.params));
+        let form_seed = self.follow.map_or(self.pattern_seed, |f| f.seed);
+        out.voices = self.render_part(&ctx, &pos, 0, form_seed, &mut out.events, &mut scratch.second, &mut scratch.span, Some(&mut out.params));
         out.letter = pos.letter.index();
         for p in &parts[1..n_parts] {
             scratch.part.clear();
-            self.render_part(&ctx, &p.pos, &mut scratch.part, &mut scratch.second, None);
+            self.render_part(&ctx, &p.pos, p.from, form_seed, &mut scratch.part, &mut scratch.second, &mut scratch.span, None);
             splice_range(&mut out.events, &scratch.part, p.from, p.to, &mut scratch.second);
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_part(
         &self,
         c: &PartCtx,
         pos: &FormPos,
+        from: u16,
+        form_seed: u32,
         out: &mut BarEvents,
         scratch: &mut BarEvents,
+        span: &mut SpanCache,
         played: Option<&mut BarParams>,
     ) -> u8 {
         // A plugin instance has no drum lane to break with: break-only
@@ -513,16 +519,23 @@ impl PatternLane {
                 host_in_render(&self.host_line, self.rate + BASE_RATE + block, c.bar)
             },
         };
-        self.generator.render_bar(&bar_ctx, out);
-        out.sort();
         let voices = self.generator.voice_mask(&bar_ctx);
-        if pos.prime {
-            // A': same seed, a different second half.
-            bar_ctx.seed = prime_seed(seed, c.lane);
-            scratch.clear();
-            self.generator.render_bar(&bar_ctx, scratch);
-            scratch.sort();
-            splice_second_half(out, scratch);
+        let chain = self.resolve_ops(pos, form_seed, c.lane);
+        if chain.is_empty() {
+            self.generator.render_bar(&bar_ctx, out);
+            out.sort();
+            if pos.prime {
+                // A': same seed, a different second half.
+                bar_ctx.seed = prime_seed(seed, c.lane);
+                scratch.clear();
+                self.generator.render_bar(&bar_ctx, scratch);
+                scratch.sort();
+                splice_second_half(out, scratch);
+            }
+        } else {
+            // Operators (D47): the letter's first bars, transformed over the
+            // segment, this bar's part of it.
+            self.render_span(c, pos, &bar_ctx, &chain, from, out, scratch, span);
         }
         permute(out, permute_amount, seed, c.lane, c.bar_in_phrase);
         let mut feel = Feel::of(seed, c.lane, class);
@@ -591,6 +604,115 @@ impl PatternLane {
     }
 }
 
+impl PatternLane {
+    /// The operators segment `pos` plays (D47): the seeded `?` resolved.
+    fn resolve_ops(&self, pos: &FormPos, _form_seed: u32, _lane: u8) -> OpChain {
+        let mut chain = OpChain::default();
+        for op in pos.ops.iter().filter(|o| *o != Op::Seeded) {
+            chain.push(op);
+        }
+        chain
+    }
+
+    /// How far the operators go: Variation 0 still a little (D47).
+    fn op_amount(&self) -> f32 {
+        let v = self.param_names().iter().position(|n| *n == "variation").map_or(0.5, |i| self.params[i]);
+        OP_AMOUNT_FLOOR + (1.0 - OP_AMOUNT_FLOOR) * v.clamp(0.0, 1.0)
+    }
+
+    /// The part of the segment `pos` belongs to under this bar, from tick
+    /// `from`: the letter's first bars (as the letter first plays them),
+    /// transformed by `chain` over the whole segment, cached per span.
+    #[allow(clippy::too_many_arguments)]
+    fn render_span(&self, c: &PartCtx, pos: &FormPos, base: &BarCtx, chain: &OpChain, from: u16, out: &mut BarEvents, tmp: &mut BarEvents, span: &mut SpanCache) {
+        let bar_ticks = TICKS_PER_BAR as u32;
+        let beat_ticks = bar_ticks / crate::form::BEATS_PER_BAR as u32;
+        let ticks = (pos.segment_beats as u32 * beat_ticks).clamp(1, (MAX_SPAN_BARS as u32) * bar_ticks);
+        let bars = ticks.div_ceil(bar_ticks) as u16;
+        let first_bar = c.bar.saturating_sub(pos.bar_in_segment as u64);
+        let amount = self.op_amount();
+        let mut key = mix(rng::hash(self.pattern_seed, c.lane, 0, 0, S_SPAN), base.seed as u64);
+        for v in [
+            self.sound_seed as u64,
+            chain.fingerprint(),
+            pos.prime as u64,
+            ticks as u64,
+            first_bar,
+            pos.segment as u64 | (pos.second as u64) << 8 | (pos.letter.index() as u64) << 16,
+            base.harmony.key.root as u64 | (base.harmony.key.minor as u64) << 8 | (self.mode as u64) << 16,
+            self.phrase_bars as u64,
+            c.phrase as u64,
+            amount.to_bits() as u64,
+        ] {
+            key = mix(key, v);
+        }
+        key = base.params.iter().fold(key, |h, p| mix(h, p.to_bits() as u64));
+        if !(span.valid && span.key == key) {
+            span.notes.clear();
+            for j in 0..bars {
+                // The letter's bar `j` as its segment first plays it: its
+                // chord, its fill, no Splice (that applies after).
+                let reference = FormPos { bar_in_segment: j, bars_since_main: j, last_of_segment: j + 1 == bars, prime: false, ops: OpChain::default(), ..*pos };
+                let mut harmony = base.harmony;
+                if self.role != Role::Drums {
+                    harmony.chord_degree = form_chord(self.pattern_seed, c.lane, &reference, base.seed, harmony.key.minor);
+                }
+                let phrase_end = self.phrase_bars > 1 && (first_bar + j as u64 + 1) % self.phrase_bars as u64 == 0;
+                let fill = self.role == Role::Drums && ((base.class == SeedClass::Filler && j + 1 == bars) || phrase_end);
+                let mut ctx = BarCtx {
+                    bar_in_phrase: (j as u64 % BARS_PER_PHRASE) as u8,
+                    fill,
+                    harmony,
+                    focus: [1.0; STEPS_PER_BAR],
+                    focus_shift: [0.0; MAX_GEN_PARAMS],
+                    host: crate::splice::HostLine::default(),
+                    ..*base
+                };
+                tmp.clear();
+                self.generator.render_bar(&ctx, tmp);
+                tmp.sort();
+                if pos.prime {
+                    ctx.seed = prime_seed(base.seed, c.lane);
+                    span.prime.clear();
+                    self.generator.render_bar(&ctx, &mut span.prime);
+                    span.prime.sort();
+                    splice_second_half(tmp, &span.prime);
+                }
+                for e in tmp.as_slice() {
+                    let at = j as u32 * bar_ticks + e.tick as u32;
+                    if at < ticks && span.notes.len() < span.notes.capacity() {
+                        let seq = span.notes.len() as u32;
+                        span.notes.push(SpanNote { at, seq, ev: *e });
+                    }
+                }
+            }
+            ops::sort(&mut span.notes);
+            let ctx = OpCtx { ticks, amount, seed: base.seed, lane: c.lane, drums: self.role == Role::Drums, harmony: base.harmony };
+            ops::apply(chain, &mut span.notes, &ctx);
+            span.ticks = ticks;
+            span.key = key;
+            span.valid = true;
+        }
+        // This bar's ticks in the span: the part from `from` starts at the
+        // segment beat it is at; a segment longer than the span repeats it.
+        let at_from = (pos.beat_in_segment as u32 * beat_ticks) % span.ticks;
+        out.clear();
+        for lap in [0u32, span.ticks] {
+            for n in &span.notes {
+                let at = n.at + lap;
+                if at < at_from || at >= at_from + bar_ticks - from as u32 {
+                    continue;
+                }
+                let tick = from as u32 + (at - at_from);
+                if tick < bar_ticks {
+                    out.push(LiveEvent { tick: tick as u16, ..n.ev });
+                }
+            }
+        }
+        out.sort();
+    }
+}
+
 /// A host's form position a follower plays (Splice, D46): its form, the
 /// seed and lane index it varies the form with, its pattern bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -606,6 +728,37 @@ pub struct FormFollow {
 pub struct Scratch {
     part: BarEvents,
     second: BarEvents,
+    span: SpanCache,
+}
+
+/// A segment's transformed span (D47), kept while the bars of the segment
+/// render one after the other: worked out once per span and inputs.
+#[derive(Clone)]
+pub struct SpanCache {
+    key: u64,
+    valid: bool,
+    ticks: u32,
+    notes: Vec<SpanNote>,
+    bar: BarEvents,
+    prime: BarEvents,
+}
+
+impl Default for SpanCache {
+    fn default() -> Self {
+        Self {
+            key: 0,
+            valid: false,
+            ticks: 0,
+            notes: Vec::with_capacity(MAX_SPAN_BARS * crate::MAX_EVENTS_PER_BAR),
+            bar: BarEvents::default(),
+            prime: BarEvents::default(),
+        }
+    }
+}
+
+/// Mix `v` into the running fingerprint `h`.
+fn mix(h: u64, v: u64) -> u64 {
+    rng::derive(h ^ v.wrapping_mul(0x9E37_79B9_7F4A_7C15), 7)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -616,6 +769,12 @@ struct PartCtx {
     phrase: u32,
     harmony: HarmonyCtx,
 }
+
+// MUSICAL: tune by ear (user, 2026-10-21: at 0 % Variation a varied block
+// still differs a little from its original, at 100 % it plays the full
+// variation). How far the operators go at Variation 0.
+const OP_AMOUNT_FLOOR: f32 = 0.15;
+const S_SPAN: u32 = 0xF60;
 
 /// Speed step of a bass block, seeded by its letter seed.
 fn block_rate(seed: u32, lane: u8, class: SeedClass) -> i8 {
@@ -1060,9 +1219,38 @@ mod tests {
         assert_eq!(bar(4, 2), bar(16, 2));
     }
 
+    /// The events of `bar` of `lane` (fresh scratch: no cache in between).
+    fn bar_alone(lane: &PatternLane, bar: u64) -> Vec<crate::event::LiveEvent> {
+        let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+        lane.render(bar, MusicalKey::new(5, true), &mut out, &mut scratch);
+        out.events.as_slice().to_vec()
+    }
+
+    #[test]
+    fn a_variant_plays_its_letters_first_bars_and_repeats_exactly() {
+        for drums in [true, false] {
+            let mut lane = if drums { PatternLane::drums(DrumLayout::standard(), 7, 3) } else { PatternLane::bass(7, 3) };
+            lane.set_form(Form::parse("A3 Ar2 A11").unwrap());
+            lane.rate = 1;
+            // Rendered in order (the span cached) or alone: the same bars.
+            let ordered = render_all(&lane, 8);
+            for b in [4u64, 3, 6, 4] {
+                assert_eq!(bar_alone(&lane, b), ordered[b as usize], "bar {b}");
+            }
+            if drums {
+                // No transform yet: the variant's bars are A's first bars.
+                assert_eq!(ordered[3], ordered[0]);
+            }
+        }
+    }
+
     #[test]
     fn rendering_does_not_allocate() {
-        for lane in [PatternLane::drums(DrumLayout::standard(), 11, 4), PatternLane::bass(11, 4)] {
+        let with_ops = |mut l: PatternLane| {
+            l.set_form(Form::parse("A3 Ar2 A2dq B?1 Bix4 C4").unwrap());
+            l
+        };
+        for lane in [PatternLane::drums(DrumLayout::standard(), 11, 4), PatternLane::bass(11, 4), with_ops(PatternLane::drums(DrumLayout::standard(), 11, 4)), with_ops(PatternLane::bass(11, 4))] {
             let key = MusicalKey::new(2, true);
             let mut out = RenderedBar::default();
             let mut scratch = Scratch::default();

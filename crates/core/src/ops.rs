@@ -6,6 +6,9 @@
 //! set the same thing. `'` (another second half) and `*` (another sound)
 //! stay what they were. Pure and allocation-free.
 
+use crate::event::LiveEvent;
+use crate::harmony::HarmonyCtx;
+
 /// One operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Op {
@@ -185,6 +188,50 @@ impl std::fmt::Display for OpChain {
         Ok(())
     }
 }
+
+/// Bars a span holds at most: a longer segment repeats its first
+/// [`MAX_SPAN_BARS`] transformed.
+pub const MAX_SPAN_BARS: usize = 16;
+
+/// One event of a span: its tick from the span's start.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpanNote {
+    pub at: u32,
+    /// Order among events on the same tick (as the generator wrote them).
+    pub seq: u32,
+    pub ev: LiveEvent,
+}
+
+/// What the operators of one span work with.
+#[derive(Debug, Clone, Copy)]
+pub struct OpCtx {
+    /// Length of the span in ticks.
+    pub ticks: u32,
+    /// How far the operators go, 0 (a little) .. 1 (in full): from Variation.
+    pub amount: f32,
+    /// The letter seed and the lane (the operators' seeded details).
+    pub seed: u32,
+    pub lane: u8,
+    /// Drums: the pitch operators do nothing, the others act on the hits.
+    pub drums: bool,
+    pub harmony: HarmonyCtx,
+}
+
+/// Apply `chain` to the span `notes` (sorted by tick), left to right.
+/// RT-safe: `notes` never grows past its capacity.
+pub fn apply(chain: &OpChain, notes: &mut Vec<SpanNote>, ctx: &OpCtx) {
+    for (k, op) in chain.iter().enumerate() {
+        apply_one(op, k as u8, notes, ctx);
+        sort(notes);
+    }
+}
+
+/// Sort by tick, events on one tick in their written order.
+pub fn sort(notes: &mut [SpanNote]) {
+    notes.sort_unstable_by_key(|n| (n.at, n.seq));
+}
+
+fn apply_one(_op: Op, _k: u8, _notes: &mut Vec<SpanNote>, _ctx: &OpCtx) {}
 
 #[cfg(test)]
 mod tests {
