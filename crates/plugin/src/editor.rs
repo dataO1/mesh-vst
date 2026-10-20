@@ -573,6 +573,14 @@ impl Gui {
                         // Heat mostly warm, rarely crushed.
                         let x = 0.1 + 0.4 * (self.next_rand() % 1000) as f32 / 1000.0;
                         self.set_float(&params.heat, x);
+                        // And the Rate: mostly Normal, a quarter each half
+                        // and double (user, 2026-10-20).
+                        let rate = match self.next_rand() % 4 {
+                            0 => Rate::Half,
+                            1 => Rate::Double,
+                            _ => Rate::Normal,
+                        };
+                        self.set_enum(&params.rate, rate);
                     }
                 }
             }

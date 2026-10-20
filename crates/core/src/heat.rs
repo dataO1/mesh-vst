@@ -36,6 +36,9 @@ const CRUSH_MIX_MAX: f32 = 0.5;
 /// Tilt split frequency and the tilt at full Tone and full Heat, in dB.
 pub const TILT_HZ: f32 = 700.0;
 const TILT_DB: f32 = 12.0;
+/// The drums' saturation share at full Heat, next to the clean hits (user,
+/// 2026-10-20: from about 55 % Heat destroyed the transients).
+const DRUM_SATURATION_MIX: f32 = 0.35;
 /// Level match: the time the loudness followers average over, and the
 /// make-up range.
 const LEVEL_SECS: f32 = 0.5;
@@ -163,15 +166,19 @@ impl Heat {
     }
 
     /// Process `buf` in place at Heat `amount` 0..1 (0 = bypass). `tone`
-    /// 0..1 tilts the saturation's focus (0.5 = flat).
-    pub fn process(&mut self, buf: &mut [StereoSample], amount: f32, tone: f32) {
+    /// 0..1 tilts the saturation's focus (0.5 = flat). On the `drums` the
+    /// transients stay: the clip only shaves the very peaks at every Heat
+    /// (the lane comes in at its calibrated loudness) and the saturation
+    /// runs in parallel with the clean hits.
+    pub fn process(&mut self, buf: &mut [StereoSample], amount: f32, tone: f32, drums: bool) {
         let h = amount.clamp(0.0, 1.0);
         if h <= 0.0 {
             return;
         }
         // Squared: the low end of the knob only shaves the very peaks.
-        let clip_t = CLIP_THRESHOLD.0 + (CLIP_THRESHOLD.1 - CLIP_THRESHOLD.0) * h * h;
+        let clip_t = if drums { CLIP_THRESHOLD.0 } else { CLIP_THRESHOLD.0 + (CLIP_THRESHOLD.1 - CLIP_THRESHOLD.0) * h * h };
         let sat = ((h - SATURATE_FROM) / (1.0 - SATURATE_FROM)).clamp(0.0, 1.0);
+        let wet = if drums { DRUM_SATURATION_MIX * sat } else { 1.0 };
         let crush = ((h - CRUSH_FROM) / (1.0 - CRUSH_FROM)).clamp(0.0, 1.0);
         let drive = 10f32.powf(DRIVE_DB * sat.powf(DRIVE_CURVE) / 20.0);
         let bias = ASYMMETRY * sat;
@@ -201,7 +208,7 @@ impl Heat {
                 let flat = [0, 1].map(|c| lo[c] / lo_g + (y[c] - lo[c]) / hi_g);
                 // The asymmetry leaves a DC offset: block it.
                 let dc = self.dc.low(flat, self.dc_a);
-                x = [flat[0] - dc[0], flat[1] - dc[1]];
+                x = [0, 1].map(|c| x[c] + (flat[c] - dc[c] - x[c]) * wet);
             }
             // Level match: the output follows the input's loudness (slow).
             let g = self.level.gain([s.left, s.right], x);
@@ -335,7 +342,7 @@ mod tests {
 
     fn heated(amount: f32, tone: f32, input: &[StereoSample]) -> Vec<StereoSample> {
         let mut b = input.to_vec();
-        Heat::new(48_000.0).process(&mut b, amount, tone);
+        Heat::new(48_000.0).process(&mut b, amount, tone, false);
         b
     }
 
@@ -364,6 +371,30 @@ mod tests {
             let residue: f32 = out[4800..].iter().zip(&input[4800..]).map(|(o, i)| (o.left - k * i.left).powi(2)).sum();
             assert!(residue > last, "Heat {h} distorts more");
             last = residue;
+        }
+    }
+
+    #[test]
+    fn drum_hits_keep_their_transients_at_full_heat() {
+        // A hit every 250 ms: a click then a decaying 60 Hz body, peaking near 0 dBFS.
+        let hits: Vec<StereoSample> = (0..96_000)
+            .map(|i| {
+                let t = (i % 12_000) as f32 / 48_000.0;
+                let v = 0.9 * (-t / 0.004).exp() * (std::f32::consts::TAU * 3000.0 * t).sin().signum() * 0.5
+                    + 0.6 * (-t / 0.08).exp() * (std::f32::consts::TAU * 60.0 * t).sin();
+                StereoSample { left: v, right: v }
+            })
+            .collect();
+        let crest = |b: &[StereoSample]| 20.0 * (b.iter().map(|s| s.left.abs()).fold(0.0f32, f32::max) / rms(b)).log10();
+        let run = |h: f32, drums: bool| {
+            let mut b = hits.clone();
+            Heat::new(48_000.0).process(&mut b, h, 0.5, drums);
+            crest(&b[48_000..])
+        };
+        let dry = crest(&hits[48_000..]);
+        for h in [0.55, 0.8, 1.0] {
+            let (drums, bass) = (run(h, true), run(h, false));
+            assert!(dry - drums < 4.0 && drums > bass + 2.0, "Heat {h}: dry {dry:.1}, drums {drums:.1}, bass {bass:.1} dB crest");
         }
     }
 

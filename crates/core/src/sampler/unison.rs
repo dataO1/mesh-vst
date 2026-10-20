@@ -3,7 +3,11 @@
 //! the centres: each note draws its own detune and width in a seeded range
 //! around them, which Variation widens, and higher notes lean wider and
 //! more detuned while low notes stay close and narrow. The copies sum at
-//! equal loudness (1/√N for uncorrelated copies). The mode sets how the
+//! equal loudness: each copy starts at its own seeded phase of the note
+//! (as free-running oscillators do), so they do not add up in phase on the
+//! attack and fall back as they drift apart, and the gain follows how alike
+//! the copies still are over a loudness window (their phases, each pair's
+//! beat, where they sit in the stereo field). The mode sets how the
 //! copies sit inside the detune range; it is a patch setting, the seed does
 //! not change it.
 
@@ -58,12 +62,15 @@ pub struct Copy {
     /// −1 (left) .. 1 (right).
     pub pan: f32,
     pub gain: f32,
+    /// Where it starts into the note, in periods of the note (0..1).
+    pub phase: f32,
 }
 
 const S_COUNT: u32 = 0xD50;
 const S_DETUNE: u32 = 0xD51;
 const S_OFFSET: u32 = 0xD52;
 const S_WIDTH: u32 = 0xD53;
+const S_PHASE: u32 = 0xD54;
 
 // MUSICAL: first draft, tune by ear (user: higher notes more detune and
 // width and more change, low notes less).
@@ -73,6 +80,56 @@ const HEIGHT_KEYS: (f32, f32) = (29.0, 59.0);
 const HEIGHT_DETUNE: (f32, f32) = (0.7, 1.25);
 const HEIGHT_WIDTH: (f32, f32) = (0.5, 1.0);
 const HEIGHT_RANGE: (f32, f32) = (0.35, 1.4);
+// MUSICAL: tune by ear (user, 2026-10-20: 7 copies at 25 cents much louder
+// than 3, the attack far louder than the rest). The window a pair's
+// likeness is judged over (about a loudness meter's momentary window), and
+// the harmonics it hears (falling as a saw's).
+const LIKENESS_SECS: f32 = 0.5;
+const HARMONICS: usize = 8;
+/// Harmonics further apart than this count as unrelated (they beat many
+/// times over the window).
+const NEAR_HZ: f32 = 20.0;
+/// The gain that keeps `copies` (each at gain 1) at one centred copy's
+/// loudness: each pair counts by its likeness over [`LIKENESS_SECS`] (per
+/// harmonic, the mean of the two in and out of phase as they beat) times
+/// its stereo overlap.
+fn equal_loudness(copies: &[Copy], key: u8) -> f32 {
+    let hz = 440.0 * ((key as f32 - 69.0) / 12.0).exp2();
+    let weight: f32 = (1..=HARMONICS).map(|h| 1.0 / (h * h) as f32).sum();
+    let pan = |p: f32| {
+        let theta = (p.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+        (theta.cos() * std::f32::consts::SQRT_2, theta.sin() * std::f32::consts::SQRT_2)
+    };
+    let mut power = 0.0;
+    for a in copies {
+        for b in copies {
+            // Every pair of harmonics close in pitch (the same harmonic of
+            // two detuned copies, or of Stacked layers an octave or a fifth
+            // apart): the mean of their beat over the window, from their
+            // phases at the start.
+            let (fa, fb) = (hz * (a.cents / 1200.0).exp2(), hz * (b.cents / 1200.0).exp2());
+            let mut alike = 0.0;
+            for i in 1..=HARMONICS {
+                for j in 1..=HARMONICS {
+                    let (i, j) = (i as f32, j as f32);
+                    let beat = i * fa - j * fb;
+                    if beat.abs() > NEAR_HZ {
+                        continue;
+                    }
+                    let x = std::f32::consts::TAU * beat * LIKENESS_SECS;
+                    let theta = std::f32::consts::TAU * (i * a.phase - j * b.phase);
+                    // The mean of cos(theta + x t / T) over the window.
+                    let mean = if x.abs() < 1e-4 { theta.cos() } else { ((theta + x).sin() - theta.sin()) / x };
+                    alike += mean / (i * j);
+                }
+            }
+            let ((la, ra), (lb, rb)) = (pan(a.pan), pan(b.pan));
+            power += alike / weight * 0.5 * (la * lb + ra * rb);
+        }
+    }
+    // Copies that start out of phase can sum below one copy: made up, to 2.
+    1.0 / power.max(0.25).sqrt()
+}
 
 fn lerp(a: (f32, f32), t: f32) -> f32 {
     a.0 + (a.1 - a.0) * t
@@ -82,7 +139,7 @@ impl Unison {
     /// The copies of the note `note_id` on `key`: how many, their detune,
     /// pan and gain. Returns the copies and their count.
     pub fn copies(&self, note_id: u16, key: u8) -> ([Copy; MAX_UNISON], usize) {
-        let mut out = [Copy { cents: 0.0, pan: 0.0, gain: 1.0 }; MAX_UNISON];
+        let mut out = [Copy { cents: 0.0, pan: 0.0, gain: 1.0, phase: 0.0 }; MAX_UNISON];
         let max = (self.voices as usize).clamp(1, MAX_UNISON);
         if max == 1 || self.detune_cents <= 0.0 {
             return (out, 1);
@@ -99,7 +156,6 @@ impl Unison {
         }
         // More or fewer copies per note (the seed), up to the limit.
         let n = (2 + ((max - 1) as f32 * h(S_COUNT, 0).powf(1.2)) as usize).min(max);
-        let gain = 1.0 / (n as f32).sqrt();
         for (k, c) in out.iter_mut().enumerate().take(n) {
             // Even positions −1..1, then shaped by the mode.
             let x = if n == 1 { 0.0 } else { -1.0 + 2.0 * k as f32 / (n - 1) as f32 };
@@ -114,7 +170,12 @@ impl Unison {
                     LAYERS[k % LAYERS.len()] + x * detune * 0.25
                 }
             };
-            *c = Copy { cents, pan: x * width, gain };
+            let phase = if k == 0 { 0.0 } else { h(S_PHASE, k as u8) };
+            *c = Copy { cents, pan: x * width, gain: 1.0, phase };
+        }
+        let gain = equal_loudness(&out[..n], key);
+        for c in out.iter_mut().take(n) {
+            c.gain = gain;
         }
         (out, n)
     }
@@ -128,13 +189,59 @@ mod tests {
     }
 
     #[test]
-    fn copies_keep_equal_loudness_and_stay_in_range() {
+    fn copies_stay_in_range() {
         for mode in [UnisonMode::Linear, UnisonMode::Soft, UnisonMode::Hard, UnisonMode::Random] {
             for id in 0..200u16 {
                 let (c, n) = unison(mode).copies(id, 41);
-                let power: f32 = c[..n].iter().map(|c| c.gain * c.gain).sum();
-                assert!((power - 1.0).abs() < 1e-4, "{mode:?} {id}: {power}");
+                assert!(c[..n].iter().all(|c| c.gain > 0.0 && c.gain <= 1.0));
                 assert!(c[..n].iter().all(|c| c.cents.abs() <= 30.0 * 1.25 * 1.8 + 1e-3 && c.pan.abs() <= 1.0));
+            }
+        }
+    }
+
+    /// Loudness (dB) of the copies of a note playing a harmonic tone (eight
+    /// harmonics, falling as a saw's), summed as the sampler pans them,
+    /// over `secs` from the note's start.
+    fn loudness(copies: &[Copy], key: u8, from: f32, secs: f32) -> f32 {
+        const SR: f32 = 8000.0;
+        let hz = 440.0 * ((key as f32 - 69.0) / 12.0).exp2();
+        let mut power = 0.0;
+        let frames = (secs * SR) as usize;
+        for i in 0..frames {
+            let t = from + i as f32 / SR;
+            let (mut l, mut r) = (0.0, 0.0);
+            for c in copies {
+                let f = hz * (c.cents / 1200.0).exp2();
+                let v: f32 = (1..=8).map(|h| (std::f32::consts::TAU * h as f32 * (f * t + c.phase)).sin() / h as f32).sum::<f32>() * c.gain;
+                let theta = (c.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+                l += v * theta.cos() * std::f32::consts::SQRT_2;
+                r += v * theta.sin() * std::f32::consts::SQRT_2;
+            }
+            power += 0.5 * (l * l + r * r);
+        }
+        10.0 * (power / frames as f32).log10()
+    }
+
+    #[test]
+    fn three_and_seven_copies_play_as_loud_as_one() {
+        for mode in [UnisonMode::Linear, UnisonMode::Soft, UnisonMode::Hard, UnisonMode::Random, UnisonMode::Stacked] {
+            for (detune, width) in [(10.0, 0.0), (25.0, 0.0), (25.0, 0.8), (60.0, 0.5)] {
+                for key in [33u8, 45] {
+                    let one = loudness(&[Copy { cents: 0.0, pan: 0.0, gain: 1.0, phase: 0.0 }], key, 0.0, 0.5);
+                    for voices in [3u8, 7] {
+                        let u = Unison { voices, detune_cents: detune, width, range: 0.0, mode, seed: 7 };
+                        let notes: Vec<_> = (0..400u16).map(|id| u.copies(id, key)).filter(|(_, n)| *n == voices as usize).take(6).collect();
+                        let mut attack = 0.0;
+                        for (c, n) in &notes {
+                            let db = loudness(&c[..*n], key, 0.0, 0.5) - one;
+                            assert!(db.abs() < 0.5, "{mode:?} {voices} copies, {detune} ct, width {width}, key {key}: {db:+.1} dB");
+                            attack += loudness(&c[..*n], key, 0.0, 0.05) - loudness(&c[..*n], key, 0.3, 0.6);
+                        }
+                        // The attack no louder than what follows, on average.
+                        let attack = attack / notes.len() as f32;
+                        assert!(attack < 1.5, "{mode:?} {voices} copies, {detune} ct, key {key}: attack {attack:+.1} dB over the rest");
+                    }
+                }
             }
         }
     }

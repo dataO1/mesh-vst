@@ -551,7 +551,7 @@ impl MeshVst {
         } else {
             0.5
         };
-        self.heat.process(buf, self.resolved.heat, tone);
+        self.heat.process(buf, self.resolved.heat, tone, drums);
         if self.params.mono_lows.value() {
             self.mono.process(buf);
         }

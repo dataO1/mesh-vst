@@ -605,6 +605,13 @@ impl Sampler {
             let at = (ev.start as f64 / u16::MAX as f64 + morph).rem_euclid(1.0).min(0.999);
             (at, slot.sample.level_gain(at))
         };
+        // A unison copy starts its own share of a period further in (D38).
+        let offset = if pitched && copy.phase > 0.0 {
+            let period = 1.0 / (440.0 * ((ev.key as f64 - 69.0) / 12.0).exp2());
+            (offset + copy.phase as f64 * period * self.sr as f64 * rate / slot.len().max(1) as f64).min(0.999)
+        } else {
+            offset
+        };
         // The note's loop section (D43), in the sample's frames from where
         // the note starts there.
         let section = (held && ev.loop_len > 0 && !ev.has(flags::REVERSE))

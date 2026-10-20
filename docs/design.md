@@ -91,9 +91,10 @@ drive external effects.
 
 - **D20** Two seeds. The **sound seed** picks samples from the pools (or the mudpie in Bass mode),
   and in Bass mode also the mudpie voice: cutoff, resonance, filter and pitch envelopes, LFO,
-  amp decay and release, drawn around the designed voice (2026-10-19). The knobs act on top. A
+  amp decay and release, drawn around the designed voice (2026-10-19; the release only ±0.3 octave and at most a half note, 2026-10-20). The knobs act on top. A
   sound roll in Bass mode keeps the mudpie (it gets pinned) and moves every knob but Permute to
-  new values (2026-10-20). Accent strength comes from the sound seed, scaled by Variation. A new
+  new values (2026-10-20), and rolls the Rate: Normal half the time, Half or Double a quarter
+  each (2026-10-20). Accent strength comes from the sound seed, scaled by Variation. A new
   instance without a saved state starts with random seeds and knobs (Permute off).
   The **pattern seed** picks the groove. Each has a dice button and a lock.
   Loading cuts silence: one-shots start at their onset, mudpies lose every silent stretch, and a
@@ -355,13 +356,13 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | **Permute** | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
 | **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell, how many long notes loop (D43); scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
 | **Groove** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays); the lane's own times in triplets, straight or dotted (D45) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts; the lane's own times in triplets, straight or dotted (D45) |
-| **Shape** | stabby to sustained: length, expression, filter bite; at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke (at full Shape a retrigger fades over about 400 ms), loop hold, decay (it shortens every voice, the kick too, and lengthens none); the attack stays instant at every setting; a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to a dotted 8th, the hats and cymbals half as long and a little weaker, the kick a faint dotted 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
+| **Shape** | stabby to sustained: length, expression, filter bite, the release (the designed one up to a quarter; held notes sustain at −1 dB, 2026-10-20); at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke (at full Shape a retrigger fades over about 400 ms), loop hold, decay (it shortens every voice, the kick too, and lengthens none); the attack stays instant at every setting; a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to a dotted 8th, the hats and cymbals half as long and a little weaker, the kick a faint dotted 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style; a ring modulator above 400 Hz (the lows stay clean) fades in from a fifth to at most 30 %, its seeded carrier rising an octave and turning from sine to square |
 | **Spread** | width: octave lifts, jump size, notes above the home root spread in stereo (the sub stays centred), deeper filter LFO and envelope | — |
 | **Slide** | how often notes slide (up to 45 % of eligible notes) and the glide time, 30 ms to 250 ms; also the glide of the full-Shape legato; liquid: up to 35 % more held notes tie, filter glide 4 to 160 ms, vibrato on held notes | — |
 | **Tone** | — | the kit's register: low plays more kicks, snares and ghosts and fewer cymbals; high plays more hats, rides, shakers, top loop and break, sparser kicks and snares |
 | **Squash** | the last stage: six-band up and down compression, mild to strong (D44), hard and smiley at the top | the same, much lighter |
-| **Heat** | clip, then bitcrush, then saturation on the output: the clip threshold falls all the way up (0.95 to 0.25), saturation from a fifth up to +30 dB drive, the crush fades in from the middle (12 to 4 bits, up to 12 samples held), level-matched within a few dB | the same, and Tone tilts the saturation (12 dB around 700 Hz): low Tone drives the lows, high Tone the highs |
+| **Heat** | clip, then bitcrush, then saturation on the output: the clip threshold falls all the way up (0.95 to 0.25), saturation from a fifth up to +30 dB drive, the crush fades in from the middle (12 to 4 bits, up to 12 samples held), level-matched within a few dB | the same, but the transients stay (2026-10-20): the clip stays at 0.95 at every Heat (the lane comes in at its calibrated loudness) and the saturation runs in parallel, at most 35 % wet; Tone tilts the saturation (12 dB around 700 Hz): low Tone drives the lows, high Tone the highs |
 
 A ninth, stepped and automatable parameter, **Style** (drums), picks the rhythm family
 (D39).
@@ -380,8 +381,13 @@ notes lean more detuned and wider and vary more, low notes stay close and narrow
 These are project state, not knobs. **Mono lows** (settings, on by default, not seeded) plays
 the output below 80 Hz in mono.
 
-The unison sum keeps equal loudness: gain falls with the number of voices (1/√N for the
-uncorrelated detuned copies), so a wide note is not louder than a straight one. The **unison
+The unison sum keeps equal loudness. Each copy starts at its own seeded phase (up to one period
+of the note into the sample), so the copies do not add up in phase on the attack and then fall
+back as they drift apart. The gain is worked out per note, from each pair of copies: how their
+harmonics (eight, falling as a saw's) beat and line up over half a second, from their detune,
+their phases and their pans; Stacked layers count the harmonics an octave or a fifth shares.
+Every mode and voice count lands within 0.5 dB of a plain note (2026-10-20; it was 1/√N, which
+made 7 copies at 25 cents much louder than 3). The **unison
 mode** sets how the voices are spread inside the detune range:
 - **Linear:** even steps.
 - **Soft:** clustered near the center.
@@ -541,8 +547,8 @@ Each step is tested before the next one starts.
 
 - **Built after M7 (2026-10-19).**
   - **Unison (D38).** Per-note seeded copies, 1 to 8, with detune and width inside the user's
-    Voices and Detune limits. They sum at equal loudness (1/√N, within 2 dB of a plain note
-    over 1.5 s). The five modes are linear, soft, hard, stacked (octaves and fifths) and random.
+    Voices and Detune limits. They sum at equal loudness (seeded start phases and a per-note
+    gain from how the copies' harmonics beat, within 2 dB of a plain note over 1.5 s). The five modes are linear, soft, hard, stacked (octaves and fifths) and random.
     The bass footer has the widget.
   - **Choke amount (D27).** 1 cuts in 10 ms, 0 lets the voices ring, in between fades over up
     to 0.5 s. It follows the drums' Shape. Mono groups (mudpies) always cut.

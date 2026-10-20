@@ -260,8 +260,15 @@ fn seeded_voice(p: &mut LaneSamplerParams, sound_seed: u32) {
     m.lfo.rate = 2f32.powf(r(6, -1.5, 3.0).round());
     m.lfo.to_cutoff = r(7, 0.0, 2800.0);
     p.decay *= 2f32.powf(r(8, -0.8, 0.8));
-    p.release *= 2f32.powf(r(9, -0.7, 1.2));
+    // The release only a little either way, and never long (user,
+    // 2026-10-20: it reached 1 to 2 s).
+    p.release = (p.release * 2f32.powf(r(9, -RELEASE_SPREAD, RELEASE_SPREAD))).min(RELEASE_MAX);
 }
+
+// MUSICAL: tune by ear (user, 2026-10-20). The seeded release's spread in
+// octaves and the longest release (a half note).
+const RELEASE_SPREAD: f32 = 0.3;
+const RELEASE_MAX: f32 = note(1.0 / 2.0);
 
 // MUSICAL: first draft, tune by ear (user: Spread and Slide change the
 // sound, not only the line).
@@ -396,9 +403,13 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
     p.morph = v.morph;
 }
 
-// MUSICAL: Mesh live's Character macro.
-/// Sustain level of held notes.
-const HELD_SUSTAIN: f32 = 0.85;
+// MUSICAL: Mesh live's Character macro (user, 2026-10-20: the attack of
+// long notes far louder than the rest; about −1 dB sustain, a longer
+// decay, the release up to a quarter at full Shape).
+/// Sustain level of held notes (−1 dB).
+const HELD_SUSTAIN: f32 = 0.89;
+/// Release at full Shape (from the designed one at the bottom).
+const HELD_RELEASE: f32 = note(1.0 / 4.0);
 /// Stab accent at the sustained end of the macro (full at the stabby end).
 const STAB_PUNCH: f32 = 0.4;
 
@@ -409,7 +420,7 @@ fn character(p: &mut LaneSamplerParams, v: f32) {
     let stab = (1.0 - 2.0 * v).max(0.0);
     p.decay = decay;
     p.sustain = sustain.max(HELD_SUSTAIN);
-    p.release = p.designed_release;
+    p.release = p.designed_release + (HELD_RELEASE.max(p.designed_release) - p.designed_release) * v;
     p.expression = if v < 0.5 { 1.15 + 0.5 * stab } else { 1.15 - (2.0 * v - 1.0) };
     p.tone = 0.5 + 0.5 * v;
     p.resonance = (p.designed_res + 0.2 * stab).min(0.95);
@@ -424,8 +435,8 @@ pub fn mudpie_params() -> LaneSamplerParams {
         cutoff_hz: 400.0,
         resonance: 0.35,
         attack: note(1.0 / 512.0),
-        decay: note(3.0 / 8.0),
-        sustain: 0.85,
+        decay: note(3.0 / 4.0),
+        sustain: 0.89,
         release: note(3.0 / 32.0),
         cutoff_glide: note(3.0 / 128.0),
         ..LaneSamplerParams::default()

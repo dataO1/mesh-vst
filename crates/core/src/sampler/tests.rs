@@ -846,7 +846,7 @@ fn unison_starts_detuned_copies_at_equal_loudness() {
         off += rms(&b);
     }
     assert!(wide > 10 && copies >= 4, "{wide} wide notes, up to {copies} copies");
-    // Uncorrelated copies at 1/√N: the same loudness on average (within 2 dB).
+    // The copies at one copy's loudness on average (within 2 dB).
     let db = 20.0 * (on / off).log10();
     assert!(db.abs() < 2.0, "{db:.2} dB");
 }
