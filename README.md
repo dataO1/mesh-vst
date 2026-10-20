@@ -1,89 +1,66 @@
-# mesh vst
+<div align="center">
 
-A seeded sampler instrument (CLAP, VST3) for breakbeat drums and mudpie bass.
-
-Hold one note in your DAW and the plugin plays a pattern generated from a seed, in time with the
-host tempo and in the key of the note. Roll seeds until a groove fits, drag samples onto slots,
-and automate density, variation and permute for the arrangement.
-
-**Status:** alpha. Every design decision (docs/design.md D1–D39) is built: seeded drum and bass
-patterns, the sample library with automatic pools, loudness calibration, unison, the editor with
-the point-field visuals, and 16 mod-out channels. Not yet tested in a real DAW. Design and progress: [docs/design.md](docs/design.md).
-
-## Planned
-
-- Two modes per instance: **Drums** (kick, snare, hats, ride, shaker, perc, top, break) and
-  **Bass** (mudpie WAVs with filter envelope, LFO, sample scrub, stab drive, glide).
-- A sound seed and a pattern seed, each with a dice button, a lock and favorites.
-- Deterministic playback: the same seed, parameters and song position always render the same.
-- Library folders scanned once and sorted into kit pools automatically.
-- Mod wheel, pitch bend, channel pressure and MPE.
-- Linux and Windows first, macOS later.
-
-## License
-
-FOSS, pay what you want. GPL-3.0-or-later, see [LICENSE](LICENSE).
-
-## Building
-
-With Nix:
-
-```sh
-nix build                # result/lib/clap/mesh vst.clap, result/lib/vst3/mesh vst.vst3
-nix build .#windows       # Windows bundles, cross-compiled (mingw-w64, system DLLs only)
-nix build .#release       # zips of the Linux and Windows bundles
-nix flake check          # unit tests, clippy, clap-validator, end-to-end suite in a headless host
-nix run .#e2e -- ~/Music/samples   # the end-to-end suite against a real library (read only)
-nix run .#screenshot -- editor.png   # the editor on a virtual X server, playing a demo note
+```
+M E S H // V S T
 ```
 
-Inside the devshell (`nix develop`):
+**an abstract pattern machine for drums and bass**
 
-```sh
-cargo xtask bundle mesh-vst --release   # target/bundled/mesh vst.clap and .vst3
-cargo test -p mesh-vst-core             # generator, sampler and player tests
+`seed` · `roll` · `listen` · `keep`
+
+</div>
+
+---
+
+mesh grows patterns out of numbers. Hold a note, and a seed turns into a groove: breakbeat
+drums or a bass line cut from a mudpie of your own samples, in time and in key. Roll again and
+something else appears. Most rolls you skip. Some you keep and build a track on.
+
+It is made to be quick to start with and slow to finish exploring. There is no piano roll and
+no step editor, only a handful of knobs that each move many things at once. Fewer choices, more
+surprises.
+
+<p align="center"><img src="docs/img/drums.png" alt="drums" width="820"></p>
+
+```
+// drums     kick, snare, hats, cymbals, percussion and a chopped break
+             style · shape · morph · tone · heat
+
+// bass      one mudpie sample, scrubbed, pitched and filtered into a line
+             shape · morph · spread · slide · heat
+
+// both      density · permute · variation · groove
+             two seeds, one for the sound and one for the pattern
+             a form that turns the bars into A B C D blocks
 ```
 
-Copy the bundles to `~/.clap` and `~/.vst3` (Linux) or `C:\Program Files\Common Files\CLAP` and
-`C:\Program Files\Common Files\VST3` (Windows). The Linux bundles are built by Nix and link against
-its libraries; on other distributions they need a glibc at least as new as nixpkgs'.
+<p align="center"><img src="docs/img/bass.png" alt="bass" width="820"></p>
 
-Single renders without a DAW:
+### the idea
 
-```sh
-nix run .#hostcheck -- render "result/lib/clap/mesh vst.clap" --mode bass --seed 7 --bars 8 --out bass.wav
-cargo run -p mesh-vst-core --release --example render -- --mode drums --kick k.wav --snare s.wav --break amen.wav --out drums.wav
-```
+- **serendipity first.** Every knob's middle is the seed's own suggestion. You steer it, the
+  seed decides the details.
+- **limits are the point.** No piano roll and no grids to fill in. Fewer controls leave more
+  room to listen.
+- **same seed, same groove.** Everything is deterministic, so loops, bounces and recalls play
+  exactly what you heard.
+- **your sounds.** Point it at your sample folders. It sorts them into kits by itself, and you
+  can drop files onto any slot.
 
-## Trying it without a DAW, or with a FOSS one
+Made for producers of breakbeat, jungle, dnb, bass music and anything stranger. Free and open
+source (GPL-3.0), no accounts, no upsell.
 
-```sh
-nix run .#play              # the standalone editor with sound; the VMPK keyboard window plays it
-MESH_VST_DEMO=1 nix run .#play   # the same, holding a note from the start
-nix run .#qtractor          # Qtractor (own config) with this build on its CLAP and VST3 paths
-```
+---
 
-In Qtractor: Track > Add Track > MIDI, then the track's Plugins tab > Add > "mesh vst", then draw one long note in the clip.
+### get it
 
-`nix develop` prints every run, test and build command.
+**[→ releases](https://github.com/dataO1/mesh-vst/releases)** · CLAP and VST3 · Linux and Windows
 
-## Library
+1. Unzip the release.
+2. Copy `mesh vst.clap` and `mesh vst.vst3` to your plugin folders:
+   - Linux: `~/.clap` and `~/.vst3`
+   - Windows: `C:\Program Files\Common Files\CLAP` and `...\VST3`
+3. Load it on an instrument track, hold one long note, and start rolling.
+4. Optional: open **SET** in the plugin and add your sample folders.
 
-Set the folders in `~/.config/mesh-vst/settings.json`:
-
-```json
-{ "library_folders": ["/home/me/Music/Samples"] }
-```
-
-(or the `MESH_VST_LIBRARY` environment variable, separated like `PATH`). The first load scans the
-folders, later loads read the cache in `~/.cache/mesh-vst/`. Without a library the plugin plays
-built-in synthesized sounds.
-
-## Playing it
-
-Put one long note on the track. The note's pitch is the root (bass), its velocity scales the
-hits. The pattern follows the song position, so loops and bounces repeat exactly. Set **Mode**
-(drums or bass), **Sound seed** and **Pattern seed**, then play with the knobs: Density,
-Permute, Variation, Groove, Shape, Morph, Spread and Slide (bass), Tone (drums) and Heat. Each knob's middle is the seed's
-own suggestion (Permute: 0 plays the pattern as generated). The mod wheel pushes Permute, pitch
-bend bends by **Bend range**. A new instance starts with random seeds and knobs.
+<sub>building from source, tests and dev notes: [docs/building.md](docs/building.md) · design: [docs/design.md](docs/design.md)</sub>
