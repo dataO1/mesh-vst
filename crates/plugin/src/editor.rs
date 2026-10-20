@@ -140,7 +140,7 @@ impl Knob {
 #[derive(Clone)]
 struct Snapshot {
     values: Vec<(ParamPtr, f32)>,
-    pins: (std::collections::BTreeMap<Slot, FileRef>, Option<FileRef>),
+    pins: (std::collections::BTreeMap<Slot, FileRef>, Option<FileRef>, std::collections::BTreeMap<Slot, FileRef>),
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +168,7 @@ pub enum Message {
     ToggleLibrary,
     LowPower,
     RollSlot(Slot),
+    PinSlot(Slot),
     ClearSlot(Slot),
     RollMudpie,
     ShowPool(Pool),
@@ -323,7 +324,7 @@ impl Gui {
             .collect();
         let kit = self.kit();
         let pins = match kit.lock() {
-            Ok(k) => (k.pins.clone(), k.mudpie_pin.clone()),
+            Ok(k) => (k.pins.clone(), k.mudpie_pin.clone(), k.rolled.clone()),
             Err(_) => Default::default(),
         };
         Snapshot { values, pins }
@@ -354,9 +355,10 @@ impl Gui {
         let kit = self.kit();
         let mut changed = false;
         if let Ok(mut k) = kit.lock() {
-            if (k.pins.clone(), k.mudpie_pin.clone()) != s.pins {
+            if (k.pins.clone(), k.mudpie_pin.clone(), k.rolled.clone()) != s.pins {
                 k.pins = s.pins.0.clone();
                 k.mudpie_pin = s.pins.1.clone();
+                k.rolled = s.pins.2.clone();
                 changed = true;
             }
         }
@@ -412,6 +414,7 @@ impl Gui {
         if let Ok(mut k) = kit.lock() {
             match slot {
                 Some(s) => {
+                    k.rolled.remove(&s);
                     k.pins.insert(s, r);
                 }
                 None => k.mudpie_pin = Some(r),
@@ -647,18 +650,46 @@ impl Gui {
             Message::RollSlot(slot) => {
                 self.record();
                 let (pool, prefer) = slot.source();
-                let current = self.kit().lock().ok().and_then(|k| k.pins.get(&slot).or_else(|| k.drums.get(&slot)).cloned());
+                let current = self.kit().lock().ok().and_then(|k| k.pins.get(&slot).or_else(|| k.rolled.get(&slot)).or_else(|| k.drums.get(&slot)).cloned());
                 let pick = self.roll_pick(pool, prefer, current);
                 match pick {
-                    Some(p) => self.pin(Some(slot), &p),
+                    // A pinned slot keeps its pin on the new file; any other
+                    // plays it until the next sound roll.
+                    Some(p) => {
+                        let lib = self.library();
+                        let r = FileRef { path: lib.relative(&p), hash: lib.entry(&p).map_or(0, |e| e.hash) };
+                        let kit = self.kit();
+                        if let Ok(mut k) = kit.lock() {
+                            if k.pins.contains_key(&slot) {
+                                k.pins.insert(slot, r);
+                            } else {
+                                k.rolled.insert(slot, r);
+                            }
+                        }
+                        self.data.shared.bump_kit();
+                    }
                     None => self.toast = format!("no {} files in the library", pool.name()),
                 }
+            }
+            Message::PinSlot(slot) => {
+                self.record();
+                let kit = self.kit();
+                if let Ok(mut k) = kit.lock() {
+                    if let Some(f) = k.pins.remove(&slot) {
+                        // Unpinned: it plays on until the next sound roll.
+                        k.rolled.insert(slot, f);
+                    } else if let Some(f) = k.rolled.remove(&slot).or_else(|| k.drums.get(&slot).cloned()) {
+                        k.pins.insert(slot, f);
+                    }
+                }
+                self.data.shared.bump_kit();
             }
             Message::ClearSlot(slot) => {
                 self.record();
                 let kit = self.kit();
                 if let Ok(mut k) = kit.lock() {
                     k.pins.remove(&slot);
+                    k.rolled.remove(&slot);
                 }
                 self.data.shared.bump_kit();
             }
@@ -1085,13 +1116,21 @@ impl Gui {
             let mut r = row![].spacing(8);
             for (slot, name) in DRUM_SLOTS {
                 let pinned = kit.pins.get(&slot);
-                let file = pinned.or_else(|| kit.drums.get(&slot)).map_or(if kit.drums.is_empty() { "built-in".to_string() } else { "—".to_string() }, |f| file_name(std::path::Path::new(&f.path)));
+                let is_pinned = pinned.is_some();
+                let own = pinned.or_else(|| kit.rolled.get(&slot));
+                let file = own.or_else(|| kit.drums.get(&slot)).map_or(if kit.drums.is_empty() { "built-in".to_string() } else { "—".to_string() }, |f| file_name(std::path::Path::new(&f.path)));
                 let mut buttons = row![button(text("roll").font(DATA_FONT).size(11)).on_press(Message::RollSlot(slot)).padding([3, 6]).style(|_, s| btn(false, s))].spacing(4);
-                if pinned.is_some() {
+                if own.is_some() {
                     buttons = buttons.push(button(text("seed").font(DATA_FONT).size(11)).on_press(Message::ClearSlot(slot)).padding([3, 6]).style(|_, s| btn(false, s)));
                 }
                 let card = column![
-                    row![small(name), Space::new().width(Length::Fill), small(if pinned.is_some() { "pinned" } else { "seed" })],
+                    row![
+                        small(name),
+                        Space::new().width(Length::Fill),
+                        // Pin: the sound roll leaves this slot alone.
+                        button(text("pin").font(DATA_FONT).size(10)).on_press(Message::PinSlot(slot)).padding([1, 4]).style(move |_, s| btn(is_pinned, s)),
+                    ]
+                    .align_y(Alignment::Center),
                     text(file).font(DATA_FONT).size(12).color(INK).wrapping(iced::widget::text::Wrapping::None),
                     Space::new().height(Length::Fill),
                     buttons,
@@ -1378,10 +1417,13 @@ fn knob(p: &MeshParams, k: Knob, hit: Option<(f32, f32)>) -> Element<'_, Message
     let param = k.param(p);
     let v = param.unmodulated_normalized_value();
     let s = slider(0.0..=1.0, v, move |x| Message::Knob(k, x)).on_release(Message::KnobReleased(k)).step(0.001_f32).height(18).style(|_, _| slider_style());
-    let s: Element<Message> = match hit {
-        Some((at, glow)) => iced::widget::stack![s, canvas_widget(HitMarker { at, glow }).width(Length::Fill).height(18)].into(),
-        None => s.into(),
+    // Always the same widgets, the marker hidden when no hit moved the knob:
+    // a slider that comes and goes in a stack loses its drag.
+    let marker = match hit {
+        Some((at, glow)) => HitMarker { at, glow, shown: true },
+        None => HitMarker { at: 0.0, glow: 0.0, shown: false },
     };
+    let s: Element<Message> = iced::widget::stack![s, canvas_widget(marker).width(Length::Fill).height(18)].into();
     column![
         row![text(param.name()).font(DATA_FONT).size(13).color(DIM), Space::new().width(Length::Fill), text(param.normalized_value_to_string(v, true)).font(DATA_FONT).size(13).color(INK)],
         s,
@@ -1510,6 +1552,7 @@ fn slider_style() -> slider::Style {
 struct HitMarker {
     at: f32,
     glow: f32,
+    shown: bool,
 }
 
 impl canvas::Program<Message> for HitMarker {
@@ -1517,6 +1560,9 @@ impl canvas::Program<Message> for HitMarker {
 
     fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
+        if !self.shown {
+            return vec![frame.into_geometry()];
+        }
         // The handle's centre travels HANDLE_W / 2 .. width − HANDLE_W / 2.
         let x = HANDLE_W / 2.0 + self.at * (bounds.width - HANDLE_W);
         let a = 0.1 + 0.25 * self.glow;

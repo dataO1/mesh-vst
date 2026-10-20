@@ -152,6 +152,7 @@ pub fn hit_knobs(role: Role, centres: &Centers, knobs: &Knobs, names: &[&str], b
             variation: per_bar("variation", knobs.variation, c.variation),
             swing: knob_of(bar.swing, c.swing),
             morph: per_bar("chop", knobs.morph, c.morph),
+            permute: bar.permute,
             ..*knobs
         },
         // The bass generator reads density, spread and slide per note.
@@ -167,7 +168,8 @@ pub fn hit_knobs(role: Role, centres: &Centers, knobs: &Knobs, names: &[&str], b
                 Some(i) => knob_of(bar.at(i, bar.shape_of(ev)), c.slide),
                 None => knobs.slide,
             },
-            morph: knob_of(around(knobs.morph, c.morph) + bar.morph_move(ev), c.morph),
+            morph: knob_of(around(knobs.morph, c.morph) + bar.morph + bar.morph_move(ev), c.morph),
+            permute: bar.permute,
             // Shape: the note's Length (step and height), back on the knob's
             // 0.4 .. 1 range.
             shape: match index("length") {
@@ -599,10 +601,8 @@ mod style_tests {
                 }
                 for h in &hits {
                     assert!(h.as_array().iter().all(|v| (0.0..=1.0).contains(v)), "{h:?}");
+                    // Permute at 0 stays off; Shape moves much per note, Morph per block.
                     assert_eq!(h.permute, knobs.permute);
-                    assert!((h.shape - knobs.shape).abs() < 0.25, "{h:?}");
-                    // Morph moves, very slightly.
-                    assert!((h.morph - knobs.morph).abs() < 0.08, "{h:?}");
                     if (h.variation - knobs.variation).abs() < 1e-3 {
                         on_knob += 1;
                     } else if (h.variation - knobs.variation).abs() > 0.1 {
@@ -615,6 +615,27 @@ mod style_tests {
         }
         assert!(on_knob > 0 && moved > 0, "A bars sit on the knob ({on_knob}), the other letters move ({moved})");
         assert!(varied_bars > 80, "{varied_bars} of 160 bars vary per note");
+    }
+
+    #[test]
+    fn shape_moves_much_per_note_at_low_variation_too() {
+        use crate::event::EventKind;
+        let knobs = Knobs { variation: 0.0, ..Knobs::CENTERED };
+        let mut widest = 0.0f32;
+        for seed in 1..=10 {
+            let mut lane = PatternLane::bass(seed, seed);
+            let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: 1, rate: 0, mode: 0, style: None, unison: Default::default() };
+            configure(&mut lane, mudpie_params(), &s);
+            let centres = Centers::of(Role::Bass, seed, seed);
+            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+            for b in 0..8 {
+                lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
+                let shapes: Vec<f32> = out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn).map(|e| hit_knobs(Role::Bass, &centres, &knobs, lane.param_names(), &out.params, e).shape).collect();
+                let (lo, hi) = shapes.iter().fold((1.0f32, 0.0f32), |(a, b), v| (a.min(*v), b.max(*v)));
+                widest = widest.max(hi - lo);
+            }
+        }
+        assert!(widest > 0.3, "Shape spans {widest} of the knob within a bar at Variation 0");
     }
 
     #[test]

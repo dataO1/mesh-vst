@@ -101,7 +101,9 @@ drive external effects.
   streamed mudpie note plays at the gain that brings its start position to the sample's overall
   loudness. The lane trim (no cap) brings the lane to its LUFS target.
 - **D21** Every seeded choice can be overridden by hand. Drums: roll the whole kit, roll one slot,
-  or drop a file onto a slot. Bass: drop a mudpie or roll one.
+  or drop a file onto a slot. Bass: drop a mudpie or roll one. A slot's own roll plays until
+  the next sound roll; its pin button (top right of the card) keeps it, or a dropped file,
+  through sound rolls (2026-10-20).
 - **D22** Favorite seeds: per machine, shared across projects, filtered by mode. A favorite stores
   the seeds and a name, not parameters or samples. No presets: the plugin is for exploring, and
   the DAW saves the state.
@@ -116,7 +118,11 @@ drive external effects.
   sections. The plugin adds a phrase length (4/8/16 bars, fills at phrase ends counted from song
   position) and the Mesh **form**: letter seeds A/B (main) and C/D (fillers) placed by a form
   string such as `A15 C1`. The form is a parameter with the Mesh default forms as presets, and
-  rolling the pattern seed rolls the form too.
+  rolling the pattern seed rolls the form too. Each letter has its own seed and moves the
+  parameters around the knobs, the right-hand knobs (Shape, Morph, Spread, Slide), Permute (when
+  on) and Groove most, scaled 0.6 to 1.4 by Variation; the knobs show each hit's values
+  (2026-10-20). Per note only the right-hand knobs move, Shape much (a seeded share, at low
+  Variation too), the others a little (2026-10-20).
 - **D26** History: sample loads, mode switches and parameter changes made in the plugin UI
   (recorded on mouse release, not every tick) go on an undo/redo stack, stepped from the top bar.
   The stack lasts for the session and is not saved in the project.

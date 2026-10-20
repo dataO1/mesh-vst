@@ -870,17 +870,25 @@ pub const FILLER_BOOSTS: [(&str, f32); 7] = [
 // MUSICAL: first draft, tune by ear. Generator parameters a letter other
 // than A moves away from the control value (by name, largest offset). A
 // plays the controls as set; B, C and D sit around them, so each block
-// sounds like a different setting, and the controls still move all of them.
-pub const LETTER_OFFSETS: [(&str, f32); 9] = [
+// sounds like a different setting, and the controls still move all of them
+// (user, 2026-10-20: the right-hand knobs, Permute and Groove most). New
+// entries go at the end: an entry's index seeds its offset.
+pub const LETTER_OFFSETS: [(&str, f32); 13] = [
     ("density", 0.25),
     ("complexity", 0.6),
     ("variation", 0.35),
-    ("slide", 0.45),
-    ("spread", 0.4),
+    ("slide", 0.55),
+    ("spread", 0.55),
     ("accent", 0.3),
-    ("swing", 0.35),
-    ("chop", 0.3),
+    ("swing", 0.45),
+    ("chop", 0.45),
     ("mutate", 0.3),
+    // Bass Shape and Groove.
+    ("length", 0.35),
+    ("syncopation", 0.45),
+    // Not generator parameters: the lane moves them per block (knob values).
+    ("morph", 0.25),
+    ("permute", 0.4),
 ];
 /// Share of the largest letter offset each note reads its parameters away
 /// by (user: notes within a block differ too).

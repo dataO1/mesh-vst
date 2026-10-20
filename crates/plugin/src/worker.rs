@@ -75,8 +75,12 @@ pub struct KitState {
     pub drums: BTreeMap<Slot, FileRef>,
     pub bass_seed: Option<u32>,
     pub mudpie: Option<FileRef>,
-    /// Files the user put on a slot by hand: they stay over seed changes (D21).
+    /// Files the user pinned to a slot: they stay over seed changes (D21).
     pub pins: BTreeMap<Slot, FileRef>,
+    /// Files a slot's own roll picked: they play until the sound seed
+    /// changes (user, 2026-10-20: a slot roll does not pin).
+    #[serde(default)]
+    pub rolled: BTreeMap<Slot, FileRef>,
     pub mudpie_pin: Option<FileRef>,
 }
 
@@ -281,6 +285,9 @@ impl Job {
         let lib = self.library.as_ref()?;
         let resolve = |f: &FileRef| resolve(lib, f);
         let pins: DrumPicks = state.pins.iter().filter_map(|(s, f)| Some((*s, resolve(f)?))).collect();
+        // A new sound seed drops the slots' own rolls (not the pins).
+        let same_seed = state.drums_seed == Some(sound_seed);
+        let rolled: DrumPicks = if same_seed { state.rolled.iter().filter_map(|(s, f)| Some((*s, resolve(f)?))).collect() } else { DrumPicks::new() };
         // The seed's files (the project's when it was saved with this seed);
         // the saved state keeps them apart from the pins, so unpinning a slot
         // brings the seed's file back.
@@ -291,6 +298,7 @@ impl Job {
         };
         let refs: BTreeMap<Slot, FileRef> = seeded.iter().map(|(s, p)| (*s, file_ref(lib, p))).collect();
         let mut picks = seeded;
+        picks.extend(rolled);
         picks.extend(pins);
         let (kit, loop_bpm) = if picks.is_empty() {
             (builtin::drum_kit(sr), None)
@@ -301,6 +309,9 @@ impl Job {
         if let Ok(mut s) = self.state.lock() {
             s.drums_seed = Some(sound_seed);
             s.drums = refs;
+            if !same_seed {
+                s.rolled.clear();
+            }
         }
         Some((kit, loop_bpm))
     }

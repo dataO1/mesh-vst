@@ -246,6 +246,10 @@ pub struct BarParams {
     reach: f32,
     /// Drums: the swing every off 16th plays (the knob's and the letter's).
     pub swing: f32,
+    /// Bass: the block's Morph move, in knob values.
+    pub morph: f32,
+    /// The Permute the bar played with.
+    pub permute: f32,
 }
 
 impl BarParams {
@@ -411,7 +415,15 @@ impl PatternLane {
         let names = self.generator.param_names();
         // Variation widens how far letters and notes move the parameters.
         let reach = variation_reach(names, &params);
-        vary_letter(names, seed, c.lane, pos.letter, pos.second, reach, &mut params);
+        let block_reach = letter_reach(names, &params);
+        vary_letter(names, seed, c.lane, pos.letter, pos.second, block_reach, &mut params);
+        // The block's own Permute and (bass) Morph. A Permute at 0 stays off.
+        let permute_amount = if self.permute > 0.0 {
+            (self.permute + block_move("permute", seed, c.lane, pos.letter, pos.second, 1.0)).clamp(LETTER_FLOOR.min(self.permute), 1.0)
+        } else {
+            0.0
+        };
+        let block_morph = block_move("morph", seed, c.lane, pos.letter, pos.second, block_reach);
         if class == SeedClass::Filler {
             boost_filler(names, &mut params);
         }
@@ -445,7 +457,13 @@ impl PatternLane {
             params: &params,
             harmony: c.harmony,
             drum_mask: &no_mask,
-            jitter: note_jitter(names, reach),
+            jitter: {
+                let mut j = note_jitter(names, reach);
+                if let Some(i) = names.iter().position(|n| *n == "length") {
+                    j[i] = shape_note(names, &params, self.pattern_seed, c.lane);
+                }
+                j
+            },
             bass_onsets: 0,
             bass_phrase: [0; 4],
             drum_fill: false,
@@ -463,11 +481,22 @@ impl PatternLane {
             scratch.sort();
             splice_second_half(out, scratch);
         }
-        permute(out, self.permute, seed, c.lane, c.bar_in_phrase);
+        permute(out, permute_amount, seed, c.lane, c.bar_in_phrase);
         let mut feel = Feel::of(seed, c.lane, class);
         feel.swing = (feel.swing + knob_swing).min(1.0);
         if let Some(p) = played {
-            *p = BarParams { values: params, jitter: bar_ctx.jitter, seed, lane: c.lane, bar_in_phrase: c.bar_in_phrase, root: c.harmony.key.root, reach, swing: feel.swing };
+            *p = BarParams {
+                values: params,
+                jitter: bar_ctx.jitter,
+                seed,
+                lane: c.lane,
+                bar_in_phrase: c.bar_in_phrase,
+                root: c.harmony.key.root,
+                reach,
+                swing: feel.swing,
+                morph: if self.role == Role::Drums { 0.0 } else { block_morph },
+                permute: permute_amount,
+            };
         }
         feel.apply(out, seed, c.lane);
         if self.role == Role::Drums {
@@ -485,7 +514,7 @@ impl PatternLane {
             let spread = names.iter().position(|n| *n == "spread").map_or(0.0, |i| params[i]);
             let home = bass::home_root(c.harmony.key);
             for e in out.as_mut_slice().iter_mut().filter(|e| e.kind == EventKind::NoteOn) {
-                let at = e.start as f64 / u16::MAX as f64 + played.morph_move(e) as f64 * MORPH_REGION;
+                let at = e.start as f64 / u16::MAX as f64 + (block_morph + played.morph_move(e)) as f64 * MORPH_REGION;
                 e.start = (at.rem_euclid(1.0) * u16::MAX as f64) as u16;
                 let above = ((e.key as i32 - home) as f32 / WIDTH_FULL_SEMIS).clamp(0.0, 1.0);
                 let side = patterned(0.5, 0.5, seed, c.lane, c.bar_in_phrase, PAN_INDEX, played.shape_of(e)) * 2.0 - 1.0;
@@ -550,6 +579,37 @@ const REACHED: [&str; 4] = ["length", "chop", "spread", "slide"];
 // MUSICAL: first draft, tune by ear.
 /// Per-note moves of parameters the letters leave alone, at reach 1.
 const NOTE_ONLY_MOVES: [(&str, f32); 1] = [("length", 0.12)];
+// MUSICAL: tune by ear (user, 2026-10-20: Shape per hit the one parameter
+// that moves much, at low Variation too, by the seed). The per-note Length
+// move, its scale at Variation 0 and 1 and the pattern seed's scale.
+const SHAPE_NOTE: f32 = 0.3;
+const SHAPE_NOTE_REACH: (f32, f32) = (0.6, 1.3);
+const SHAPE_NOTE_SEED: (f32, f32) = (0.6, 1.4);
+const S_SHAPE_NOTE: u32 = 0xF54;
+
+/// The per-note Length move of a lane (see [`SHAPE_NOTE`]).
+fn shape_note(names: &[&str], params: &[f32; MAX_GEN_PARAMS], pattern_seed: u32, lane: u8) -> f32 {
+    let v = names.iter().position(|n| *n == "variation").and_then(|i| params.get(i)).copied().unwrap_or(0.5).clamp(0.0, 1.0);
+    let u = rng::unit_f32(rng::hash(pattern_seed, lane, 0, 0, S_SHAPE_NOTE));
+    SHAPE_NOTE * (SHAPE_NOTE_REACH.0 + (SHAPE_NOTE_REACH.1 - SHAPE_NOTE_REACH.0) * v) * (SHAPE_NOTE_SEED.0 + (SHAPE_NOTE_SEED.1 - SHAPE_NOTE_SEED.0) * u)
+}
+
+// MUSICAL: tune by ear (user, 2026-10-20: blocks move the right-hand knobs
+// more, notes only a little). Scale of the letters' moves of [`REACHED`] at
+// Variation 0 and 1 (the notes' follow [`VARIATION_REACH`]).
+const LETTER_REACH: (f32, f32) = (0.6, 1.4);
+
+/// How far letters move the right-hand knobs' parameters, from Variation.
+fn letter_reach(names: &[&str], params: &[f32; MAX_GEN_PARAMS]) -> f32 {
+    let v = names.iter().position(|n| *n == "variation").and_then(|i| params.get(i)).copied().unwrap_or(0.5);
+    LETTER_REACH.0 + (LETTER_REACH.1 - LETTER_REACH.0) * v.clamp(0.0, 1.0)
+}
+
+/// A letter's move of a knob the lane applies itself (`"morph"`,
+/// `"permute"`, see [`LETTER_OFFSETS`]), in knob values.
+fn block_move(name: &str, seed: u32, lane: u8, letter: Letter, second: bool, reach: f32) -> f32 {
+    LETTER_OFFSETS.iter().position(|(n, _)| *n == name).map_or(0.0, |k| reach * letter_offset(seed, lane, letter, k, second))
+}
 
 /// The reach of parameter `name`.
 fn reach_of(name: &str, reach: f32) -> f32 {
