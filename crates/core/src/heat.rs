@@ -36,6 +36,10 @@ const CRUSH_MIX_MAX: f32 = 0.5;
 /// Tilt split frequency and the tilt at full Tone and full Heat, in dB.
 pub const TILT_HZ: f32 = 700.0;
 const TILT_DB: f32 = 12.0;
+/// Level match: the time the loudness followers average over, and the
+/// make-up range.
+const LEVEL_SECS: f32 = 0.5;
+const LEVEL_RANGE: (f32, f32) = (0.5, 2.0);
 /// DC blocker cutoff.
 const DC_HZ: f32 = 10.0;
 
@@ -55,6 +59,23 @@ impl OnePole {
     }
 }
 
+/// A rough loudness weighting per channel: a 150 Hz highpass plus a
+/// 1.5 kHz highpass at +4 dB (K-weighting's two stages, first order).
+#[derive(Debug, Clone, Copy, Default)]
+struct Weigh {
+    low: OnePole,
+    mid: OnePole,
+}
+
+impl Weigh {
+    #[inline]
+    fn weigh(&mut self, x: [f32; 2], a: (f32, f32)) -> [f32; 2] {
+        let l = self.low.low(x, a.0);
+        let m = self.mid.low(x, a.1);
+        [0, 1].map(|c| (x[c] - l[c]) + 0.58 * (x[c] - m[c]))
+    }
+}
+
 /// Heat's state per lane.
 #[derive(Debug, Clone)]
 pub struct Heat {
@@ -66,6 +87,14 @@ pub struct Heat {
     /// One-pole coefficients of the tilt split and of the DC blocker.
     tilt_a: f32,
     dc_a: f32,
+    /// Mean squares of the input and the output, and their follower.
+    ms_in: f32,
+    ms_out: f32,
+    level_a: f32,
+    weigh_in: Weigh,
+    weigh_out: Weigh,
+    /// The weighting's one-pole coefficients (150 Hz, 1.5 kHz).
+    wa: (f32, f32),
 }
 
 impl Default for Heat {
@@ -88,6 +117,12 @@ impl Heat {
             post: OnePole::default(),
             tilt_a: one_pole(TILT_HZ, sample_rate),
             dc_a: one_pole(DC_HZ, sample_rate),
+            ms_in: 0.0,
+            ms_out: 0.0,
+            level_a: one_pole(1.0 / (std::f32::consts::TAU * LEVEL_SECS), sample_rate),
+            weigh_in: Weigh::default(),
+            weigh_out: Weigh::default(),
+            wa: (one_pole(150.0, sample_rate), one_pole(1500.0, sample_rate)),
         }
     }
 
@@ -98,7 +133,8 @@ impl Heat {
         if h <= 0.0 {
             return;
         }
-        let clip_t = CLIP_THRESHOLD.0 + (CLIP_THRESHOLD.1 - CLIP_THRESHOLD.0) * h;
+        // Squared: the low end of the knob only shaves the very peaks.
+        let clip_t = CLIP_THRESHOLD.0 + (CLIP_THRESHOLD.1 - CLIP_THRESHOLD.0) * h * h;
         let sat = ((h - SATURATE_FROM) / (1.0 - SATURATE_FROM)).clamp(0.0, 1.0);
         let crush = ((h - CRUSH_FROM) / (1.0 - CRUSH_FROM)).clamp(0.0, 1.0);
         let drive = 10f32.powf(DRIVE_DB * sat.powf(DRIVE_CURVE) / 20.0);
@@ -131,7 +167,15 @@ impl Heat {
                 let dc = self.dc.low(flat, self.dc_a);
                 x = [flat[0] - dc[0], flat[1] - dc[1]];
             }
-            *s = StereoSample { left: flush(x[0]), right: flush(x[1]) };
+            // Level match: the output follows the input's loudness (slow).
+            // Weighted roughly as loudness is (K-weighting: lows count less,
+            // highs more), so added harmonics do not fool the match.
+            let wi = self.weigh_in.weigh([s.left, s.right], self.wa);
+            let wo = self.weigh_out.weigh(x, self.wa);
+            self.ms_in = flush(self.ms_in + self.level_a * (0.5 * (wi[0] * wi[0] + wi[1] * wi[1]) - self.ms_in));
+            self.ms_out = flush(self.ms_out + self.level_a * (0.5 * (wo[0] * wo[0] + wo[1] * wo[1]) - self.ms_out));
+            let g = if self.ms_out > 1e-9 { (self.ms_in / self.ms_out).sqrt().clamp(LEVEL_RANGE.0, LEVEL_RANGE.1) } else { 1.0 };
+            *s = StereoSample { left: flush(x[0] * g), right: flush(x[1] * g) };
         }
     }
 }
@@ -269,7 +313,10 @@ mod tests {
     fn low_heat_leaves_quiet_signals_alone_and_rounds_peaks() {
         let quiet = sine(0.5, 4800);
         assert_eq!(heated(0.05, 0.5, &quiet), quiet, "below the threshold: transparent");
-        assert!(heated(0.05, 0.5, &sine(1.5, 4800)).iter().all(|s| s.left.abs() < 1.0));
+        // Loud peaks are rounded off: a lower crest factor (the level is matched).
+        let crest = |b: &[StereoSample]| b.iter().map(|s| s.left.abs()).fold(0.0f32, f32::max) / rms(b);
+        let loud = sine(1.5, 4800);
+        assert!(crest(&heated(0.05, 0.5, &loud)[2400..]) < 0.97 * crest(&loud[2400..]));
     }
 
     #[test]
