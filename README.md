@@ -63,4 +63,4 @@ source (GPL-3.0), no accounts, no upsell.
 3. Load it on an instrument track, hold one long note, and start rolling.
 4. Optional: open **SET** in the plugin and add your sample folders.
 
-<sub>building from source, tests and dev notes: [docs/building.md](docs/building.md) · design: [docs/design.md](docs/design.md)</sub>
+<sub>building from source, tests and dev notes: [docs/building.md](docs/building.md) · design: [docs/design.md](docs/design.md) · music theory: [docs/music-theory.md](docs/music-theory.md)</sub>
