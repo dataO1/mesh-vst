@@ -104,11 +104,13 @@ pub enum Knob {
     Density,
     Permute,
     Variation,
-    Swing,
+    Groove,
     Shape,
     Morph,
     Spread,
     Slide,
+    Tone,
+    Heat,
     Gain,
 }
 
@@ -118,11 +120,13 @@ impl Knob {
             Knob::Density => &p.density,
             Knob::Permute => &p.permute,
             Knob::Variation => &p.variation,
-            Knob::Swing => &p.swing,
+            Knob::Groove => &p.swing,
             Knob::Shape => &p.shape,
             Knob::Morph => &p.morph,
             Knob::Spread => &p.spread,
             Knob::Slide => &p.slide,
+            Knob::Tone => &p.tone,
+            Knob::Heat => &p.heat,
             Knob::Gain => &p.gain,
         }
     }
@@ -532,6 +536,9 @@ impl Gui {
                             let x = 0.1 + 0.8 * (self.next_rand() % 1000) as f32 / 1000.0;
                             self.set_float(p, x);
                         }
+                        // Heat mostly warm, rarely crushed.
+                        let x = 0.1 + 0.5 * (self.next_rand() % 1000) as f32 / 1000.0;
+                        self.set_float(&params.heat, x);
                     }
                 }
             }
@@ -894,7 +901,7 @@ impl Gui {
 
         // Left: the pattern knobs and settings.
         let mut left = column![small("PATTERN")].spacing(12);
-        for k in [Knob::Density, Knob::Permute, Knob::Variation, Knob::Swing] {
+        for k in [Knob::Density, Knob::Permute, Knob::Variation, Knob::Groove] {
             left = left.push(knob(p, k, self.hit_marker(k)));
         }
         left = left.push(column![
@@ -923,11 +930,11 @@ impl Gui {
         let mut right = column![small(if drums { "KIT" } else { "MUDPIE VOICE" })].spacing(12);
         if drums {
             right = right.push(column![small("STYLE"), pick(DrumStyle::variants_list(), p.style.value(), Message::Style)].spacing(6));
-            for k in [Knob::Shape, Knob::Morph] {
+            for k in [Knob::Shape, Knob::Morph, Knob::Tone, Knob::Heat] {
                 right = right.push(knob(p, k, self.hit_marker(k)));
             }
         } else {
-            for k in [Knob::Shape, Knob::Morph, Knob::Spread, Knob::Slide] {
+            for k in [Knob::Shape, Knob::Morph, Knob::Spread, Knob::Slide, Knob::Heat] {
                 right = right.push(knob(p, k, self.hit_marker(k)));
             }
             right = right.push(column![small("RATE"), pick(Rate::variants_list(), p.rate.value(), Message::Rate)].spacing(6));

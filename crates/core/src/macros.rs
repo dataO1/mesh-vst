@@ -1,4 +1,4 @@
-//! The eight meta knobs (design D37) and what they move.
+//! The meta knobs (design D37) and what they move.
 //!
 //! A knob is a position 0..1 around the seed's own suggestion: 0.5 plays the
 //! value the sound seed and pattern seed suggest ([`Centers`]), 0 and 1 reach
@@ -17,6 +17,7 @@ pub struct Knobs {
     /// Rearranges the bar: beat chunks swap places (0 = as generated).
     pub permute: f32,
     pub variation: f32,
+    /// The Groove knob: the drums' swing and feel, the bass's syncopation.
     pub swing: f32,
     pub shape: f32,
     pub morph: f32,
@@ -24,7 +25,14 @@ pub struct Knobs {
     pub spread: f32,
     /// Bass only.
     pub slide: f32,
+    /// Drums only: the kit's register, low voices .. high voices.
+    pub tone: f32,
+    /// Clip, saturation and bitcrush on the lane's output.
+    pub heat: f32,
 }
+
+/// Number of knobs in [`Knobs::as_array`].
+pub const KNOBS: usize = 10;
 
 impl Default for Knobs {
     fn default() -> Self {
@@ -34,15 +42,36 @@ impl Default for Knobs {
 
 impl Knobs {
     /// Every knob at the seed's suggestion, Permute off.
-    pub const CENTERED: Self =
-        Self { density: 0.5, permute: 0.0, variation: 0.5, swing: 0.5, shape: 0.5, morph: 0.5, spread: 0.5, slide: 0.5 };
+    pub const CENTERED: Self = Self {
+        density: 0.5,
+        permute: 0.0,
+        variation: 0.5,
+        swing: 0.5,
+        shape: 0.5,
+        morph: 0.5,
+        spread: 0.5,
+        slide: 0.5,
+        tone: 0.5,
+        heat: 0.5,
+    };
 
-    pub fn as_array(&self) -> [f32; 8] {
-        [self.density, self.permute, self.variation, self.swing, self.shape, self.morph, self.spread, self.slide]
+    pub fn as_array(&self) -> [f32; KNOBS] {
+        [self.density, self.permute, self.variation, self.swing, self.shape, self.morph, self.spread, self.slide, self.tone, self.heat]
     }
 
-    fn from_array(a: [f32; 8]) -> Self {
-        Self { density: a[0], permute: a[1], variation: a[2], swing: a[3], shape: a[4], morph: a[5], spread: a[6], slide: a[7] }
+    fn from_array(a: [f32; KNOBS]) -> Self {
+        Self {
+            density: a[0],
+            permute: a[1],
+            variation: a[2],
+            swing: a[3],
+            shape: a[4],
+            morph: a[5],
+            spread: a[6],
+            slide: a[7],
+            tone: a[8],
+            heat: a[9],
+        }
     }
 }
 
@@ -52,21 +81,21 @@ pub type Centers = Knobs;
 // MUSICAL: first draft, tune by ear. The range each knob's seeded centre
 // falls in, per mode (from the Mesh starter style's defaults and their
 // usual playing range).
-const DRUM_CENTRES: [(f32, f32); 8] =
-    [(0.35, 0.65), (0.5, 0.5), (0.25, 0.55), (0.0, 0.35), (0.35, 0.7), (0.1, 0.7), (0.5, 0.5), (0.5, 0.5)];
-const BASS_CENTRES: [(f32, f32); 8] =
-    [(0.35, 0.65), (0.5, 0.5), (0.3, 0.6), (0.2, 0.6), (0.25, 0.75), (0.1, 0.9), (0.05, 0.4), (0.3, 0.7)];
+const DRUM_CENTRES: [(f32, f32); KNOBS] =
+    [(0.35, 0.65), (0.5, 0.5), (0.25, 0.55), (0.0, 0.35), (0.35, 0.7), (0.1, 0.7), (0.5, 0.5), (0.5, 0.5), (0.3, 0.7), (0.05, 0.35)];
+const BASS_CENTRES: [(f32, f32); KNOBS] =
+    [(0.35, 0.65), (0.5, 0.5), (0.3, 0.6), (0.2, 0.6), (0.25, 0.75), (0.1, 0.9), (0.05, 0.4), (0.3, 0.7), (0.5, 0.5), (0.1, 0.45)];
 const S_CENTRE: u32 = 0xC40;
 
 impl Centers {
     /// The seed's suggestion per knob. The pattern seed places the groove
-    /// knobs (density, variation, swing, spread, slide), the sound seed the
-    /// sound knobs (shape, morph). Permute has no seeded centre: the knob is
-    /// the amount.
+    /// knobs (density, variation, groove, spread, slide), the sound seed the
+    /// sound knobs (shape, morph, tone, heat). Permute has no seeded centre:
+    /// the knob is the amount.
     pub fn of(role: Role, pattern_seed: u32, sound_seed: u32) -> Self {
         let table = if role == Role::Drums { &DRUM_CENTRES } else { &BASS_CENTRES };
-        let sound = [false, false, false, false, true, true, false, false];
-        let mut out = [0.5; 8];
+        let sound = [false, false, false, false, true, true, false, false, true, true];
+        let mut out = [0.5; KNOBS];
         for (i, ((lo, hi), o)) in table.iter().zip(out.iter_mut()).enumerate() {
             let seed = if sound[i] { sound_seed } else { pattern_seed };
             let u = rng::unit_f32(rng::hash(seed, 0, i as u8, 0, S_CENTRE));
@@ -197,6 +226,7 @@ pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettin
     } else {
         sp.unison = s.unison;
         seeded_voice(&mut sp, s.sound_seed);
+        width_and_liquid(&mut sp, resolved.spread, resolved.slide);
     }
     sp
 }
@@ -224,6 +254,22 @@ fn seeded_voice(p: &mut LaneSamplerParams, sound_seed: u32) {
     m.lfo.to_cutoff = r(7, 0.0, 2800.0);
     p.decay *= 2f32.powf(r(8, -0.8, 0.8));
     p.release *= 2f32.powf(r(9, -0.7, 1.2));
+}
+
+// MUSICAL: first draft, tune by ear (user: Spread and Slide change the
+// sound, not only the line).
+/// Spread is width: the filter LFO and envelope open up with it (the notes
+/// spread out in the stereo field in `pattern`). Slide is liquid: the
+/// filter glides between notes and held notes take a vibrato (more notes
+/// tie in `shape_notes`). Both 0.5 = the voice as rolled.
+fn width_and_liquid(p: &mut LaneSamplerParams, spread: f32, slide: f32) {
+    let m = &mut p.modulation;
+    m.lfo.to_cutoff *= lerp(0.3, 1.8, spread) / lerp(0.3, 1.8, 0.5);
+    m.env.to_cutoff *= lerp(0.7, 1.4, spread) / lerp(0.7, 1.4, 0.5);
+    p.cutoff_glide = lerp(0.004, 0.16, slide);
+    m.vib_depth = 30.0 * ((slide - 0.4) / 0.6).max(0.0).powf(1.5);
+    m.vib_delay = 0.18;
+    m.vib_fade = 0.3;
 }
 
 /// The drum styles, in the generator's archetype order (design D39).
@@ -256,14 +302,23 @@ pub fn apply(role: Role, v: &Knobs, accent: f32, lane: &mut PatternLane, sampler
 fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
     lane.set_param("density", v.density);
     lane.set_param("variation", v.variation);
-    lane.set_param("overlay_ghost", lerp(0.1, 0.6, v.variation));
+    // Groove: the swing, each voice's push and pull, the accent shape
+    // (`pattern::groove`) and more ghosts.
     lane.set_param("swing", v.swing);
+    // Tone: the kit's register. Low: kicks, snares and their ghosts, the
+    // mid percussion, few cymbals. High: hats, rides, shakers and the top
+    // loop, sparse kicks and snares.
+    let t = v.tone;
+    lane.set_param("overlay_ghost", (lerp(0.1, 0.5, v.variation) + 0.3 * v.swing + 0.2 * (1.0 - t)).min(1.0));
+    lane.set_param("tone", t);
+    lane.set_param("overlay_hats", lerp(0.1, 0.9, t));
+    lane.set_param("overlay_ride", lerp(0.05, 0.95, t));
+    lane.set_param("overlay_shaker", lerp(0.1, 0.9, t));
+    lane.set_param("overlay_top", lerp(0.15, 1.0, t));
+    lane.set_param("overlay_perc", lerp(0.25, 0.45, t));
     // Morph: straight .. chopped, inside the style the Style setting picks.
     lane.set_param("chop", v.morph);
     lane.set_param("mutate", (0.6 * v.variation + 0.4 * v.morph).min(1.0));
-    lane.set_param("overlay_ride", 0.5);
-    lane.set_param("overlay_shaker", 0.5);
-    lane.set_param("overlay_top", 0.6);
     // Accent: wider dynamics and harder accents.
     p.velocity_curve = lerp(1.0, 2.2, accent);
     p.accent_gain = lerp(1.1, 2.0, accent);
@@ -560,6 +615,90 @@ mod style_tests {
                 out.events.as_slice().iter().map(|e| (b, e.tick, e.target)).collect::<Vec<_>>()
             })
             .collect()
+    }
+
+    /// Hits per drum voice over eight bars of seeds 1..=10 with `knobs`.
+    fn voice_hits(knobs: Knobs) -> [u32; 8] {
+        use crate::generator::layout::DrumVoice;
+        let mut n = [0u32; 8];
+        for seed in 1..=10 {
+            let mut lane = PatternLane::drums(DrumLayout::standard(), seed, seed);
+            let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: 1, rate: 0, mode: 0, style: None, unison: Default::default() };
+            configure(&mut lane, LaneSamplerParams::default(), &s);
+            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+            for b in 0..8 {
+                lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
+                for e in out.events.as_slice().iter().filter(|e| e.vel > 0) {
+                    if let Some(v) = DrumVoice::of_target(e.target).filter(|v| out.voices & v.bit() != 0) {
+                        n[v as usize] += 1;
+                    }
+                }
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn tone_moves_the_kit_from_kicks_and_snares_to_cymbals() {
+        let share = |n: [u32; 8]| {
+            let low = (n[0] + n[1]) as f32;
+            let high = (n[2] + n[3] + n[4] + n[6]) as f32;
+            low / (low + high)
+        };
+        let (low, high) = (share(voice_hits(Knobs { tone: 0.0, ..Knobs::CENTERED })), share(voice_hits(Knobs { tone: 1.0, ..Knobs::CENTERED })));
+        assert!(low > high + 0.25, "kick and snare share {low} at Tone 0, {high} at 1");
+    }
+
+    #[test]
+    fn groove_lays_the_snare_back_and_shapes_the_hats() {
+        use crate::event::EventKind;
+        use crate::generator::layout::DrumVoice;
+        let render = |groove: f32| {
+            let mut lane = PatternLane::drums(DrumLayout::standard(), 4, 4);
+            let s = LaneSettings { knobs: Knobs { swing: groove, ..Knobs::CENTERED }, sound_seed: 4, pattern_seed: 4, form: 0, rate: 0, mode: 0, style: Some(1), unison: Default::default() };
+            configure(&mut lane, LaneSamplerParams::default(), &s);
+            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+            lane.render(0, MusicalKey::new(5, true), &mut out, &mut scratch);
+            out.events.as_slice().iter().filter(|e| e.kind == EventKind::Trigger && e.vel > 0).copied().collect::<Vec<_>>()
+        };
+        let (straight, grooved) = (render(0.0), render(1.0));
+        let backbeat = |ev: &[LiveEvent]| ev.iter().find(|e| DrumVoice::of_target(e.target) == Some(DrumVoice::Snare) && e.step == 4).map(|e| e.tick);
+        assert!(backbeat(&grooved) > backbeat(&straight), "the snare lays back");
+        let hat_vel = |ev: &[LiveEvent], off: bool| {
+            let v: Vec<f32> = ev.iter().filter(|e| DrumVoice::of_target(e.target) == Some(DrumVoice::Hats) && (e.step % 2 == 1) == off).map(|e| e.vel as f32).collect();
+            v.iter().sum::<f32>() / v.len().max(1) as f32
+        };
+        assert!(hat_vel(&grooved, false) - hat_vel(&grooved, true) > hat_vel(&straight, false) - hat_vel(&straight, true), "on 8ths stand out of the off 16ths");
+    }
+
+    #[test]
+    fn spread_widens_the_upper_notes_and_slide_makes_the_line_liquid() {
+        use crate::event::{flags, EventKind};
+        let bars = |knobs: Knobs| {
+            let mut lane = PatternLane::bass(9, 9);
+            let s = LaneSettings { knobs, sound_seed: 9, pattern_seed: 9, form: 1, rate: 0, mode: 0, style: None, unison: Default::default() };
+            let p = configure(&mut lane, mudpie_params(), &s);
+            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+            let mut ev = Vec::new();
+            for b in 0..16 {
+                lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
+                ev.extend(out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn).copied());
+            }
+            (p, ev)
+        };
+        let home = crate::generator::bass::home_root(MusicalKey::new(5, true));
+        let (_, narrow) = bars(Knobs { spread: 0.0, ..Knobs::CENTERED });
+        let (_, wide) = bars(Knobs { spread: 1.0, ..Knobs::CENTERED });
+        let width = |ev: &[LiveEvent]| ev.iter().map(|e| e.pan.unsigned_abs() as f32).sum::<f32>() / ev.len() as f32;
+        assert!(width(&wide) > 3.0 * width(&narrow), "{} vs {}", width(&wide), width(&narrow));
+        assert!(wide.iter().filter(|e| (e.key as i32) <= home).all(|e| e.pan == 0), "the sub stays centred");
+        assert!(wide.iter().any(|e| e.pan.abs() > 20), "upper notes spread out");
+        let (dry, tight) = bars(Knobs { slide: 0.0, ..Knobs::CENTERED });
+        let (wet, liquid) = bars(Knobs { slide: 1.0, ..Knobs::CENTERED });
+        assert_eq!(dry.modulation.vib_depth, 0.0);
+        assert!(wet.modulation.vib_depth > 10.0 && wet.cutoff_glide > 4.0 * dry.cutoff_glide);
+        let ties = |ev: &[LiveEvent]| ev.iter().filter(|e| e.flags & flags::TIE != 0).count() as f32 / ev.len() as f32;
+        assert!(ties(&liquid) > ties(&tight), "{} vs {}", ties(&liquid), ties(&tight));
     }
 
     #[test]

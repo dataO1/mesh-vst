@@ -83,7 +83,7 @@ built-in synthesized sounds.
 
 Put one long note on the track. The note's pitch is the root (bass), its velocity scales the
 hits. The pattern follows the song position, so loops and bounces repeat exactly. Set **Mode**
-(drums or bass), **Sound seed** and **Pattern seed**, then play with the eight knobs: Density,
-Permute, Variation, Swing, Shape, Morph, Spread and Slide. Each knob's middle is the seed's
+(drums or bass), **Sound seed** and **Pattern seed**, then play with the knobs: Density,
+Permute, Variation, Groove, Shape, Morph, Spread and Slide (bass), Tone (drums) and Heat. Each knob's middle is the seed's
 own suggestion (Permute: 0 plays the pattern as generated). The mod wheel pushes Permute, pitch
 bend bends by **Bend range**. A new instance starts with random seeds and knobs.

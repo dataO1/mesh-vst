@@ -11,6 +11,7 @@ pub mod form;
 pub mod gc;
 pub mod generator;
 pub mod harmony;
+pub mod heat;
 pub mod key;
 pub mod kit;
 pub mod library;

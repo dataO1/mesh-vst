@@ -53,7 +53,7 @@ use crate::rng;
 use crate::sampler::SliceType;
 use crate::{STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
 
-pub const PARAM_NAMES: [&str; 12] = [
+pub const PARAM_NAMES: [&str; 13] = [
     "style",
     "density",
     "overlay_hats",
@@ -66,6 +66,7 @@ pub const PARAM_NAMES: [&str; 12] = [
     "overlay_ride",
     "overlay_shaker",
     "overlay_top",
+    "tone",
 ];
 const P_STYLE: usize = 0;
 const P_DENSITY: usize = 1;
@@ -79,10 +80,11 @@ const P_MUTATE: usize = 8;
 const P_RIDE: usize = 9;
 const P_SHAKER: usize = 10;
 const P_TOP: usize = 11;
+const P_TONE: usize = 12;
 
 // MUSICAL: first draft, tune by ear. Defaults: two-step at medium density
 // with 8th hats, a few ghosts, little percussion, a lightly chopped break.
-pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.25, 0.5, 0.5, 0.3, 0.2, 0.5, 0.3, 0.0, 0.0, 0.5, 0.5, 0.5];
+pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.25, 0.5, 0.5, 0.3, 0.2, 0.5, 0.3, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5];
 
 
 /// Archetype order used when the lane gives none (research §7.2).
@@ -369,6 +371,7 @@ struct Params {
     ride: f32,
     shaker: f32,
     top: f32,
+    tone: f32,
 }
 
 impl Params {
@@ -386,6 +389,7 @@ impl Params {
             ride: param(ctx, P_RIDE),
             shaker: param(ctx, P_SHAKER),
             top: param(ctx, P_TOP),
+            tone: param(ctx, P_TONE),
         }
     }
 }
@@ -422,6 +426,18 @@ const FEEL_TRIPLET_MAX: f32 = 0.5;
 /// Share of the gap to its next hit a sustained gated hit (break slices, top
 /// chops) holds.
 const FEEL_SUSTAIN: f32 = 0.95;
+// MUSICAL: first draft, tune by ear (user: Tone, low kits play more kicks
+// and snares, high ones sparser).
+/// How far `tone` moves the density of the kick and snare layers, and of
+/// the high voices (hats, ride, shaker, top loop, break) the other way.
+const TONE_LOW_LIFT: f32 = 0.8;
+const TONE_HIGH_LIFT: f32 = 0.9;
+/// High voices: the quarter-note hits that stay at `tone` 0.
+const TONE_QUARTERS_MIN: f32 = 0.35;
+/// Above these `tone` values the basic groove plays the lean kick and
+/// every second backbeat.
+const LEAN_ABOVE: f32 = 0.75;
+const HALF_ABOVE: f32 = 0.88;
 /// Voices that play loops (chopped by `start`): their hits are gated to the
 /// density's grid.
 const LOOP_VOICES: [DrumVoice; 2] = [DrumVoice::Break, DrumVoice::Top];
@@ -450,10 +466,14 @@ fn smooth(lo: f32, hi: f32, x: f32) -> f32 {
 /// on the 16th level over [`TRIM_16TH`], each hit at its seeded threshold, so
 /// the knob adds them one by one, softer while their level is coming in.
 /// Steps from `until` on (a fill) stay.
-fn metric_trim(density: f32, rng: &PhraseRng, until: usize, out: &mut BarEvents) {
+fn metric_trim(density: f32, tone: f32, rng: &PhraseRng, until: usize, out: &mut BarEvents) {
     let until_tick = until as u16 * TICKS_PER_STEP;
-    let level_weight = [1.0, smooth(TRIM_8TH.0, TRIM_8TH.1, density), smooth(TRIM_16TH.0, TRIM_16TH.1, density)];
     for (vi, voice) in FEEL_VOICES.iter().enumerate() {
+        // Tone moves the high voices' density (percussion stays).
+        let lift = if *voice == DrumVoice::Perc { 0.0 } else { TONE_HIGH_LIFT * (tone - 0.5) };
+        let d = (density + lift).clamp(0.0, 1.0);
+        let quarters = if lift < 0.0 { 1.0 + (1.0 - TONE_QUARTERS_MIN) * (2.0 * lift / TONE_HIGH_LIFT) } else { 1.0 };
+        let level_weight = [quarters, smooth(TRIM_8TH.0, TRIM_8TH.1, d), smooth(TRIM_16TH.0, TRIM_16TH.1, d)];
         let of = |e: &LiveEvent| {
             e.tick < until_tick
                 && matches!(e.kind, EventKind::Trigger | EventKind::NoteOn)
@@ -1220,9 +1240,16 @@ impl LaneGenerator for DrumGenerator {
 
         // Basic groove below the kick / snare layers, then the density
         // reveals more of the archetype.
-        let kick_ld = recipe.layer_density(Layer::Kick, p.density);
+        // Tone: below the middle the kick and snare come in sooner, above it
+        // later and leaner.
+        let lift = TONE_LOW_LIFT * (0.5 - p.tone);
+        let layer_d = |l: Layer| {
+            let d = recipe.layer_density(l, p.density);
+            if d < 0.0 { d } else { (d + lift).clamp(0.0, 1.0) }
+        };
+        let kick_ld = layer_d(Layer::Kick);
         let kick_d = if kick_ld < 0.0 {
-            let floor = if recipe.kick_lean { BASE_KICK_LEVEL.0 } else { BASE_KICK_LEVEL.1 };
+            let floor = if recipe.kick_lean || p.tone > LEAN_ABOVE { BASE_KICK_LEVEL.0 } else { BASE_KICK_LEVEL.1 };
             for (s, k) in lv.kick.iter_mut().enumerate() {
                 if *k < floor && !(s == 0 && *k > 0) {
                     *k = 0;
@@ -1238,11 +1265,12 @@ impl LaneGenerator for DrumGenerator {
             }
             lerp(BACKBONE_DENSITY.0, BACKBONE_DENSITY.1, kick_ld)
         };
-        let snare_ld = recipe.layer_density(Layer::Snare, p.density);
+        let snare_ld = layer_d(Layer::Snare);
         let snare_d = if snare_ld < 0.0 {
             let last_anchor = lv.snare.iter().rposition(|&sn| sn >= BASE_SNARE_LEVEL);
             for (s, sn) in lv.snare.iter_mut().enumerate() {
-                let keep = *sn >= BASE_SNARE_LEVEL && (!recipe.snare_half || last_anchor == Some(s));
+                let half = recipe.snare_half || p.tone > HALF_ABOVE;
+                let keep = *sn >= BASE_SNARE_LEVEL && (!half || last_anchor == Some(s));
                 if !keep {
                     *sn = 0;
                 }
@@ -1282,7 +1310,7 @@ impl LaneGenerator for DrumGenerator {
         self.shaker(ctx, &p, &recipe, &rng, out);
         self.top(ctx, &p, &recipe, &rng, out);
         if self.rules.feel {
-            metric_trim(p.density, &rng, fill_from, out);
+            metric_trim(p.density, p.tone, &rng, fill_from, out);
             let add_vel = if self.rules.tiers > 0.0 { FEEL_ADD_VEL } else { 1.0 };
             rate_feel(p.density, &rng, &bb, fill_from, add_vel, out);
         }

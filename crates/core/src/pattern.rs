@@ -20,6 +20,7 @@ use crate::form::{
 use crate::generator::bass::{self, BassGenerator, BassRules};
 use crate::generator::blocks::{defaults_from_spec, patterned, NoteShape};
 use crate::generator::drums::{self, DrumGenerator, DrumRules};
+use crate::generator::layout::DrumVoice;
 use crate::generator::{idiom, BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use crate::harmony::{HarmonyCtx, BARS_PER_PHRASE};
 use crate::key::MusicalKey;
@@ -47,6 +48,54 @@ const S_BLOCK_RATE: u32 = 0xF51;
 /// RNG stream of the sound seed a filler letter derives.
 const S_SOUND: u32 = 0xF52;
 const S_PERMUTE: u32 = 0xF53;
+
+// MUSICAL: first draft, tune by ear (user: Groove, the drums' feel).
+/// Ticks each voice plays off the grid at full Groove: the snare laid back,
+/// the hats and shakers pushed, the kick on the grid.
+const GROOVE_PUSH: [(DrumVoice, i32); 6] = [
+    (DrumVoice::Snare, 4),
+    (DrumVoice::Hats, -2),
+    (DrumVoice::Shaker, -2),
+    (DrumVoice::Ride, -1),
+    (DrumVoice::Perc, 2),
+    (DrumVoice::Top, 1),
+];
+/// Velocity scale of the cymbals' off 16ths and on-beat 8ths at full Groove.
+const GROOVE_OFF_VEL: f32 = 0.55;
+const GROOVE_ON_VEL: f32 = 1.15;
+/// Velocity of snare ghosts (hits below [`GHOST_VEL`]) at full Groove.
+const GROOVE_GHOST_VEL: f32 = 0.7;
+const GHOST_VEL: u8 = 70;
+
+/// The drums' Groove beyond the swing: each voice pushed or laid back, the
+/// cymbals' accent shape (strong 8ths, soft off 16ths), softer ghosts.
+/// `amount` 0 plays the bar as rendered.
+fn groove(out: &mut BarEvents, amount: f32) {
+    let g = amount.clamp(0.0, 1.0);
+    if g <= 0.0 {
+        return;
+    }
+    for e in out.as_mut_slice() {
+        let Some(voice) = DrumVoice::of_target(e.target) else { continue };
+        if let Some((_, push)) = GROOVE_PUSH.iter().find(|(v, _)| *v == voice) {
+            let to = e.tick as i32 + (*push as f32 * g).round() as i32;
+            e.tick = to.clamp(0, TICKS_PER_BAR as i32 - 1) as u16;
+            e.gate = e.gate.min(TICKS_PER_BAR - e.tick);
+        }
+        let scale = match voice {
+            DrumVoice::Hats | DrumVoice::Ride | DrumVoice::Shaker => {
+                let off = e.step % 2 == 1;
+                1.0 + (if off { GROOVE_OFF_VEL } else { GROOVE_ON_VEL } - 1.0) * g
+            }
+            DrumVoice::Snare if e.vel < GHOST_VEL => 1.0 + (GROOVE_GHOST_VEL - 1.0) * g,
+            _ => 1.0,
+        };
+        if e.vel > 0 && scale != 1.0 {
+            e.vel = (e.vel as f32 * scale).round().clamp(1.0, 127.0) as u8;
+        }
+    }
+    out.sort();
+}
 
 /// Chunks a bar is cut into for Permute: half beats.
 pub const PERMUTE_CHUNKS: usize = 8;
@@ -98,6 +147,13 @@ pub struct RenderedBar {
 pub const MORPH_NOTE: f32 = 0.04;
 /// Seed index of the Morph move, past the generator parameters.
 const MORPH_INDEX: usize = MAX_GEN_PARAMS;
+/// Seed index of a note's stereo side.
+const PAN_INDEX: usize = MAX_GEN_PARAMS + 1;
+// MUSICAL: first draft, tune by ear.
+/// Pan of a note this far above the home root at full Spread, and the
+/// semitones over which it gets there.
+const WIDTH_PAN: f32 = 0.6;
+const WIDTH_FULL_SEMIS: f32 = 19.0;
 
 /// The generator parameters a bar played with, after its letter and filler
 /// moves (the editor shows them per hit).
@@ -333,15 +389,25 @@ impl PatternLane {
             *p = BarParams { values: params, jitter: bar_ctx.jitter, seed, lane: c.lane, bar_in_phrase: c.bar_in_phrase, root: c.harmony.key.root, reach, swing: feel.swing };
         }
         feel.apply(out, seed, c.lane);
+        if self.role == Role::Drums {
+            groove(out, knob_swing);
+        }
         if self.role != Role::Drums {
             let block = if self.role == Role::Bass { block_rate(seed, c.lane, class) } else { 0 };
             apply_speed(out, self.rate + block, c.bar, scratch);
             limit_speed(out, self.rate, self.rate + block);
             // Each note moves Morph a touch, as its shape says.
             let played = BarParams { seed, lane: c.lane, bar_in_phrase: c.bar_in_phrase, root: c.harmony.key.root, reach, ..BarParams::default() };
+            // Spread is width too: notes above the home root spread out in
+            // the stereo field, the sub stays centred.
+            let spread = names.iter().position(|n| *n == "spread").map_or(0.0, |i| params[i]);
+            let home = bass::home_root(c.harmony.key);
             for e in out.as_mut_slice().iter_mut().filter(|e| e.kind == EventKind::NoteOn) {
                 let at = e.start as f64 / u16::MAX as f64 + played.morph_move(e) as f64 * MORPH_REGION;
                 e.start = (at.rem_euclid(1.0) * u16::MAX as f64) as u16;
+                let above = ((e.key as i32 - home) as f32 / WIDTH_FULL_SEMIS).clamp(0.0, 1.0);
+                let side = patterned(0.5, 0.5, seed, c.lane, c.bar_in_phrase, PAN_INDEX, played.shape_of(e)) * 2.0 - 1.0;
+                e.pan = (side.signum() * WIDTH_PAN * spread * above * 127.0).round() as i8;
             }
         }
         voices

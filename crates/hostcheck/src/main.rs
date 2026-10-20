@@ -410,7 +410,7 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     }
     // Swing, Morph and Permute are heard: their extremes differ by more than a trace.
     let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt();
-    for knob in ["Swing", "Morph", "Permute"] {
+    for knob in ["Groove", "Morph", "Permute", "Tone", "Heat"] {
         let lo = render(entry, &Render { params: vec![(knob.into(), 0.0)], ..base.clone() })?;
         let hi = render(entry, &Render { params: vec![(knob.into(), 1.0)], ..base.clone() })?;
         let diff: Vec<f32> = lo.samples.iter().zip(&hi.samples).map(|(a, b)| a - b).collect();

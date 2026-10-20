@@ -37,7 +37,7 @@ pub struct UiShared {
     pub audition: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// Mod-out source per channel (index into `Source::ALL`), bass then drums.
     pub mod_map: [[AtomicU8; mesh_vst_core::modout::CHANNELS]; 2],
-    /// The last hit: the eight knob positions its bar and note played with
+    /// The last hit: the knob positions its bar and note played with
     /// (`Knobs` order) and its level (velocity and accent, linear), f32 bits.
     pub hit: [AtomicU32; HIT_VALUES],
     /// Hits so far, so the editor sees a new one.
@@ -45,7 +45,7 @@ pub struct UiShared {
 }
 
 /// Values of [`UiShared::hit`].
-pub const HIT_VALUES: usize = 9;
+pub const HIT_VALUES: usize = mesh_vst_core::macros::KNOBS + 1;
 
 impl Default for UiShared {
     fn default() -> Self {

@@ -309,7 +309,7 @@ drive external effects.
 
 ## 6. Parameters (D37)
 
-Eight knobs at most: 5 shared and up to 3 per mode, broad like Mesh live's lane controls. All
+Nine knobs at most: 7 shared, Spread and Slide (bass), Tone (drums), broad like Mesh live's lane controls. All
 are automatable. The seed sets each knob's default center, so a new seed comes with its own
 suggested settings. Turning a knob or automating it moves away from that center.
 
@@ -318,11 +318,13 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | **Density** | notes, note length | hits, voices coming in (tops included), loop gating |
 | **Permute** | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
 | **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell; scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
-| **Swing** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays) | swing of every off 16th |
+| **Groove** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts |
 | **Shape** | stabby to sustained: length, expression, filter bite; at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke, loop hold, decay |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style |
-| **Spread** | octave lifts, jump size | — |
-| **Slide** | how often notes slide (up to 45 % of eligible notes) and the glide time, 30 ms to 250 ms; also the glide of the full-Shape legato | — |
+| **Spread** | width: octave lifts, jump size, notes above the home root spread in stereo (the sub stays centred), deeper filter LFO and envelope | — |
+| **Slide** | how often notes slide (up to 45 % of eligible notes) and the glide time, 30 ms to 250 ms; also the glide of the full-Shape legato; liquid: up to 35 % more held notes tie, filter glide 4 to 160 ms, vibrato on held notes | — |
+| **Tone** | — | the kit's register: low plays more kicks, snares and ghosts and fewer cymbals; high plays more hats, rides, shakers, top loop and break, sparser kicks and snares |
+| **Heat** | clip, then bitcrush, then saturation on the output: soft and transparent low, saturation from a third, bitcrush from two thirds, level-matched | the same |
 
 A ninth, stepped and automatable parameter, **Style** (drums), picks the rhythm family
 (D39).

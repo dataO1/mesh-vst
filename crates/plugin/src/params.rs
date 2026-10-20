@@ -152,6 +152,12 @@ pub struct MeshParams {
     #[id = "slide"]
     pub slide: FloatParam,
 
+    #[id = "tone"]
+    pub tone: FloatParam,
+
+    #[id = "heat"]
+    pub heat: FloatParam,
+
     #[id = "style"]
     pub style: EnumParam<DrumStyle>,
     #[id = "mode"]
@@ -248,11 +254,13 @@ impl Default for MeshParams {
             density: knob_at("Density", fresh.knob()),
             permute: knob_at("Permute", 0.0),
             variation: knob_at("Variation", fresh.knob()),
-            swing: knob_at("Swing", fresh.knob()),
+            swing: knob_at("Groove", fresh.knob()),
             shape: knob_at("Shape", fresh.knob()),
             morph: knob_at("Morph", fresh.knob()),
             spread: knob_at("Spread", fresh.knob()),
             slide: knob_at("Slide", fresh.knob()),
+            tone: knob_at("Tone", fresh.knob()),
+            heat: knob_at("Heat", fresh.knob()),
             style: EnumParam::new("Style", DrumStyle::Seed),
             mode: EnumParam::new("Mode", Mode::Drums).non_automatable(),
             sound_seed: setting(IntParam::new("Sound seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED })),

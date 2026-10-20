@@ -105,6 +105,8 @@ pub struct MeshVst {
     pressure: f32,
     /// The knobs' values after the seed's centres (mod out 13, 14).
     resolved: Knobs,
+    /// The Heat stage on the lane's output.
+    heat: mesh_vst_core::heat::Heat,
     /// The knob positions and the seed's centres they play around.
     knobs: Knobs,
     centres: Centers,
@@ -137,6 +139,7 @@ impl Default for MeshVst {
             mod_wheel: 0.0,
             pressure: 0.0,
             resolved: Knobs::CENTERED,
+            heat: mesh_vst_core::heat::Heat::new(),
             knobs: Knobs::CENTERED,
             centres: Knobs::CENTERED,
             modout: ModOut::new(48_000.0),
@@ -170,6 +173,8 @@ impl MeshVst {
                 morph: p.morph.value(),
                 spread: p.spread.value(),
                 slide: p.slide.value(),
+                tone: p.tone.value(),
+                heat: p.heat.value(),
             },
             sound_seed: p.sound_seed.value() as u32,
             pattern_seed: p.pattern_seed.value() as u32,
@@ -439,6 +444,7 @@ impl MeshVst {
             Some(l) => l.player.process(buf, &transport),
             None => buf.fill(StereoSample::silence()),
         }
+        self.heat.process(buf, self.resolved.heat);
         self.publish_hit(mode);
         // The mod outputs, when the host gave their ports.
         if aux.outputs.len() >= modout::CHANNELS {

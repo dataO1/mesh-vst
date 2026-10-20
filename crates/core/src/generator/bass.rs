@@ -74,7 +74,7 @@ const P_STABS: usize = 10;
 const P_SYNCOPATION: usize = 11;
 
 // MUSICAL: first draft, tune by ear.
-pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.5, 0.4, 0.5, 0.0, 0.5, 0.5, 0.5, 0.3, 0.5, 0.5, 0.5, 0.0];
+pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.5, 0.4, 0.5, 0.0, 0.5, 0.5, 0.5, 0.3, 0.5, 0.5, 0.5, 0.0, 0.0];
 
 const S_CELL: u32 = 0x200;
 const S_RHYTHM: u32 = 0x201;
@@ -232,6 +232,10 @@ const STAB_TICKS: u16 = 36;
 const LEGATO_FROM: f32 = 0.75;
 
 /// Share of held notes that tie into the next at `length`.
+// MUSICAL: first draft, tune by ear (user: Slide makes the line liquid).
+/// Extra share of held notes that tie into the next at full Slide.
+const LEGATO_SLIDE: f32 = 0.35;
+
 fn legato_share(length: f32) -> f32 {
     ((length - LEGATO_FROM) / (1.0 - LEGATO_FROM)).clamp(0.0, 1.0)
 }
@@ -421,7 +425,7 @@ impl BassGenerator {
             n += 1;
             prev = Some((p.tick, key));
         }
-        shape_notes(&mut events[..n], |e| note_length(ctx, e), param(ctx, P_EXPRESSION), slide_glide(param(ctx, P_SLIDE)), |step| rng.unit(step, S_LEGATO));
+        shape_notes(&mut events[..n], |e| note_length(ctx, e), param(ctx, P_EXPRESSION), param(ctx, P_SLIDE), |step| rng.unit(step, S_LEGATO));
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -719,7 +723,7 @@ impl LaneGenerator for BassGenerator {
             |step, key| ratchet_at(step) && rng.chance(step, S_RATCHET, RATCHET_FILL_BOOST * ratchet * repeat_height(key as i32 - root_key)),
             |step| rng::weighted_pick(rng.at(step, S_FIGURE), &figure_weights).unwrap_or(0),
         );
-        shape_notes(&mut events[..n], |e| note_length(ctx, e), param(ctx, P_EXPRESSION), slide_glide(param(ctx, P_SLIDE)), |step| rng.unit(step, S_LEGATO));
+        shape_notes(&mut events[..n], |e| note_length(ctx, e), param(ctx, P_EXPRESSION), param(ctx, P_SLIDE), |step| rng.unit(step, S_LEGATO));
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -1235,7 +1239,10 @@ pub fn held_length(base: f32, moved: f32) -> f32 {
 /// notes towards stabs, above 0.5 holds them towards the next onset, from
 /// [`LEGATO_FROM`] a rising share of held notes ties into it and glides. Expression scales each note's
 /// filter offset (0 = none, 1 = double).
-fn shape_notes(events: &mut [LiveEvent], length_of: impl Fn(&LiveEvent) -> f32, expression: f32, glide: u8, roll: impl Fn(u8) -> f32) {
+fn shape_notes(events: &mut [LiveEvent], length_of: impl Fn(&LiveEvent) -> f32, expression: f32, slide: f32, roll: impl Fn(u8) -> f32) {
+    let glide = slide_glide(slide);
+    // Slide above its middle ties more held notes (liquid).
+    let liquid = LEGATO_SLIDE * (2.0 * slide - 1.0).max(0.0);
     if expression != 0.5 {
         for ev in events.iter_mut() {
             ev.cutoff = (ev.cutoff as f32 * expression * 2.0).round().clamp(-127.0, 127.0) as i8;
@@ -1270,7 +1277,7 @@ fn shape_notes(events: &mut [LiveEvent], length_of: impl Fn(&LiveEvent) -> f32, 
         if length < 0.5 {
             let stab = ev.gate.min(STAB_TICKS);
             ev.gate = stab + ((ev.gate - stab) as f32 * length * 2.0) as u16;
-        } else if has_next && ev.flags & flags::STAB == 0 && roll((ev.tick / TICKS_PER_STEP) as u8) < legato_share(length) {
+        } else if has_next && ev.flags & flags::STAB == 0 && roll((ev.tick / TICKS_PER_STEP) as u8) < legato_share(length) + liquid {
             ev.gate = gap + TIE_OVERLAP_TICKS;
             let next = &mut events[i + 1];
             next.flags |= flags::TIE;

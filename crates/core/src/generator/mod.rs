@@ -24,7 +24,7 @@ pub(crate) mod test_util;
 pub use layout::DrumLayout;
 
 /// Maximum number of generator parameters a lane can expose to controls.
-pub const MAX_GEN_PARAMS: usize = 12;
+pub const MAX_GEN_PARAMS: usize = 13;
 
 /// Everything a generator may read to render one bar.
 #[derive(Debug, Clone, Copy)]
