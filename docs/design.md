@@ -167,6 +167,9 @@ drive external effects.
   the section starts a 32nd to a quarter into the note and lasts, as played at Normal Rate, a
   quarter triplet, a dotted 8th or a quarter (rendered half that; shorter ones sounded like a machine gun, 2026-10-20), at least two rounds of it fitting the note. Drawn after density and length
   shaped the notes, before Splice thins the bar; Rate scales the section with the note.
+  Reversed segments (2026-10-20): about 40 % of the block seeds reverse those long notes instead
+  of looping them, one or the other per seed, as often as the loops would be (Variation): the
+  note plays its own stretch of the sample from where it would end back to where it starts.
 - **D44** **Squash** (2026-10-20): the lane's last stage, after Heat and Mono lows, a six-band
   compressor pushing each band down above one threshold and up below another (OTT style). The
   knob (left column, OUTPUT) runs from mild (gentle ratios, high thresholds, fast times) to

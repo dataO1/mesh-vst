@@ -693,8 +693,8 @@ fn apply_speed(out: &mut BarEvents, exponent: i8, bar: u64, scratch: &mut BarEve
                 let mut e = *e;
                 e.gate = (e.tick + e.gate - from).min(part) * k;
                 e.tick = 0;
-                e.flags &= !(flags::TIE | flags::ACCENT);
-                // Picked up mid-note: its loop section is behind it.
+                e.flags &= !(flags::TIE | flags::ACCENT | flags::REVERSE);
+                // Picked up mid-note: its loop section (or reversed stretch) is behind it.
                 e.loop_len = 0;
                 e.note_id = e.note_id.wrapping_add(0x2000);
                 scratch.push(e);

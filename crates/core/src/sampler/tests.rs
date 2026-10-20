@@ -589,6 +589,20 @@ fn notes_start_at_the_slot_start_except_on_streams() {
 }
 
 #[test]
+fn a_reversed_stream_note_plays_its_own_stretch_backwards() {
+    // 384 ticks at 100 frames a tick: 38 400 frames from 0.1 of the ramp,
+    // so backwards from about 0.9 down to 0.1.
+    let mut s = sampler(vec![(0, SlotDef::whole(ramp(48_000)).streamed())], 4);
+    let mut ev = LiveEvent { gate: 384, flags: flags::REVERSE, ..note_on(60, 1) };
+    ev.start = (0.1 * u16::MAX as f64) as u16;
+    s.handle_event(&ev, 0);
+    let out = render(&mut s, 38_000, 100.0);
+    let (first, last) = (out[200].left, out[37_800].left);
+    assert!((first - 0.9).abs() < 0.02 && (last - 0.1).abs() < 0.02, "{first} .. {last}");
+    assert!(out[200..37_800].windows(2).all(|w| w[1].left <= w[0].left + 1e-6), "falls all the way");
+}
+
+#[test]
 fn event_attack_overrides_the_lane_and_rises_round() {
     let mut s = sampler(vec![(0, SlotDef::whole(dc(1.0, 48_000)))], 4);
     let mut ev = trig(0);

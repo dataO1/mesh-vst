@@ -726,7 +726,7 @@ impl LaneGenerator for BassGenerator {
         shape_notes(&mut events[..n], |e| note_length(ctx, e), param(ctx, P_EXPRESSION), param(ctx, P_SLIDE), |step| rng.unit(step, S_LEGATO));
         // Loops last, on the notes as long as density and length left them
         // (Splice thins the bar after this).
-        loops(&mut events[..n], variation * persona.looping, &rng);
+        loops(&mut events[..n], variation * persona.looping, persona.reverses, &rng);
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -830,11 +830,13 @@ struct Persona {
     tonal: f32,
     /// How much the seed loops its long notes ([`loops`]).
     looping: f32,
+    /// The seed reverses those notes instead of looping them.
+    reverses: bool,
 }
 
 impl Persona {
     /// No character: the rhythm and slides as the parameters say.
-    const PLAIN: Self = Self { sync: 0.0, slide: 1.0, half: 0.0, ratchet: 0.0, tonal: 1.0, looping: 0.65 };
+    const PLAIN: Self = Self { sync: 0.0, slide: 1.0, half: 0.0, ratchet: 0.0, tonal: 1.0, looping: 0.65, reverses: false };
 
     fn new(ctx: &BarCtx) -> Self {
         let u = |k: u8| rng::unit_f32(rng::hash(ctx.seed, ctx.lane, 0, k, S_PERSONA));
@@ -846,6 +848,7 @@ impl Persona {
             ratchet: PERSONA_RATCHET_MAX * u(3) * u(3),
             tonal: lerp(PERSONA_TONAL.0, PERSONA_TONAL.1, u(4)),
             looping: lerp(PERSONA_LOOP.0, PERSONA_LOOP.1, u(5)),
+            reverses: u(6) < PERSONA_REVERSE_SHARE,
         }
     }
 }
@@ -1242,6 +1245,10 @@ const LOOP_MIN_GATE: u16 = LOOP_STARTS[0] as u16 + 2 * LOOP_LENGTHS[0].0 as u16;
 const LOOP_SHARE_MAX: f32 = 0.7;
 /// A seed's loop tendency range.
 const PERSONA_LOOP: (f32, f32) = (0.3, 1.0);
+// MUSICAL: tune by ear (user, 2026-10-20: reversed segments besides the
+// loops, one or the other per seed).
+/// Share of the seeds that reverse their long notes instead of looping them.
+const PERSONA_REVERSE_SHARE: f32 = 0.4;
 /// Loop lengths in rendered ticks (an 8th triplet, a dotted 16th, an 8th;
 /// played at Normal Rate a quarter triplet, a dotted 8th, a quarter),
 /// shortest first, and their weights.
@@ -1258,8 +1265,10 @@ const S_LOOP_PONG: u32 = 0x228;
 
 /// Loop some long notes (D43): each draws, per seed and step, whether it
 /// loops (`share`), the section's length and start so that it fits at
-/// least two rounds into the note, and whether it plays back and forth.
-fn loops(events: &mut [LiveEvent], share: f32, rng: &PhraseRng) {
+/// least two rounds into the note, and whether it plays back and forth. A
+/// `reverse` seed plays those notes backwards instead (their own stretch of
+/// the sample, end to start).
+fn loops(events: &mut [LiveEvent], share: f32, reverse: bool, rng: &PhraseRng) {
     if share <= 0.0 {
         return;
     }
@@ -1267,6 +1276,10 @@ fn loops(events: &mut [LiveEvent], share: f32, rng: &PhraseRng) {
     for ev in events.iter_mut().filter(|e| e.kind == EventKind::NoteOn && e.gate >= LOOP_MIN_GATE && !e.has(flags::TIE)) {
         let step = (ev.tick / TICKS_PER_STEP) as u8;
         if !rng.chance(step, S_LOOP, chance) {
+            continue;
+        }
+        if reverse {
+            ev.flags |= flags::REVERSE;
             continue;
         }
         let gate = ev.gate;
@@ -1384,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn variation_loops_some_long_notes_and_only_long_ones() {
+    fn variation_loops_or_reverses_some_long_notes_and_only_long_ones() {
         let g = BassGenerator::new(PARAM_DEFAULTS, BassRules::default(), Vec::new());
         let count = |variation: f32| {
             let p = params(|p| {
@@ -1392,21 +1405,31 @@ mod tests {
                 p[P_LENGTH] = 1.0;
                 p[P_STABS] = 0.0;
             });
-            let (mut looped, mut pong) = (0, 0);
+            let (mut looped, mut pong, mut reversed) = (0, 0, 0);
             for seed in 0..40 {
+                let mut kinds = [false; 2];
                 for b in 0..8 {
-                    for e in bar(&g, seed, b, &p, &EMPTY).iter().filter(|e| e.loop_len > 0) {
-                        looped += 1;
-                        pong += e.has(flags::PING_PONG) as u32;
-                        assert!(e.gate >= LOOP_MIN_GATE && e.loop_at >= 12 && e.loop_at as u16 + 2 * e.loop_len as u16 <= e.gate, "{e:?}");
+                    for e in bar(&g, seed, b, &p, &EMPTY).iter().filter(|e| e.kind == EventKind::NoteOn) {
+                        let rev = e.has(flags::REVERSE);
+                        if e.loop_len > 0 {
+                            looped += 1;
+                            pong += e.has(flags::PING_PONG) as u32;
+                            assert!(!rev && e.gate >= LOOP_MIN_GATE && e.loop_at >= 12 && e.loop_at as u16 + 2 * e.loop_len as u16 <= e.gate, "{e:?}");
+                            kinds[0] = true;
+                        } else if rev {
+                            reversed += 1;
+                            assert!(e.gate >= LOOP_MIN_GATE, "{e:?}");
+                            kinds[1] = true;
+                        }
                     }
                 }
+                assert!(!(kinds[0] && kinds[1]), "seed {seed} loops or reverses, not both");
             }
-            (looped, pong)
+            (looped, pong, reversed)
         };
-        assert_eq!(count(0.0).0, 0, "no loops without Variation");
-        let (looped, pong) = count(1.0);
-        assert!(looped > 20 && pong > 0 && pong < looped, "{looped} loops, {pong} back and forth");
+        assert_eq!(count(0.0), (0, 0, 0), "no loops or reverses without Variation");
+        let (looped, pong, reversed) = count(1.0);
+        assert!(looped > 10 && pong > 0 && pong < looped && reversed > 5, "{looped} loops, {pong} back and forth, {reversed} reversed");
         assert!(count(0.5).0 < looped);
     }
 

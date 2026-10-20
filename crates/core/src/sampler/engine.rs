@@ -603,7 +603,14 @@ impl Sampler {
             // played at the sample's overall loudness.
             let morph = if p.morph >= 0.0 { (p.morph as f64 - 0.5) * MORPH_REGION } else { 0.0 };
             let at = (ev.start as f64 / u16::MAX as f64 + morph).rem_euclid(1.0).min(0.999);
-            (at, slot.sample.level_gain(at))
+            // Reversed (D43): the note plays its own stretch, from where it
+            // would end back to where it starts (the offset counts from the end).
+            if slot.stream && ev.has(flags::REVERSE) && gate_ticks.is_finite() {
+                let stretch = gate_ticks * self.spt * rate / slot.len().max(1) as f64;
+                (((1.0 - at - stretch).rem_euclid(1.0)).min(0.999), slot.sample.level_gain(at))
+            } else {
+                (at, slot.sample.level_gain(at))
+            }
         };
         // A unison copy starts its own share of a period further in (D38).
         let offset = if pitched && copy.phase > 0.0 {
