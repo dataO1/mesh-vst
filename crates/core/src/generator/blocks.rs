@@ -37,12 +37,16 @@ pub fn param(ctx: &BarCtx, index: usize) -> f32 {
 /// parameter's jitter ([`BarCtx::jitter`]), seeded per seed, note and bar
 /// of the phrase, so notes within a block differ and a phrase repeats.
 pub fn note_param(ctx: &BarCtx, index: usize, n: u8) -> f32 {
-    let v = param(ctx, index);
     let amp = ctx.jitter.get(index).copied().unwrap_or(0.0);
+    jittered(param(ctx, index), amp, ctx.seed, ctx.lane, ctx.bar_in_phrase, index, n)
+}
+
+/// [`note_param`] from its parts: `v` moved by up to `amp` for note `n`.
+pub fn jittered(v: f32, amp: f32, seed: u32, lane: u8, bar_in_phrase: u8, index: usize, n: u8) -> f32 {
     if amp <= 0.0 {
         return v;
     }
-    let h = rng::hash(ctx.seed, ctx.lane, n, ctx.bar_in_phrase.wrapping_mul(16).wrapping_add(index as u8), S_NOTE_PARAM);
+    let h = rng::hash(seed, lane, n, bar_in_phrase.wrapping_mul(16).wrapping_add(index as u8), S_NOTE_PARAM);
     (v + amp * (2.0 * rng::unit_f32(h) - 1.0)).clamp(0.0, 1.0)
 }
 
@@ -448,7 +452,7 @@ pub fn roll_velocity(i: u8, count: u8, peak: u8) -> u8 {
 /// Unpitched sampler trigger (`key` 0 = no pitch, `gate` 0 = one-shot).
 #[inline]
 pub fn trigger(tick: u16, target: u8, vel: u8) -> LiveEvent {
-    LiveEvent { tick, kind: EventKind::Trigger, target, vel, ..LiveEvent::default() }
+    LiveEvent { tick, kind: EventKind::Trigger, target, vel, step: tick_step(tick) as u8, ..LiveEvent::default() }
 }
 
 // MUSICAL: first draft, tune by ear (user). Pitched lanes: note attack
@@ -522,7 +526,7 @@ pub fn stream_start(ctx: &BarCtx, step: u8, tone: u8) -> u16 {
 #[inline]
 pub fn note(tick: u16, key: u8, vel: u8, gate: u16, note_id: u16) -> LiveEvent {
     let gate = gate.clamp(1, TICKS_PER_BAR - tick.min(TICKS_PER_BAR - 1));
-    LiveEvent { tick, kind: EventKind::NoteOn, key, vel, gate, note_id, ..LiveEvent::default() }
+    LiveEvent { tick, kind: EventKind::NoteOn, key, vel, gate, note_id, step: tick_step(tick) as u8, ..LiveEvent::default() }
 }
 
 #[cfg(test)]

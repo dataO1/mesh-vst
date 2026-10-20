@@ -199,6 +199,11 @@ pub struct Gui {
     analyser: Option<crate::visual::Analyser>,
     slot_env: [f32; crate::visual::SLOTS],
     last_step: u32,
+    /// The last hit's values (`UiShared::hit`), the hit count seen, and how
+    /// bright its markers still are.
+    hit: [f32; crate::ui::HIT_VALUES],
+    hit_seen: u32,
+    hit_glow: f32,
     started: std::time::Instant,
     samples: Vec<f32>,
     /// Kit generation the editor's library copy belongs to.
@@ -240,6 +245,9 @@ impl Gui {
             analyser: None,
             slot_env: [0.0; crate::visual::SLOTS],
             last_step: u32::MAX,
+            hit: [f32::NAN; crate::ui::HIT_VALUES],
+            hit_seen: 0,
+            hit_glow: 0.0,
             started: std::time::Instant::now(),
             samples: Vec::new(),
             seen_generation: 0,
@@ -747,7 +755,29 @@ impl Gui {
                 }
             }
         }
+        let (count, hit) = shared.hit();
+        if count != self.hit_seen {
+            self.hit_seen = count;
+            self.hit = hit;
+            self.hit_glow = 1.0;
+        } else {
+            self.hit_glow *= HIT_FADE;
+        }
         self.last_step = step;
+    }
+
+    /// Where the last hit puts knob `k`'s marker and how bright it is; `None`
+    /// once it faded or while the hit sits on the knob.
+    fn hit_marker(&self, k: Knob) -> Option<(f32, f32)> {
+        let i = k as usize;
+        let v = *self.hit.get(i)?;
+        if !v.is_finite() || self.hit_glow < 0.05 {
+            return None;
+        }
+        let param = k.param(&self.data.params);
+        // Gain: the knob's gain times the hit's level.
+        let pos = if k == Knob::Gain { param.preview_normalized(param.value() * v) } else { v };
+        ((pos - param.unmodulated_normalized_value()).abs() > 0.004).then_some((pos.clamp(0.0, 1.0), self.hit_glow))
     }
 
     fn visual_frame(&self, drums: bool) -> crate::visual::Frame {
@@ -865,7 +895,7 @@ impl Gui {
         // Left: the pattern knobs and settings.
         let mut left = column![small("PATTERN")].spacing(12);
         for k in [Knob::Density, Knob::Permute, Knob::Variation, Knob::Swing] {
-            left = left.push(knob(p, k));
+            left = left.push(knob(p, k, self.hit_marker(k)));
         }
         left = left.push(column![
             small("PHASE"),
@@ -886,7 +916,7 @@ impl Gui {
             ]
             .spacing(6),
         );
-        left = left.push(knob(p, Knob::Gain));
+        left = left.push(knob(p, Knob::Gain, self.hit_marker(Knob::Gain)));
         let left = container(left).width(260);
 
         // Right: the mode's knobs.
@@ -894,11 +924,11 @@ impl Gui {
         if drums {
             right = right.push(column![small("STYLE"), pick(DrumStyle::variants_list(), p.style.value(), Message::Style)].spacing(6));
             for k in [Knob::Shape, Knob::Morph] {
-                right = right.push(knob(p, k));
+                right = right.push(knob(p, k, self.hit_marker(k)));
             }
         } else {
             for k in [Knob::Shape, Knob::Morph, Knob::Spread, Knob::Slide] {
-                right = right.push(knob(p, k));
+                right = right.push(knob(p, k, self.hit_marker(k)));
             }
             right = right.push(column![small("RATE"), pick(Rate::variants_list(), p.rate.value(), Message::Rate)].spacing(6));
         }
@@ -1209,12 +1239,24 @@ fn small(s: &str) -> iced::widget::Text<'_> {
     text(s).font(DATA_FONT).size(11).color(DIM)
 }
 
-fn knob(p: &MeshParams, k: Knob) -> Element<'_, Message> {
+/// Brightness a hit marker keeps per redraw (about a third of a second).
+const HIT_FADE: f32 = 0.9;
+/// Width of the slider handle (see [`slider_style`]).
+const HANDLE_W: f32 = 10.0;
+
+/// A knob slider; `hit` (position, brightness) marks where the last hit
+/// played it.
+fn knob(p: &MeshParams, k: Knob, hit: Option<(f32, f32)>) -> Element<'_, Message> {
     let param = k.param(p);
     let v = param.unmodulated_normalized_value();
+    let s = slider(0.0..=1.0, v, move |x| Message::Knob(k, x)).on_release(Message::KnobReleased(k)).step(0.001_f32).height(18).style(|_, _| slider_style());
+    let s: Element<Message> = match hit {
+        Some((at, glow)) => iced::widget::stack![s, canvas_widget(HitMarker { at, glow }).width(Length::Fill).height(18)].into(),
+        None => s.into(),
+    };
     column![
         row![text(param.name()).font(DATA_FONT).size(13).color(DIM), Space::new().width(Length::Fill), text(param.normalized_value_to_string(v, true)).font(DATA_FONT).size(13).color(INK)],
-        slider(0.0..=1.0, v, move |x| Message::Knob(k, x)).on_release(Message::KnobReleased(k)).step(0.001_f32).height(18).style(|_, _| slider_style()),
+        s,
     ]
     .spacing(4)
     .into()
@@ -1332,6 +1374,25 @@ fn slider_style() -> slider::Style {
             border_width: 0.0,
             border_color: INK,
         },
+    }
+}
+
+/// The last hit's mark on a knob slider: a thin bar where the hit played it.
+struct HitMarker {
+    at: f32,
+    glow: f32,
+}
+
+impl canvas::Program<Message> for HitMarker {
+    type State = ();
+
+    fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        // The handle's centre travels HANDLE_W / 2 .. width − HANDLE_W / 2.
+        let x = HANDLE_W / 2.0 + self.at * (bounds.width - HANDLE_W) - 1.0;
+        let color = Color::from_rgba(0.95, 0.45, 0.32, 0.35 + 0.65 * self.glow);
+        frame.fill_rectangle(Point::new(x, 1.0), Size::new(2.0, bounds.height - 2.0), color);
+        vec![frame.into_geometry()]
     }
 }
 

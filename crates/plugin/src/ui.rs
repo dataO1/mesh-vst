@@ -37,7 +37,15 @@ pub struct UiShared {
     pub audition: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// Mod-out source per channel (index into `Source::ALL`), bass then drums.
     pub mod_map: [[AtomicU8; mesh_vst_core::modout::CHANNELS]; 2],
+    /// The last hit: the eight knob positions its bar and note played with
+    /// (`Knobs` order) and its level (velocity and accent, linear), f32 bits.
+    pub hit: [AtomicU32; HIT_VALUES],
+    /// Hits so far, so the editor sees a new one.
+    pub hit_count: AtomicU32,
 }
+
+/// Values of [`UiShared::hit`].
+pub const HIT_VALUES: usize = 9;
 
 impl Default for UiShared {
     fn default() -> Self {
@@ -58,6 +66,8 @@ impl Default for UiShared {
                 std::array::from_fn(|c| AtomicU8::new(source_index(mesh_vst_core::modout::DEFAULT_BASS[c]))),
                 std::array::from_fn(|c| AtomicU8::new(source_index(mesh_vst_core::modout::DEFAULT_DRUMS[c]))),
             ],
+            hit: std::array::from_fn(|_| AtomicU32::new(f32::NAN.to_bits())),
+            hit_count: AtomicU32::new(0),
         }
     }
 }
@@ -93,6 +103,20 @@ impl UiShared {
 
     pub fn hits(&self) -> [[u8; STEPS_PER_BAR]; ROWS] {
         std::array::from_fn(|r| std::array::from_fn(|s| self.hits[r][s].load(Ordering::Relaxed)))
+    }
+
+    /// Publish a hit (see [`Self::hit`]).
+    pub fn publish_hit(&self, values: [f32; HIT_VALUES]) {
+        for (a, v) in self.hit.iter().zip(values) {
+            a.store(v.to_bits(), Ordering::Relaxed);
+        }
+        self.hit_count.fetch_add(1, Ordering::Release);
+    }
+
+    /// The hit count and the last hit's values.
+    pub fn hit(&self) -> (u32, [f32; HIT_VALUES]) {
+        let n = self.hit_count.load(Ordering::Acquire);
+        (n, std::array::from_fn(|i| f32::from_bits(self.hit[i].load(Ordering::Relaxed))))
     }
 
     pub fn bump_kit(&self) {

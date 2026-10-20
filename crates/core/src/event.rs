@@ -76,6 +76,9 @@ pub struct LiveEvent {
     pub glide: u8,
     /// Bipolar offset to lane pan.
     pub pan: i8,
+    /// The 16th step the generator wrote the event at, before swing, permute
+    /// and speed move it: the step its per-note parameters were read at.
+    pub step: u8,
 }
 
 impl LiveEvent {

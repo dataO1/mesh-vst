@@ -17,7 +17,7 @@ use crate::form::{
     DEFAULT_FORMS, FILLER_BOOSTS, LETTER_OFFSETS, NOTE_JITTER_SHARE,
 };
 use crate::generator::bass::{self, BassGenerator, BassRules};
-use crate::generator::blocks::defaults_from_spec;
+use crate::generator::blocks::{defaults_from_spec, jittered};
 use crate::generator::drums::{self, DrumGenerator, DrumRules};
 use crate::generator::{idiom, BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use crate::harmony::{HarmonyCtx, BARS_PER_PHRASE};
@@ -88,6 +88,31 @@ pub struct RenderedBar {
     pub voices: u8,
     /// Letter index 0..=3 (A..D) of the bar's first part.
     pub letter: u8,
+    /// The parameters the bar's first part played with.
+    pub params: BarParams,
+}
+
+/// The generator parameters a bar played with, after its letter and filler
+/// moves (the editor shows them per hit).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BarParams {
+    /// Indexed like [`LaneGenerator::param_names`].
+    pub values: [f32; MAX_GEN_PARAMS],
+    jitter: [f32; MAX_GEN_PARAMS],
+    seed: u32,
+    lane: u8,
+    bar_in_phrase: u8,
+    /// Drums: the swing every off 16th plays (the knob's and the letter's).
+    pub swing: f32,
+}
+
+impl BarParams {
+    /// Parameter `index` as a generator reading it per note read it for a
+    /// note at `step` ([`LiveEvent::step`](crate::event::LiveEvent::step)).
+    pub fn at(&self, index: usize, step: u8) -> f32 {
+        let (Some(v), Some(amp)) = (self.values.get(index), self.jitter.get(index)) else { return 0.0 };
+        jittered(*v, *amp, self.seed, self.lane, self.bar_in_phrase, index, step)
+    }
 }
 
 /// A lane's render inputs.
@@ -200,16 +225,24 @@ impl PatternLane {
             harmony,
         };
         out.events.clear();
-        out.voices = self.render_part(&ctx, &pos, &mut out.events, &mut scratch.second);
+        out.params = BarParams::default();
+        out.voices = self.render_part(&ctx, &pos, &mut out.events, &mut scratch.second, Some(&mut out.params));
         out.letter = pos.letter.index();
         for p in &parts[1..n_parts] {
             scratch.part.clear();
-            self.render_part(&ctx, &p.pos, &mut scratch.part, &mut scratch.second);
+            self.render_part(&ctx, &p.pos, &mut scratch.part, &mut scratch.second, None);
             splice_range(&mut out.events, &scratch.part, p.from, p.to, &mut scratch.second);
         }
     }
 
-    fn render_part(&self, c: &PartCtx, pos: &FormPos, out: &mut BarEvents, scratch: &mut BarEvents) -> u8 {
+    fn render_part(
+        &self,
+        c: &PartCtx,
+        pos: &FormPos,
+        out: &mut BarEvents,
+        scratch: &mut BarEvents,
+        played: Option<&mut BarParams>,
+    ) -> u8 {
         // A plugin instance has no drum lane to break with: break-only
         // segments rest like rests.
         if matches!(pos.play, Play::Rest | Play::Breaks) {
@@ -220,7 +253,9 @@ impl PatternLane {
         let class = pos.letter.class();
         let mut params = self.params;
         let names = self.generator.param_names();
-        vary_letter(names, seed, c.lane, pos.letter, pos.second, &mut params);
+        // Variation widens how far letters and notes move the parameters.
+        let reach = variation_reach(names, &params);
+        vary_letter(names, seed, c.lane, pos.letter, pos.second, reach, &mut params);
         if class == SeedClass::Filler {
             boost_filler(names, &mut params);
         }
@@ -254,7 +289,7 @@ impl PatternLane {
             params: &params,
             harmony: c.harmony,
             drum_mask: &no_mask,
-            jitter: note_jitter(names),
+            jitter: note_jitter(names, reach),
             bass_onsets: 0,
             bass_phrase: [0; 4],
             drum_fill: false,
@@ -273,6 +308,9 @@ impl PatternLane {
         permute(out, self.permute, seed, c.lane, c.bar_in_phrase);
         let mut feel = Feel::of(seed, c.lane, class);
         feel.swing = (feel.swing + knob_swing).min(1.0);
+        if let Some(p) = played {
+            *p = BarParams { values: params, jitter: bar_ctx.jitter, seed, lane: c.lane, bar_in_phrase: c.bar_in_phrase, swing: feel.swing };
+        }
         feel.apply(out, seed, c.lane);
         if self.role != Role::Drums {
             let block = if self.role == Role::Bass { block_rate(seed, c.lane, class) } else { 0 };
@@ -322,14 +360,24 @@ fn splice_range(out: &mut BarEvents, part: &BarEvents, from: u16, to: u16, scrat
     }
 }
 
+// MUSICAL: first draft, tune by ear (user: Variation widens the range).
+/// Scale of the letter and note moves at Variation 0 and 1 (1 in the middle).
+const VARIATION_REACH: (f32, f32) = (0.3, 1.7);
+
+/// How far letters and notes move the parameters, from the lane's Variation.
+fn variation_reach(names: &[&str], params: &[f32; MAX_GEN_PARAMS]) -> f32 {
+    let v = names.iter().position(|n| *n == "variation").and_then(|i| params.get(i)).copied().unwrap_or(0.5);
+    VARIATION_REACH.0 + (VARIATION_REACH.1 - VARIATION_REACH.0) * v.clamp(0.0, 1.0)
+}
+
 /// Move a letter's parameters around their values ([`LETTER_OFFSETS`]).
-fn vary_letter(names: &[&str], seed: u32, lane: u8, letter: Letter, second: bool, params: &mut [f32; MAX_GEN_PARAMS]) {
+fn vary_letter(names: &[&str], seed: u32, lane: u8, letter: Letter, second: bool, reach: f32, params: &mut [f32; MAX_GEN_PARAMS]) {
     for (k, (name, _)) in LETTER_OFFSETS.iter().enumerate() {
         if let Some(i) = names.iter().position(|n| n == name) {
             if let Some(p) = params.get_mut(i) {
                 // A parameter above 0 stays above it, so a block never falls silent.
                 let floor = if *p > 0.0 { LETTER_FLOOR.min(*p) } else { 0.0 };
-                *p = (*p + letter_offset(seed, lane, letter, k, second)).clamp(floor, 1.0);
+                *p = (*p + reach * letter_offset(seed, lane, letter, k, second)).clamp(floor, 1.0);
             }
         }
     }
@@ -337,12 +385,12 @@ fn vary_letter(names: &[&str], seed: u32, lane: u8, letter: Letter, second: bool
 
 /// Per-note jitter amplitude per parameter ([`NOTE_JITTER_SHARE`] of the
 /// letter offsets).
-fn note_jitter(names: &[&str]) -> [f32; MAX_GEN_PARAMS] {
+fn note_jitter(names: &[&str], reach: f32) -> [f32; MAX_GEN_PARAMS] {
     let mut out = [0.0; MAX_GEN_PARAMS];
     for (name, max) in LETTER_OFFSETS {
         if let Some(i) = names.iter().position(|n| *n == name) {
             if let Some(j) = out.get_mut(i) {
-                *j = NOTE_JITTER_SHARE * max;
+                *j = reach * NOTE_JITTER_SHARE * max;
             }
         }
     }

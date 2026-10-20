@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use mesh_vst_core::event::{EventKind, LiveEvent};
+use mesh_vst_core::event::{flags, EventKind, LiveEvent};
 use mesh_vst_core::gc::gc_handle;
 use mesh_vst_core::kit::{mudpie_bank, share};
 use mesh_vst_core::macros::{self, Centers, Knobs, LaneSettings};
@@ -105,6 +105,9 @@ pub struct MeshVst {
     pressure: f32,
     /// The knobs' values after the seed's centres (mod out 13, 14).
     resolved: Knobs,
+    /// The knob positions and the seed's centres they play around.
+    knobs: Knobs,
+    centres: Centers,
     modout: ModOut,
     /// Position of the free clock in beats, while the transport is stopped.
     free_beat: f64,
@@ -134,6 +137,8 @@ impl Default for MeshVst {
             mod_wheel: 0.0,
             pressure: 0.0,
             resolved: Knobs::CENTERED,
+            knobs: Knobs::CENTERED,
+            centres: Knobs::CENTERED,
             modout: ModOut::new(48_000.0),
             free_beat: 0.0,
             free_running: false,
@@ -299,6 +304,30 @@ impl MeshVst {
         }
     }
 
+    /// Hand the editor the newest hit the last render fired: the knob
+    /// positions its bar and note played with, and its level. RT-safe.
+    fn publish_hit(&self, mode: Mode) {
+        if !self.editor_state.is_open() {
+            return;
+        }
+        let Some(lane) = (match mode {
+            Mode::Drums => self.drums.as_ref(),
+            Mode::Bass => self.bass.as_ref(),
+        }) else {
+            return;
+        };
+        let p = &lane.player;
+        let onset = |e: &LiveEvent| matches!(e.kind, EventKind::NoteOn | EventKind::Trigger) && e.vel > 0;
+        let (Some((_, ev)), Some((_, bar))) = (p.fired().iter().rev().find(|(_, e)| onset(e)), p.rendered()) else { return };
+        let role = p.lane().role();
+        let k = macros::hit_knobs(role, &self.centres, &self.knobs, p.lane().param_names(), &bar.params, ev);
+        let sp = p.sampler().params();
+        let accent = if ev.has(flags::ACCENT) { sp.accent_gain } else { 1.0 };
+        let level = (ev.vel.min(127) as f32 / 127.0).powf(sp.velocity_curve) * accent;
+        let a = k.as_array();
+        self.ui.publish_hit(std::array::from_fn(|i| a.get(i).copied().unwrap_or(level)));
+    }
+
     /// Re-apply the knobs and settings when they changed. RT-safe.
     fn sync(&mut self, mode: Mode) {
         let s = self.settings();
@@ -313,8 +342,10 @@ impl MeshVst {
         let pressure = s.pressure as f32 / 64.0;
         sp.punch = (sp.punch + 0.8 * pressure).min(1.5);
         sp.accent_gain *= 1.0 + 0.5 * pressure;
-        let resolved = Centers::of(role, s.lane.pattern_seed, s.lane.sound_seed).resolve(&s.lane.knobs);
-        self.resolved = resolved;
+        let centres = Centers::of(role, s.lane.pattern_seed, s.lane.sound_seed);
+        self.resolved = centres.resolve(&s.lane.knobs);
+        self.centres = centres;
+        self.knobs = s.lane.knobs;
         let Some(lane) = self.lane_mut(mode) else { return };
         lane.player.minor = s.minor;
         lane.player.phase = s.phase;
@@ -408,6 +439,7 @@ impl MeshVst {
             Some(l) => l.player.process(buf, &transport),
             None => buf.fill(StereoSample::silence()),
         }
+        self.publish_hit(mode);
         // The mod outputs, when the host gave their ports.
         if aux.outputs.len() >= modout::CHANNELS {
             let mut ports = aux.outputs.iter_mut();
