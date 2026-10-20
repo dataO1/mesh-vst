@@ -173,7 +173,7 @@ pub fn hit_knobs(role: Role, centres: &Centers, knobs: &Knobs, names: &[&str], b
                 Some(i) => {
                     let shape = crate::generator::blocks::NoteShape { gate: None, ..bar.shape_of(ev) };
                     let length = crate::generator::bass::held_length(bar.values[i], bar.at(i, shape));
-                    knob_of((length - 0.4) / 0.6, c.shape)
+                    knob_of(((length - 0.4) / 0.6 - SHAPE_FLOOR) / (1.0 - SHAPE_FLOOR), c.shape)
                 }
                 None => knobs.shape,
             },
@@ -225,6 +225,8 @@ pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettin
         lane.set_param("style", style_value(s.style.unwrap_or_else(|| seeded_style(s.pattern_seed))));
     } else {
         sp.unison = s.unison;
+        // Variation widens how far each note draws its detune and width.
+        sp.unison.range = lerp(UNISON_RANGE.0, UNISON_RANGE.1, resolved.variation);
         seeded_voice(&mut sp, s.sound_seed);
         width_and_liquid(&mut sp, resolved.spread, resolved.slide);
     }
@@ -232,6 +234,9 @@ pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettin
 }
 
 const S_VOICE: u32 = 0xC50;
+// MUSICAL: first draft, tune by ear.
+/// How far notes draw their unison detune and width at Variation 0 and 1.
+const UNISON_RANGE: (f32, f32) = (0.1, 0.8);
 const S_ACCENT: u32 = 0xC51;
 
 // MUSICAL: first draft, tune by ear. Around the designed mudpie voice.
@@ -364,6 +369,9 @@ fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSampl
     p.choke_amount = lerp(1.0, 0.2, v.shape);
 }
 
+// MUSICAL: tune by ear (user, 2026-10-20). Where the bass's Shape starts.
+const SHAPE_FLOOR: f32 = 0.3;
+
 // MUSICAL: from Mesh live's bass lane (shape, morph, spread, slide), the
 // other knobs first draft.
 fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
@@ -376,11 +384,13 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
     // Swing: how far the line leaves the beat (syncopation).
     lane.set_param("syncopation", v.swing);
     lane.set_param("slide", v.slide);
-    // Shape: stabby, accented and moving .. sustained and calm.
-    lane.set_param("length", lerp(0.4, 1.0, v.shape));
-    lane.set_param("expression", lerp(1.0, 0.15, v.shape));
-    lane.set_param("stabs", lerp(1.0, 0.0, v.shape));
-    character(p, v.shape);
+    // Shape: stabby, accented and moving .. sustained and calm. Its bottom
+    // starts where 30 % used to (user: longer stabs, fewer, some held notes).
+    let shape = lerp(SHAPE_FLOOR, 1.0, v.shape);
+    lane.set_param("length", lerp(0.4, 1.0, shape));
+    lane.set_param("expression", lerp(1.0, 0.15, shape));
+    lane.set_param("stabs", lerp(1.0, 0.0, shape));
+    character(p, shape);
     // Accent also deepens the filter sweep and the stab punch.
     p.modulation.env.to_cutoff = lerp(2400.0, 6000.0, accent);
     p.punch *= lerp(0.6, 1.4, accent);

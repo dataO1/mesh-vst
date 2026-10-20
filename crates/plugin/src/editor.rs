@@ -181,6 +181,8 @@ pub enum Message {
     UnisonVoices(i32),
     UnisonDetune(f32),
     UnisonDetuneReleased,
+    UnisonWidth(f32),
+    MonoLows,
     UnisonMode(UnisonSpread),
     Host(HostItem),
     MoveFile(PathBuf, Pool),
@@ -730,6 +732,19 @@ impl Gui {
                 setter.end_set_parameter(&params.unison_detune);
             }
             Message::UnisonDetuneReleased => self.record(),
+            Message::UnisonWidth(v) => {
+                let params = self.data.params.clone();
+                self.set_float(&params.unison_width, v);
+            }
+            Message::MonoLows => {
+                self.record();
+                let params = self.data.params.clone();
+                let on = params.mono_lows.value();
+                let setter = self.ctx.nice_context.param_setter();
+                setter.begin_set_parameter(&params.mono_lows);
+                setter.set_parameter(&params.mono_lows, !on);
+                setter.end_set_parameter(&params.mono_lows);
+            }
             Message::Host(h) => {
                 let id = match h {
                     HostItem::None => 0,
@@ -993,7 +1008,6 @@ impl Gui {
             ]
             .spacing(6),
         );
-        left = left.push(knob(p, Knob::Gain, self.hit_marker(Knob::Gain)));
         let left = container(left).width(260);
 
         // Right: the mode's knobs.
@@ -1084,6 +1098,7 @@ impl Gui {
             // Unison limits and mode (D38), bottom right.
             let voices = p.unison_voices.value();
             let detune = p.unison_detune.value();
+            let width = p.unison_width.value();
             let unison = column![
                 small("UNISON · the seed picks each note within these"),
                 row![
@@ -1096,6 +1111,12 @@ impl Gui {
                     text(format!("detune {detune:.0} ct")).font(DATA_FONT).size(12).color(INK).width(80),
                     slider(0.0..=60.0, detune, Message::UnisonDetune).on_release(Message::UnisonDetuneReleased).step(0.5_f32).height(16).style(|_, _| slider_style()),
                     pick(UnisonSpread::variants_list(), p.unison_mode.value(), Message::UnisonMode),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                row![
+                    text(format!("width {:.0} %", width * 100.0)).font(DATA_FONT).size(12).color(INK).width(80),
+                    slider(0.0..=1.0, width, Message::UnisonWidth).on_release(Message::UnisonDetuneReleased).step(0.01_f32).height(16).style(|_, _| slider_style()),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -1154,6 +1175,11 @@ impl Gui {
             row![
                 text("Bend range").font(DATA_FONT).size(13).color(DIM).width(120),
                 pick_list(bends, Some(BendItem(p.bend_range.value())), Message::Bend).font(DATA_FONT).text_size(12).style(|_, _| pick_style()),
+            ]
+            .align_y(Alignment::Center),
+            row![
+                text("Mono lows").font(DATA_FONT).size(13).color(DIM).width(120),
+                toggle(if p.mono_lows.value() { "ON · below 80 Hz" } else { "OFF" }, p.mono_lows.value(), Message::MonoLows),
             ]
             .align_y(Alignment::Center),
         ]

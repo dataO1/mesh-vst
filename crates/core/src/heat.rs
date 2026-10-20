@@ -161,6 +161,42 @@ pub const RING_MIX_MAX: f32 = 0.3;
 /// Carrier shape: sine at 0 .. near square at 1 (tanh drive).
 const RING_SQUARE_DRIVE: f32 = 8.0;
 
+/// Below this the monoizer sums the channels.
+pub const MONO_BELOW_HZ: f32 = 80.0;
+
+/// The monoizer: the side signal below [`MONO_BELOW_HZ`] goes (two one-pole
+/// highpasses on the side, 12 dB/oct), so the lows play in mono and the
+/// rest keeps its width.
+#[derive(Debug, Clone)]
+pub struct MonoLows {
+    a: f32,
+    low: [OnePole; 2],
+}
+
+impl MonoLows {
+    pub fn new(sample_rate: f32) -> Self {
+        Self { a: one_pole(MONO_BELOW_HZ, sample_rate), low: [OnePole::default(); 2] }
+    }
+
+    pub fn process(&mut self, buf: &mut [StereoSample]) {
+        for s in buf.iter_mut() {
+            let mid = 0.5 * (s.left + s.right);
+            let mut side = 0.5 * (s.left - s.right);
+            for f in self.low.iter_mut() {
+                side -= f.low([side, 0.0], self.a)[0];
+            }
+            s.left = flush(mid + side);
+            s.right = flush(mid - side);
+        }
+    }
+}
+
+impl Default for MonoLows {
+    fn default() -> Self {
+        Self::new(48_000.0)
+    }
+}
+
 /// A ring modulator on the band above [`RING_FROM_HZ`]: that band times a
 /// carrier, mixed with the dry signal; the lows pass clean.
 #[derive(Debug, Clone)]
@@ -274,6 +310,26 @@ mod tests {
             .map(|v| StereoSample { left: v, right: v })
             .collect();
         assert_ne!(heated(0.9, 0.0, &mix), heated(0.9, 1.0, &mix));
+    }
+
+    #[test]
+    fn the_monoizer_centres_the_lows_and_leaves_the_highs_wide() {
+        // Opposite-phase sines: fully side, at 40 Hz and at 2 kHz.
+        let side = |hz: f32| -> Vec<StereoSample> {
+            (0..48_000).map(|i| 0.3 * (std::f32::consts::TAU * hz * i as f32 / 48_000.0).sin()).map(|v| StereoSample { left: v, right: -v }).collect()
+        };
+        let side_level = |b: &[StereoSample]| (b[4800..].iter().map(|s| (0.5 * (s.left - s.right)).powi(2)).sum::<f32>() / (b.len() - 4800) as f32).sqrt();
+        for (hz, keeps) in [(40.0, false), (2000.0, true)] {
+            let input = side(hz);
+            let mut out = input.clone();
+            MonoLows::new(48_000.0).process(&mut out);
+            let kept = side_level(&out) / side_level(&input);
+            if keeps {
+                assert!(kept > 0.95, "{hz} Hz keeps its width: {kept}");
+            } else {
+                assert!(kept < 0.4, "{hz} Hz goes mono: {kept}");
+            }
+        }
     }
 
     #[test]

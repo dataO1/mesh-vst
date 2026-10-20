@@ -53,8 +53,16 @@ pub fn lane_lufs(
     let mut sampler = Sampler::new(sample_rate, voices);
     sampler.set_bank(bank);
     sampler.set_params(params);
+    let drums = lane.role() == Role::Drums;
     let mut player = Player::new(lane, sampler);
     player.loop_bpm = loop_bpm;
+    // The drums' post stages (release tail, ring modulator) at the centred
+    // knobs, as the plugin plays them. (Heat keeps its level by itself.)
+    let resolved = crate::macros::Centers::of(Role::Drums, settings.pattern_seed, settings.sound_seed).resolve(&Knobs::CENTERED);
+    let mut tail = crate::tail::Tail::new(sample_rate as f32);
+    let mut ring = crate::heat::RingMod::new(sample_rate as f32);
+    let (ring_hz, ring_mix, ring_shape) = crate::macros::ring(settings.sound_seed, resolved.morph);
+    let tail_mode = crate::tail::TailMode::seeded(settings.sound_seed);
     player.note_on(KEY, 1.0, 0.0);
     let total = (BARS as f64 * 4.0 * 60.0 / BPM * sample_rate as f64) as usize;
     let mut out = Vec::with_capacity(total);
@@ -64,6 +72,10 @@ pub fn lane_lufs(
         let n = BLOCK.min(total - pos);
         let beat = pos as f64 * BPM / 60.0 / sample_rate as f64;
         player.process(&mut buf[..n], &Transport { playing: true, beat, bpm: BPM });
+        if drums {
+            tail.process(&mut buf[..n], resolved.shape, tail_mode, pos as u64);
+            ring.process(&mut buf[..n], ring_hz, ring_mix, ring_shape, pos as f64 / sample_rate as f64);
+        }
         out.extend_from_slice(&buf[..n]);
         pos += n;
     }

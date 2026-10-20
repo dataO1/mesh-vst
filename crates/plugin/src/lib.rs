@@ -117,6 +117,8 @@ pub struct MeshVst {
     ring: mesh_vst_core::heat::RingMod,
     /// The drums' release tails (Shape).
     tail: mesh_vst_core::tail::Tail,
+    /// The monoizer below 80 Hz.
+    mono: mesh_vst_core::heat::MonoLows,
     /// Splice (D42): the shared table, the sidechain's hits, this lane's
     /// band levels and its label there.
     link: Option<link::Link>,
@@ -161,6 +163,7 @@ impl Default for MeshVst {
             heat: mesh_vst_core::heat::Heat::default(),
             ring: mesh_vst_core::heat::RingMod::default(),
             tail: mesh_vst_core::tail::Tail::new(48_000.0),
+            mono: mesh_vst_core::heat::MonoLows::default(),
             link: None,
             sidechain: link::SidechainOcc::default(),
             meter: link::BandMeter::new(48_000.0),
@@ -211,6 +214,9 @@ impl MeshVst {
             unison: Unison {
                 voices: p.unison_voices.value().clamp(1, 8) as u8,
                 detune_cents: p.unison_detune.value(),
+                width: p.unison_width.value(),
+                // (Variation sets it, in `macros::configure`.)
+                range: 0.0,
                 mode: match p.unison_mode.value() {
                     UnisonSpread::Linear => UnisonMode::Linear,
                     UnisonSpread::Soft => UnisonMode::Soft,
@@ -533,6 +539,9 @@ impl MeshVst {
             0.5
         };
         self.heat.process(buf, self.resolved.heat, tone);
+        if self.params.mono_lows.value() {
+            self.mono.process(buf);
+        }
         self.meter.process(buf);
         // Splice: the sidechain's level per 16th of the song.
         if self.ui.host.load(std::sync::atomic::Ordering::Relaxed) == link::SIDECHAIN {
@@ -662,6 +671,7 @@ impl Plugin for MeshVst {
         self.heat = mesh_vst_core::heat::Heat::new(config.sample_rate);
         self.ring = mesh_vst_core::heat::RingMod::new(config.sample_rate);
         self.tail = mesh_vst_core::tail::Tail::new(config.sample_rate);
+        self.mono = mesh_vst_core::heat::MonoLows::new(config.sample_rate);
         self.meter = link::BandMeter::new(config.sample_rate);
         if let Ok(mut u) = self.params.ui.lock() {
             self.ui.load_mod_map(&u);

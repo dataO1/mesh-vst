@@ -223,6 +223,12 @@ pub struct MeshParams {
     pub unison_voices: IntParam,
     #[id = "unison_detune"]
     pub unison_detune: FloatParam,
+    /// Stereo width of the unison copies (the centre each note varies around).
+    #[id = "unison_width"]
+    pub unison_width: FloatParam,
+    /// The output below 80 Hz in mono (a global setting, not seeded).
+    #[id = "mono_lows"]
+    pub mono_lows: BoolParam,
     #[id = "unison_mode"]
     pub unison_mode: EnumParam<UnisonSpread>,
     #[id = "gain"]
@@ -331,6 +337,12 @@ impl Default for MeshParams {
                 .with_unit(" ct")
                 .with_step_size(0.5)
                 .non_automatable(),
+            unison_width: FloatParam::new("Unison width", 0.6, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage())
+                .with_unit(" %")
+                .non_automatable(),
+            mono_lows: BoolParam::new("Mono lows", true).non_automatable(),
             unison_mode: EnumParam::new("Unison mode", UnisonSpread::Linear).non_automatable(),
             gain: FloatParam::new(
                 "Gain",

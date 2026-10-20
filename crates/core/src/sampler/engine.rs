@@ -542,7 +542,7 @@ impl Sampler {
         }
         // Unison copies of pitched notes (D38).
         let pitched = ev.kind == EventKind::NoteOn && layers[0].as_ref().is_some_and(|s| s.pitched);
-        let (copies, n) = if pitched { self.params.unison.copies(ev.note_id) } else { Unison::default().copies(0) };
+        let (copies, n) = if pitched { self.params.unison.copies(ev.note_id, ev.key) } else { Unison::default().copies(0, 0) };
         for copy in &copies[..n] {
             for slot in layers.iter().flatten() {
                 self.start_voice(ev, slot, group, gate_ticks, copy);

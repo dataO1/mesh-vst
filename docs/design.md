@@ -345,10 +345,12 @@ not knobs: Rate, Form, Phrase, Phase, Scale, Bend range, Gain, and the mod-out a
 meters.
 
 **Unison (Bass only, D38).** Each note plays a seeded number of detuned copies of the mudpie
-voice, with a seeded detune and stereo width per note. Some notes come out wide and detuned,
-others straight and narrow. The footer's bottom-right widget sets the limits the seed works
-within: **Voices** (maximum, 1–8) and **Detune** (maximum, in cents). These two are project
-state, not knobs.
+voice. The footer's bottom-right widget sets **Voices** (maximum, 1–8), **Detune** (cents) and
+**Width** (stereo spread of the copies, 0 = mono, as for a reese): Detune and Width are the
+centres each note draws its own value around, in a seeded range that Variation widens; higher
+notes lean more detuned and wider and vary more, low notes stay close and narrow (2026-10-20).
+These are project state, not knobs. **Mono lows** (settings, on by default, not seeded) plays
+the output below 80 Hz in mono.
 
 The unison sum keeps equal loudness: gain falls with the number of voices (1/√N for the
 uncorrelated detuned copies), so a wide note is not louder than a straight one. The **unison

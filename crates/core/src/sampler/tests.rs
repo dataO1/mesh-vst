@@ -822,7 +822,7 @@ fn unison_starts_detuned_copies_at_equal_loudness() {
     let make = |voices: u8| {
         let mut s = sampler(vec![(0, SlotDef::whole(sine(220.0, 2.0, 57)))], 64);
         s.set_params(LaneSamplerParams {
-            unison: Unison { voices, detune_cents: 30.0, mode: UnisonMode::Linear, seed: 3 },
+            unison: Unison { voices, detune_cents: 30.0, mode: UnisonMode::Linear, seed: 3, ..Unison::default() },
             ..flat_params()
         });
         s
