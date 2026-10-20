@@ -185,7 +185,7 @@ const BASS_SPAN: f32 = 12.0;
 /// Accent / slide probability at parameter value 1 (the defaults of 0.5 give
 /// the acid-style 30 % accents and 10 % slides).
 const ACCENT_PROB_MAX: f32 = 0.6;
-const SLIDE_PROB_MAX: f32 = 0.2;
+const SLIDE_PROB_MAX: f32 = 0.45;
 // MUSICAL: first draft, tune by ear (user: a seeded, moving lowpass).
 /// Where a note's lowpass sits between the lane's filter range (0 = 700 Hz,
 /// 1 = 15 kHz, see `lane::BASS_FILTER`): the seed's base, then the density,
@@ -200,8 +200,14 @@ const FILTER_ACCENT: f32 = 0.15;
 const FILTER_HALF_OCTAVES: f32 = 2.21;
 /// A slide needs the previous note at most this many steps back.
 const SLIDE_MAX_GAP_STEPS: usize = 4;
-/// Glide time byte (log scale, about 60 ms).
-const SLIDE_GLIDE: u8 = 138;
+// MUSICAL: user 2026-10-20: the Slide knob reaches about 250 ms.
+/// Glide time of a slide, seconds: Slide 0 .. 1.
+const SLIDE_SECS: (f32, f32) = (0.03, 0.25);
+
+/// The glide byte of a slide at Slide `slide`.
+fn slide_glide(slide: f32) -> u8 {
+    crate::sampler::glide_value(lerp(SLIDE_SECS.0, SLIDE_SECS.1, slide.clamp(0.0, 1.0)))
+}
 /// Ticks a slid-from note overlaps the next one so the tie finds it held.
 const TIE_OVERLAP_TICKS: u16 = 2;
 // MUSICAL: first draft, tune by ear (user: note length follows the density).
@@ -400,7 +406,7 @@ impl BassGenerator {
                     && rng.chance(step, S_SLIDE, note_param(ctx, P_SLIDE, step) * SLIDE_PROB_MAX)
                 {
                     ev.flags |= flags::TIE;
-                    ev.glide = SLIDE_GLIDE;
+                    ev.glide = slide_glide(note_param(ctx, P_SLIDE, step));
                     // Hold the previous note into this one.
                     events[n - 1].gate = p.tick - prev_tick + TIE_OVERLAP_TICKS;
                 }
@@ -409,7 +415,7 @@ impl BassGenerator {
             n += 1;
             prev = Some((p.tick, key));
         }
-        shape_notes(&mut events[..n], param(ctx, P_LENGTH), param(ctx, P_EXPRESSION), |step| rng.unit(step, S_LEGATO));
+        shape_notes(&mut events[..n], param(ctx, P_LENGTH), param(ctx, P_EXPRESSION), slide_glide(param(ctx, P_SLIDE)), |step| rng.unit(step, S_LEGATO));
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -676,7 +682,7 @@ impl LaneGenerator for BassGenerator {
                     && rng.chance(su, S_SLIDE, note_param(ctx, P_SLIDE, su) * SLIDE_PROB_MAX * persona.slide)
                 {
                     ev.flags |= flags::TIE;
-                    ev.glide = SLIDE_GLIDE;
+                    ev.glide = slide_glide(note_param(ctx, P_SLIDE, su));
                     // Hold the previous note into this one.
                     events[n - 1].gate = (s - prev_step) as u16 * TICKS_PER_STEP + TIE_OVERLAP_TICKS;
                 }
@@ -706,7 +712,7 @@ impl LaneGenerator for BassGenerator {
             |step, key| ratchet_at(step) && rng.chance(step, S_RATCHET, RATCHET_FILL_BOOST * ratchet * repeat_height(key as i32 - root_key)),
             |step| rng::weighted_pick(rng.at(step, S_FIGURE), &figure_weights).unwrap_or(0),
         );
-        shape_notes(&mut events[..n], param(ctx, P_LENGTH), param(ctx, P_EXPRESSION), |step| rng.unit(step, S_LEGATO));
+        shape_notes(&mut events[..n], param(ctx, P_LENGTH), param(ctx, P_EXPRESSION), slide_glide(param(ctx, P_SLIDE)), |step| rng.unit(step, S_LEGATO));
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -1209,7 +1215,7 @@ fn ratchets(
 /// notes towards stabs, above 0.5 holds them towards the next onset, from
 /// [`LEGATO_FROM`] a rising share of held notes ties into it and glides. Expression scales each note's
 /// filter offset (0 = none, 1 = double).
-fn shape_notes(events: &mut [LiveEvent], length: f32, expression: f32, roll: impl Fn(u8) -> f32) {
+fn shape_notes(events: &mut [LiveEvent], length: f32, expression: f32, glide: u8, roll: impl Fn(u8) -> f32) {
     if expression != 0.5 {
         for ev in events.iter_mut() {
             ev.cutoff = (ev.cutoff as f32 * expression * 2.0).round().clamp(-127.0, 127.0) as i8;
@@ -1247,7 +1253,7 @@ fn shape_notes(events: &mut [LiveEvent], length: f32, expression: f32, roll: imp
             ev.gate = gap + TIE_OVERLAP_TICKS;
             let next = &mut events[i + 1];
             next.flags |= flags::TIE;
-            next.glide = SLIDE_GLIDE;
+            next.glide = glide;
         } else if gap > ev.gate {
             ev.gate += ((gap - ev.gate) as f32 * (length - 0.5) * 2.0) as u16;
         }
@@ -1947,6 +1953,22 @@ mod tests {
         c.style_seed = style;
         c.class = class;
         c
+    }
+
+    #[test]
+    fn slide_sets_the_glide_time_up_to_a_quarter_second() {
+        let secs = |s: f32| crate::sampler::glide_secs(slide_glide(s));
+        assert!((secs(0.0) - 0.03).abs() < 0.003, "{}", secs(0.0));
+        assert!((secs(1.0) - 0.25).abs() < 0.01, "{}", secs(1.0));
+        assert!(secs(0.5) > secs(0.0) && secs(1.0) > secs(0.5));
+        // The line's slides carry it.
+        let g = generator();
+        let p = params(|p| {
+            p[P_SLIDE] = 1.0;
+            p[P_DENSITY] = 0.8;
+        });
+        let glides: Vec<u8> = (0..100).flat_map(|seed| bar(&g, seed, 0, &p, &EMPTY)).filter(|e| e.flags & flags::TIE != 0).map(|e| e.glide).collect();
+        assert!(!glides.is_empty() && glides.iter().all(|&v| crate::sampler::glide_secs(v) > 0.15), "{glides:?}");
     }
 
     #[test]

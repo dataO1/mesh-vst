@@ -322,7 +322,7 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | **Shape** | stabby to sustained: length, expression, filter bite; at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke, loop hold, decay |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style |
 | **Spread** | octave lifts, jump size | — |
-| **Slide** | slides, glide time | — |
+| **Slide** | how often notes slide (up to 45 % of eligible notes) and the glide time, 30 ms to 250 ms; also the glide of the full-Shape legato | — |
 
 A ninth, stepped and automatable parameter, **Style** (drums), picks the rhythm family
 (D39).

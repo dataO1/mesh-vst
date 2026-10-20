@@ -30,6 +30,6 @@ pub use engine::{Sampler, SamplerMeters};
 pub use interp::{sinc_tables, Interpolation, SincTables};
 pub use unison::{Unison, UnisonMode, MAX_UNISON};
 pub use params::{
-    attack_byte, attack_secs, decay_secs, glide_secs, LaneSamplerParams, ModConfig, CHOKE_FADE_SECS, CUTOFF_MAX_HZ,
+    attack_byte, attack_secs, decay_secs, glide_secs, glide_value, LaneSamplerParams, ModConfig, CHOKE_FADE_SECS, CUTOFF_MAX_HZ,
     CUTOFF_MIN_HZ, CUTOFF_OFFSET_OCTAVES, EDGE_FADE_SECS, MAX_CC_MAPS, MAX_ZONE_MODS, CcCurve, CcMap, ModEnv, ModLfo, NO_CC, SoundShape, ZoneMod, ZoneTarget,
 };

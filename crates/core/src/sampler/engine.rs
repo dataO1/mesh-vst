@@ -523,7 +523,8 @@ impl Sampler {
                 .max_by_key(|v| v.st.age)
                 .map(|v| v.st.note_id);
             if let Some(id) = newest {
-                let glide = (glide_secs(ev.glide) * self.params.expression.max(0.0).min(2.0) * self.sr) as f64;
+                // Expression moves the glide a little; the event sets its time.
+                let glide = (glide_secs(ev.glide) * self.params.expression.clamp(0.75, 1.5) * self.sr) as f64;
                 for v in self.voices.iter_mut().filter(|v| v.st.active && v.st.held && v.st.note_id == id) {
                     let rate = v.st.rate_for(ev.key, ev.cents as f64);
                     v.st.glide_to(rate, glide);

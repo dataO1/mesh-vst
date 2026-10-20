@@ -400,6 +400,15 @@ pub fn glide_secs(v: u8) -> f32 {
     }
 }
 
+/// The glide value (see [`glide_secs`]) for `secs`.
+pub fn glide_value(secs: f32) -> u8 {
+    if secs <= 0.0 {
+        return 0;
+    }
+    let t = (secs.clamp(0.001, 2.0) / 0.001).ln() / (2.0f32 / 0.001).ln();
+    (1.0 + (t * 254.0).round()).clamp(1.0, 255.0) as u8
+}
+
 fn log_map(v: u8, lo: f32, hi: f32) -> f32 {
     let t = (v.max(1) - 1) as f32 / 254.0;
     lo * (hi / lo).powf(t)
