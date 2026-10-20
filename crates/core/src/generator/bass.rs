@@ -1231,16 +1231,19 @@ fn ratchets(
 /// The Length a note reads: its own move (step and height) around the
 /// lane's, fading out towards full length so long lines stay held.
 // MUSICAL: first draft, tune by ear (user: loops are part of the seed like
-// ratchets and triplets, Variation sets how often, only long notes loop).
-/// Shortest note (ticks) that can loop: an 8th.
-const LOOP_MIN_GATE: u16 = 2 * TICKS_PER_STEP;
+// ratchets and triplets, Variation sets how often, only long notes loop;
+// 2026-10-20: the short loops sounded like a machine gun, a quarter triplet
+// at the least, a beat at the most).
+/// Shortest note (ticks) that can loop: two rounds of the shortest section
+/// after the earliest start.
+const LOOP_MIN_GATE: u16 = LOOP_STARTS[0] as u16 + 2 * LOOP_LENGTHS[0].0 as u16;
 /// Share of the long notes that loop at full Variation on the loopiest seed.
 const LOOP_SHARE_MAX: f32 = 0.7;
 /// A seed's loop tendency range.
 const PERSONA_LOOP: (f32, f32) = (0.3, 1.0);
-/// Loop lengths in ticks (a 32nd, a 16th triplet, a 16th, an 8th triplet,
-/// an 8th, a quarter triplet, a quarter) and their weights.
-const LOOP_LENGTHS: [(u8, f32); 7] = [(12, 1.0), (16, 0.6), (24, 1.5), (32, 1.0), (48, 1.2), (64, 0.5), (96, 0.4)];
+/// Loop lengths in ticks (a quarter triplet, a dotted 8th, a quarter),
+/// shortest first, and their weights.
+const LOOP_LENGTHS: [(u8, f32); 3] = [(64, 1.0), (72, 0.8), (96, 1.2)];
 /// Where the section starts after the note (ticks; at least a 32nd, so the
 /// seam can fade in from before it).
 const LOOP_STARTS: [u8; 4] = [12, 24, 48, 96];

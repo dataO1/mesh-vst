@@ -45,6 +45,10 @@ const LETTER_FLOOR: f32 = 0.05;
 const BLOCK_RATE_MAIN: [(i8, f32); 3] = [(0, 0.65), (1, 0.25), (-1, 0.1)];
 const BLOCK_RATE_FILLER: [(i8, f32); 3] = [(0, 0.35), (1, 0.45), (-1, 0.2)];
 const S_BLOCK_RATE: u32 = 0xF51;
+// MUSICAL: user, 2026-10-20: the centre speed was twice too fast. Speed
+// exponent under the Rate setting: Normal plays what half speed played,
+// Double what Normal played, Half half of that.
+const BASE_RATE: i8 = -1;
 /// RNG stream of the sound seed a filler letter derives.
 const S_SOUND: u32 = 0xF52;
 const S_PERMUTE: u32 = 0xF53;
@@ -214,7 +218,7 @@ pub struct RenderedBar {
 }
 
 // MUSICAL: first draft, tune by ear (user: very slight).
-/// Largest Morph move of a bass note, in knob values (at Variation's middle).
+/// Largest Morph move of a bass note, in knob values (at full Variation).
 pub const MORPH_NOTE: f32 = 0.04;
 /// Seed index of the Morph move, past the generator parameters.
 const MORPH_INDEX: usize = MAX_GEN_PARAMS;
@@ -275,7 +279,8 @@ pub struct PatternLane {
     pub pattern_seed: u32,
     /// Seed of the sample picks.
     pub sound_seed: u32,
-    /// Speed exponent on top of the seeded block speed (bass): −1 half, 1 double.
+    /// Rate setting on top of the seeded block speed (bass): −1 half, 1
+    /// double, of a centre at half the rendered speed ([`BASE_RATE`]).
     pub rate: i8,
     /// Mode in the key's family (0 = plain minor or major).
     pub mode: u8,
@@ -470,8 +475,9 @@ impl PatternLane {
         }
         if self.role != Role::Drums {
             let block = if self.role == Role::Bass { block_rate(seed, c.lane, class) } else { 0 };
-            apply_speed(out, self.rate + block, c.bar, scratch);
-            limit_speed(out, self.rate, self.rate + block);
+            let rate = self.rate + BASE_RATE;
+            apply_speed(out, rate + block, c.bar, scratch);
+            limit_speed(out, rate, rate + block);
             // Each note moves Morph a touch, as its shape says.
             let played = BarParams { seed, lane: c.lane, bar_in_phrase: c.bar_in_phrase, root: c.harmony.key.root, reach, ..BarParams::default() };
             // Spread is width too: notes above the home root spread out in
@@ -530,11 +536,13 @@ fn splice_range(out: &mut BarEvents, part: &BarEvents, from: u16, to: u16, scrat
     }
 }
 
-// MUSICAL: first draft, tune by ear (user: Variation widens the range of
-// the sound knobs, the right-hand ones, not of the pattern knobs).
-/// Scale of the letter and note moves of [`REACHED`] at Variation 0 and 1
-/// (1 in the middle).
-const VARIATION_REACH: (f32, f32) = (0.3, 1.7);
+// MUSICAL: tune by ear (user: Variation widens the range of the sound
+// knobs, the right-hand ones, not of the pattern knobs; 2026-10-20: far
+// too wide, little at low Variation, less than 1.7 at full).
+/// Scale of the letter and note moves of [`REACHED`] at Variation 0 and 1,
+/// and the curve between (about 0.4 in the middle).
+const VARIATION_REACH: (f32, f32) = (0.05, 1.0);
+const VARIATION_REACH_CURVE: f32 = 1.5;
 /// The parameters of the right-hand knobs (Shape, Morph, Spread, Slide):
 /// Variation sets how far they move. The pattern knobs' parameters move
 /// as the form says.
@@ -551,7 +559,7 @@ fn reach_of(name: &str, reach: f32) -> f32 {
 /// How far letters and notes move the parameters, from the lane's Variation.
 fn variation_reach(names: &[&str], params: &[f32; MAX_GEN_PARAMS]) -> f32 {
     let v = names.iter().position(|n| *n == "variation").and_then(|i| params.get(i)).copied().unwrap_or(0.5);
-    VARIATION_REACH.0 + (VARIATION_REACH.1 - VARIATION_REACH.0) * v.clamp(0.0, 1.0)
+    VARIATION_REACH.0 + (VARIATION_REACH.1 - VARIATION_REACH.0) * v.clamp(0.0, 1.0).powf(VARIATION_REACH_CURVE)
 }
 
 /// Move a letter's parameters around their values ([`LETTER_OFFSETS`]).
@@ -568,10 +576,11 @@ fn vary_letter(names: &[&str], seed: u32, lane: u8, letter: Letter, second: bool
 }
 
 /// Per-note jitter amplitude per parameter ([`NOTE_JITTER_SHARE`] of the
-/// letter offsets).
+/// letter offsets). Only the right-hand knobs' parameters ([`REACHED`])
+/// move per note (user, 2026-10-20); the pattern knobs' stay per bar.
 fn note_jitter(names: &[&str], reach: f32) -> [f32; MAX_GEN_PARAMS] {
     let mut out = [0.0; MAX_GEN_PARAMS];
-    let moves = LETTER_OFFSETS.iter().map(|(n, m)| (*n, NOTE_JITTER_SHARE * m)).chain(NOTE_ONLY_MOVES);
+    let moves = LETTER_OFFSETS.iter().map(|(n, m)| (*n, NOTE_JITTER_SHARE * m)).chain(NOTE_ONLY_MOVES).filter(|(n, _)| REACHED.contains(n));
     for (name, amp) in moves {
         if let Some(i) = names.iter().position(|n| *n == name) {
             if let Some(j) = out.get_mut(i) {
@@ -604,18 +613,19 @@ fn scale_loop(e: &mut LiveEvent, k: f32) {
     }
 }
 
-/// Play the bar at `2^exponent` speed (clamped to −2..=1). Below 1 each bar
-/// plays the next part of the rendered bar stretched over the whole bar; a
-/// note held over the part start comes back on its first tick. 1 plays the
-/// bar compressed into each half.
+/// Play the bar at `2^exponent` speed (clamped to −3..=1). Below 1 each bar
+/// plays the next part of the rendered bar stretched over the whole bar, or
+/// the busiest part when the next one is far quieter (a bar of near silence
+/// otherwise); a note held over the part start comes back on its first
+/// tick. 1 plays the bar compressed into each half.
 fn apply_speed(out: &mut BarEvents, exponent: i8, bar: u64, scratch: &mut BarEvents) {
     let half = TICKS_PER_BAR / 2;
-    match exponent.clamp(-2, 1) {
+    match exponent.clamp(-3, 1) {
         0 => return,
         e if e < 0 => {
             let k = 1u16 << (-e) as u16;
             let part = TICKS_PER_BAR / k;
-            let from = (bar % k as u64) as u16 * part;
+            let from = busy_part(out.as_slice(), k, (bar % k as u64) as u16) * part;
             scratch.clear();
             for e in out.as_slice().iter().filter(|e| {
                 e.kind == EventKind::NoteOn && e.gate > 0 && e.tick < from && e.tick + e.gate > from
@@ -658,8 +668,36 @@ fn apply_speed(out: &mut BarEvents, exponent: i8, bar: u64, scratch: &mut BarEve
     std::mem::swap(out, scratch);
 }
 
+// MUSICAL: tune by ear (2026-10-20, the half speed centre: a seed's quiet
+// half bar became a near silent bar).
+/// A part this much quieter than the busiest one gives way to it.
+const QUIET_PART: f32 = 0.35;
+/// What a stab sounds for, whatever its gate (it decays).
+const STAB_SOUNDS: u16 = crate::TICKS_PER_STEP;
+
+/// Part `next` of the bar's `k` parts, or the busiest one when `next` plays
+/// under [`QUIET_PART`] of it (sounding ticks times velocity).
+fn busy_part(events: &[LiveEvent], k: u16, next: u16) -> u16 {
+    let part = TICKS_PER_BAR / k;
+    let score = |p: u16| -> f32 {
+        let (lo, hi) = (p * part, (p + 1) * part);
+        events
+            .iter()
+            .filter(|e| e.kind == EventKind::NoteOn && e.gate > 0)
+            .map(|e| {
+                let gate = if e.has(flags::STAB) { e.gate.min(STAB_SOUNDS) } else { e.gate };
+                let covered = (e.tick + gate).min(hi).saturating_sub(e.tick.max(lo));
+                covered as f32 * e.vel as f32
+            })
+            .sum()
+    };
+    let busiest = (0..k).map(|p| (p, score(p))).fold((next, score(next)), |a, b| if b.1 > a.1 { b } else { a });
+    if score(next) < QUIET_PART * busiest.1 { busiest.0 } else { next }
+}
+
 /// The fastest notes a speed keeps (user, 2026-10-20): double speed stays
-/// at 16ths and half speed at 8ths, instead of everything scaled. A note
+/// at 16ths and half speed at 8ths, instead of everything scaled (`rate`
+/// and `exponent` with [`BASE_RATE`] in them: the Normal setting is half). A note
 /// closer than that to the previous one goes; the previous one holds over it.
 fn limit_speed(out: &mut BarEvents, rate: i8, exponent: i8) {
     // The Rate setting decides; a block at double speed stays at 16ths too.
@@ -708,8 +746,8 @@ mod tests {
     }
 
     #[test]
-    fn double_speed_stays_at_16ths_and_half_speed_at_8ths() {
-        for (rate, min) in [(1i8, TICKS_PER_BAR / 16), (-1, TICKS_PER_BAR / 8)] {
+    fn normal_and_half_speed_stay_at_8ths() {
+        for (rate, min) in [(0i8, TICKS_PER_BAR / 8), (-1, TICKS_PER_BAR / 8)] {
             let mut fastest = u16::MAX;
             for seed in 0..40 {
                 let mut lane = PatternLane::bass(seed, seed);
@@ -730,6 +768,9 @@ mod tests {
             let lane = |amount: f32| {
                 let mut l = if drums { PatternLane::drums(DrumLayout::standard(), 7, 3) } else { PatternLane::bass(7, 3) };
                 l.permute = amount;
+                // The bar at its rendered speed: half speed's 8th limit
+                // thins moved notes differently.
+                l.rate = 1;
                 l
             };
             let plain = render_all(&lane(0.0), 8);

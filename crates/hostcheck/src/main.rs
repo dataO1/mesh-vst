@@ -452,6 +452,15 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
         let db = 20.0 * (rms(&diff) / rms(&lo.samples).max(1e-9)).log10();
         rep.check(&format!("{knob} changes the {mode}"), db > -20.0, format!("difference {db:.1} dB below the {mode}"));
     }
+    // Squash keeps the lane's loudness from mild to strong.
+    for mode in ["drums", "bass"] {
+        let mut l = Vec::new();
+        for amount in [0.0, 0.3, 1.0] {
+            l.push(render(entry, &Render { mode, bars: 8.0, params: vec![("Squash".into(), amount)], ..base.clone() })?.lufs());
+        }
+        let spread = l.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - l.iter().cloned().fold(f64::INFINITY, f64::min);
+        rep.check(&format!("Squash keeps the {mode} loudness"), spread <= 1.5, format!("{:.1}, {:.1}, {:.1} LUFS at 0, 30, 100 %", l[0], l[1], l[2]));
+    }
     // The three release tails at full Shape sound apart.
     let mut tails = Vec::new();
     for i in 0..3 {

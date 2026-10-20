@@ -137,7 +137,10 @@ drive external effects.
   family each, with the filler boosts (more variation and spread). Variation sets how many beats
   take a cell. The repeating bars of a phrase pick alike, the variation bar re-draws.
   Rate: double speed plays no faster than 16ths and half speed no faster than 8ths (2026-10-20);
-  a note closer to the one before goes, and that one holds over it.
+  a note closer to the one before goes, and that one holds over it. Rate's centre is half the
+  rendered speed (2026-10-20): Normal plays what half speed did (8ths at the fastest), Double
+  what Normal did, Half half of that again. A slowed bar plays its part of the rendered bar,
+  or the busiest part when that one is far quieter (stabs count a 16th).
 - **D42** **Splice** (2026-10-20): an instance follows a host, another mesh instance in the
   project or the sidechain input, picked in the SPLICE list (right column). The Splice knob runs
   from stacked (0) through off (0.5) to the host's gaps (1). The host shares, by song bar, what it
@@ -149,20 +152,22 @@ drive external effects.
   each plugin; nothing but the bars and band levels crosses, and each follower renders from
   data published a bar ahead, so bounces repeat. The sidechain stands for the next bars with its
   last bar's levels per 16th. Where both lanes are loud in a band, the field draws amber.
-- **D43** **Mudpie loops** (2026-10-20): a long note (an 8th or more) can loop a section of its
+- **D43** **Mudpie loops** (2026-10-20): a long note (at least 140 ticks, a dotted quarter and a bit) can loop a section of its
   sample, as a sampler's loop mode does: it plays into the section, then repeats it with a
   crossfade at the seam (a 32nd, about 43 ms at 174 bpm) or plays it back and forth (about a
   third of the loops). Part of the seed like ratchets and triplets, beside them in the same bar:
   the seed's loop tendency times Variation sets how many long notes loop (none at Variation 0);
-  the section starts a 32nd to a quarter into the note and lasts a 32nd to a quarter, straight
-  or in triplets, at least two rounds of it fitting the note. Drawn after density and length
+  the section starts a 32nd to a quarter into the note and lasts a quarter triplet, a dotted
+  8th or a quarter (shorter ones sounded like a machine gun, 2026-10-20), at least two rounds of it fitting the note. Drawn after density and length
   shaped the notes, before Splice thins the bar; Rate scales the section with the note.
 - **D44** **Squash** (2026-10-20): the lane's last stage, after Heat and Mono lows, a six-band
   compressor pushing each band down above one threshold and up below another (OTT style). The
   knob (left column, OUTPUT) runs from mild (gentle ratios, high thresholds, fast times) to
   strong: on the mudpie hard up and down compression with a smiley balance, as Mesh live's bass
-  multiband; on the drums much lighter, the attacks kept at a 128th for the punch. The output
-  keeps the input's loudness (the K-weighted level match Heat uses). Not seeded.
+  multiband, the mids kept up (2026-10-20); on the drums much lighter, the attacks kept at a
+  128th for the punch. The output keeps the input's loudness (Heat's level match, but without
+  K-weighting's extra weight on the highs, so the lifted top does not turn the body down,
+  2026-10-20). Not seeded.
 - **D45** **Musical times follow the tempo** (2026-10-20): envelopes, decays, glides, the choke,
   the LFO, pitch envelopes, mod-out envelopes, release tails, Squash's attack and release and the
   loop crossfade are note values written for 174 bpm (`tempo::note`) and stretch with the host
@@ -350,7 +355,7 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | **Permute** | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
 | **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell, how many long notes loop (D43); scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
 | **Groove** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays); the lane's own times in triplets, straight or dotted (D45) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts; the lane's own times in triplets, straight or dotted (D45) |
-| **Shape** | stabby to sustained: length, expression, filter bite; at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke, loop hold, decay (it shortens every voice, the kick too, and lengthens none); a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to an 8th, the hats and cymbals half as long and a little weaker, the kick a faint 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
+| **Shape** | stabby to sustained: length, expression, filter bite; at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke (at full Shape a retrigger fades over about 400 ms), loop hold, decay (it shortens every voice, the kick too, and lengthens none); from the middle up the attack softens (to about 3 ms); a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to a dotted 8th, the hats and cymbals half as long and a little weaker, the kick a faint dotted 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style; a ring modulator above 400 Hz (the lows stay clean) fades in from a fifth to at most 30 %, its seeded carrier rising an octave and turning from sine to square |
 | **Spread** | width: octave lifts, jump size, notes above the home root spread in stereo (the sub stays centred), deeper filter LFO and envelope | — |
 | **Slide** | how often notes slide (up to 45 % of eligible notes) and the glide time, 30 ms to 250 ms; also the glide of the full-Shape legato; liquid: up to 35 % more held notes tie, filter glide 4 to 160 ms, vibrato on held notes | — |
@@ -368,7 +373,9 @@ meters.
 **Unison (Bass only, D38).** Each note plays a seeded number of detuned copies of the mudpie
 voice. The footer's bottom-right widget sets **Voices** (maximum, 1–8), **Detune** (cents) and
 **Width** (stereo spread of the copies, 0 = mono, as for a reese): Detune and Width are the
-centres each note draws its own value around, in a seeded range that Variation widens; higher
+centres each note draws its own value around, in a seeded range that Variation widens (the
+per-note moves of Shape, Morph, Spread and Slide scale 0.05 to 1 over Variation, on a curve,
+about 0.4 in the middle; the pattern knobs do not move per note, 2026-10-20); higher
 notes lean more detuned and wider and vary more, low notes stay close and narrow (2026-10-20).
 These are project state, not knobs. **Mono lows** (settings, on by default, not seeded) plays
 the output below 80 Hz in mono.

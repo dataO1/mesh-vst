@@ -51,11 +51,11 @@ impl TailMode {
 const S_TAIL: u32 = 0xC53;
 
 // MUSICAL: first draft, tune by ear (user: tails from Shape 50 % up, at
-// most an 8th on the snare, the hats shorter and a little weaker, the kick
+// most a dotted 8th on the snare, the hats shorter and a little weaker, the kick
 // very little and short; the shaper brings the attack up a little at low
-// Shape and the tail out above).
+// Shape and the tail out above; user, 2026-10-20: the 8th too short).
 /// Tail time at the start of the range and at full Shape (the snare's).
-const TAIL_SECS: (f32, f32) = (note(1.0 / 64.0), note(1.0 / 8.0));
+const TAIL_SECS: (f32, f32) = (note(1.0 / 64.0), note(3.0 / 16.0));
 /// Tail groups: the kick, the snare, the hats, cymbals and percussion.
 pub const GROUPS: usize = 3;
 /// Each group's tail level and time against the snare's.

@@ -49,7 +49,8 @@ struct Voicing {
 
 // MUSICAL: first draft, tune by ear (user: mild = gentle ratios, easy
 // thresholds, fast times; strong = OTT-like on the mudpie with a smiley
-// balance, as Mesh live's bass multiband; the drums much less aggressive).
+// balance, as Mesh live's bass multiband; the drums much less aggressive;
+// user, 2026-10-20: the mids cut too much).
 // Bands: sub | low | mids | high mids | highs | air.
 const MUDPIE: Voicing = Voicing {
     splits: [90.0, 250.0, 2000.0, 5000.0, 10_000.0],
@@ -68,10 +69,10 @@ const MUDPIE: Voicing = Voicing {
         bands: [
             band((-22.0, 4.0), (-80.0, 1.0), note(1.0 / 64.0), note(1.0 / 8.0), -1.5),
             band((-27.0, 6.0), (-44.0, 2.5), note(1.0 / 128.0), note(1.0 / 16.0), -1.0),
-            band((-36.0, 10.0), (-46.0, 5.0), note(1.0 / 256.0), note(1.0 / 16.0), 1.5),
-            band((-33.0, 6.0), (-42.0, 6.0), note(1.0 / 512.0), note(3.0 / 64.0), 5.0),
-            band((-33.0, 6.0), (-44.0, 6.0), note(1.0 / 1024.0), note(1.0 / 32.0), 5.0),
-            band((-33.0, 6.0), (-44.0, 6.0), note(1.0 / 1024.0), note(1.0 / 32.0), 4.0),
+            band((-30.0, 4.0), (-44.0, 3.0), note(1.0 / 256.0), note(1.0 / 16.0), 2.5),
+            band((-33.0, 6.0), (-42.0, 6.0), note(1.0 / 512.0), note(3.0 / 64.0), 3.5),
+            band((-33.0, 6.0), (-44.0, 6.0), note(1.0 / 1024.0), note(1.0 / 32.0), 3.5),
+            band((-33.0, 6.0), (-44.0, 6.0), note(1.0 / 1024.0), note(1.0 / 32.0), 3.0),
         ],
         up_max: 14.0,
     },
@@ -95,10 +96,10 @@ const DRUMS: Voicing = Voicing {
         bands: [
             band((-22.0, 2.5), (-80.0, 1.0), note(1.0 / 128.0), note(1.0 / 16.0), 1.0),
             band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 16.0), 0.0),
-            band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 16.0), -1.0),
-            band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 16.0), 1.5),
-            band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 32.0), 2.0),
+            band((-22.0, 2.2), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 16.0), 0.5),
+            band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 16.0), 1.0),
             band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 32.0), 1.5),
+            band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 32.0), 1.0),
         ],
         up_max: 8.0,
     },
@@ -110,6 +111,11 @@ const UP_GATE_DB: f32 = -65.0;
 const GAIN_SMOOTH_SECS: f32 = 0.001;
 /// The level match's make-up range (a hard squash takes more than 6 dB).
 const LEVEL_RANGE: (f32, f32) = (0.25, 4.0);
+// MUSICAL: tune by ear (user, 2026-10-20: matched with K-weighting's highs
+// the lifted top pulled the body down, much quieter than before).
+/// The highs' extra weight in the level match: none, so the top the
+/// squash lifts does not turn the lows and mids down.
+const LEVEL_HIGH: f32 = 0.0;
 const FLOOR: f32 = 1e-6;
 
 #[inline]
@@ -226,7 +232,7 @@ impl Squash {
             bands: [BandState::default(); BANDS],
             up_max: 0.0,
             smooth: coeff(GAIN_SMOOTH_SECS, sr),
-            level: LevelMatch::new(sr, LEVEL_RANGE),
+            level: LevelMatch::new(sr, LEVEL_RANGE, LEVEL_HIGH),
         }
     }
 

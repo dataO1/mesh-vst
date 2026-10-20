@@ -355,9 +355,19 @@ fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSampl
     p.sustain = lerp(0.35, 1.0, v.shape);
     p.decay = lerp(note(3.0 / 32.0), note(1.0 / 2.0), v.shape);
     p.release = lerp(note(1.0 / 64.0), note(3.0 / 32.0), v.shape);
-    // The choke amount follows Shape: tight cuts, open lets the hats ring (D27).
-    p.choke_amount = lerp(1.0, 0.2, v.shape);
+    // Above its middle the hits soften: a slower attack.
+    p.attack = lerp(DRUM_ATTACK.0, DRUM_ATTACK.1, ((v.shape - 0.5) / 0.5).max(0.0));
+    // The choke amount follows Shape: tight cuts, open lets the hats ring
+    // (D27). A retrigger's fade is the hits' audible release.
+    p.choke_amount = lerp(1.0, DRUM_CHOKE_OPEN, v.shape);
 }
+
+// MUSICAL: tune by ear (user, 2026-10-20: full Shape too short, its attack
+// can be a little longer). The attack up to Shape's middle (technical, it
+// only declicks) and at full Shape; the choke amount at full Shape (0.05 =
+// a fade of about 400 ms, it was 0.2, about 230 ms).
+const DRUM_ATTACK: (f32, f32) = (0.0005, note(1.0 / 512.0));
+const DRUM_CHOKE_OPEN: f32 = 0.05;
 
 // MUSICAL: tune by ear (user, 2026-10-20). Where the bass's Shape starts.
 const SHAPE_FLOOR: f32 = 0.3;
@@ -573,20 +583,9 @@ mod style_tests {
                 lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
                 let notes: Vec<_> = out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn).copied().collect();
                 let hits: Vec<Knobs> = notes.iter().map(|e| hit_knobs(Role::Bass, &centres, &knobs, lane.param_names(), &out.params, e)).collect();
-                // Notes on the same kind of step read the same density: a
-                // pattern, not chance.
-                let class = |s: u8| match s % 8 {
-                    0 => 0,
-                    4 => 1,
-                    2 | 6 => 2,
-                    _ => 3,
-                };
-                for (a, ha) in notes.iter().zip(&hits) {
-                    for (b, hb) in notes.iter().zip(&hits) {
-                        if class(a.step) == class(b.step) {
-                            assert!((ha.density - hb.density).abs() < 1e-5, "steps {} and {}", a.step, b.step);
-                        }
-                    }
+                // The pattern knobs do not move per note: one value a bar.
+                for w in hits.windows(2) {
+                    assert!((w[0].density - w[1].density).abs() < 1e-5 && (w[0].variation - w[1].variation).abs() < 1e-5, "{w:?}");
                 }
                 for h in &hits {
                     assert!(h.as_array().iter().all(|v| (0.0..=1.0).contains(v)), "{h:?}");
@@ -600,8 +599,8 @@ mod style_tests {
                         moved += 1;
                     }
                 }
-                // Notes on different kinds of step read density on their own.
-                varied_bars += hits.windows(2).any(|w| (w[0].density - w[1].density).abs() > 1e-3) as u32;
+                // The right-hand knobs do.
+                varied_bars += hits.windows(2).any(|w| (w[0].spread - w[1].spread).abs() > 1e-3) as u32;
             }
         }
         assert!(on_knob > 0 && moved > 0, "A bars sit on the knob ({on_knob}), the other letters move ({moved})");

@@ -40,6 +40,8 @@ const TILT_DB: f32 = 12.0;
 /// make-up range.
 const LEVEL_SECS: f32 = 0.5;
 const LEVEL_RANGE: (f32, f32) = (0.5, 2.0);
+/// The highs' extra weight in the level match (+4 dB, as K-weighting).
+pub(crate) const K_HIGH: f32 = 0.58;
 /// DC blocker cutoff.
 const DC_HZ: f32 = 10.0;
 
@@ -60,7 +62,7 @@ impl OnePole {
 }
 
 /// A rough loudness weighting per channel: a 150 Hz highpass plus a
-/// 1.5 kHz highpass at +4 dB (K-weighting's two stages, first order).
+/// 1.5 kHz highpass at a share (K-weighting's two stages, first order).
 #[derive(Debug, Clone, Copy, Default)]
 struct Weigh {
     low: OnePole,
@@ -69,10 +71,10 @@ struct Weigh {
 
 impl Weigh {
     #[inline]
-    fn weigh(&mut self, x: [f32; 2], a: (f32, f32)) -> [f32; 2] {
+    fn weigh(&mut self, x: [f32; 2], a: (f32, f32), high: f32) -> [f32; 2] {
         let l = self.low.low(x, a.0);
         let m = self.mid.low(x, a.1);
-        [0, 1].map(|c| (x[c] - l[c]) + 0.58 * (x[c] - m[c]))
+        [0, 1].map(|c| (x[c] - l[c]) + high * (x[c] - m[c]))
     }
 }
 
@@ -91,13 +93,17 @@ pub(crate) struct LevelMatch {
     wa: (f32, f32),
     /// Least and most gain.
     range: (f32, f32),
+    /// The highs' extra weight.
+    high: f32,
 }
 
 impl LevelMatch {
-    /// A match that makes up within `range` (linear gain).
-    pub(crate) fn new(sample_rate: f32, range: (f32, f32)) -> Self {
+    /// A match that makes up within `range` (linear gain), the highs above
+    /// 1.5 kHz weighted `1 + high` (K-weighting's +4 dB: [`K_HIGH`]).
+    pub(crate) fn new(sample_rate: f32, range: (f32, f32), high: f32) -> Self {
         Self {
             range,
+            high,
             ms_in: 0.0,
             ms_out: 0.0,
             level_a: one_pole(1.0 / (std::f32::consts::TAU * LEVEL_SECS), sample_rate),
@@ -110,8 +116,8 @@ impl LevelMatch {
     /// The gain for output frame `y` of input frame `x`.
     #[inline]
     pub(crate) fn gain(&mut self, x: [f32; 2], y: [f32; 2]) -> f32 {
-        let wi = self.weigh_in.weigh(x, self.wa);
-        let wo = self.weigh_out.weigh(y, self.wa);
+        let wi = self.weigh_in.weigh(x, self.wa, self.high);
+        let wo = self.weigh_out.weigh(y, self.wa, self.high);
         self.ms_in = flush(self.ms_in + self.level_a * (0.5 * (wi[0] * wi[0] + wi[1] * wi[1]) - self.ms_in));
         self.ms_out = flush(self.ms_out + self.level_a * (0.5 * (wo[0] * wo[0] + wo[1] * wo[1]) - self.ms_out));
         if self.ms_out > 1e-9 { (self.ms_in / self.ms_out).sqrt().clamp(self.range.0, self.range.1) } else { 1.0 }
@@ -152,7 +158,7 @@ impl Heat {
             post: OnePole::default(),
             tilt_a: one_pole(TILT_HZ, sample_rate),
             dc_a: one_pole(DC_HZ, sample_rate),
-            level: LevelMatch::new(sample_rate, LEVEL_RANGE),
+            level: LevelMatch::new(sample_rate, LEVEL_RANGE, K_HIGH),
         }
     }
 
