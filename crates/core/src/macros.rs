@@ -355,18 +355,17 @@ fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSampl
     p.sustain = lerp(0.35, 1.0, v.shape);
     p.decay = lerp(note(3.0 / 32.0), note(1.0 / 2.0), v.shape);
     p.release = lerp(note(1.0 / 64.0), note(3.0 / 32.0), v.shape);
-    // Above its middle the hits soften: a slower attack.
-    p.attack = lerp(DRUM_ATTACK.0, DRUM_ATTACK.1, ((v.shape - 0.5) / 0.5).max(0.0));
+    // The hits start at once, whatever Shape: the transient matters most
+    // (user, 2026-10-20).
+    p.attack = 0.0;
     // The choke amount follows Shape: tight cuts, open lets the hats ring
     // (D27). A retrigger's fade is the hits' audible release.
     p.choke_amount = lerp(1.0, DRUM_CHOKE_OPEN, v.shape);
 }
 
-// MUSICAL: tune by ear (user, 2026-10-20: full Shape too short, its attack
-// can be a little longer). The attack up to Shape's middle (technical, it
-// only declicks) and at full Shape; the choke amount at full Shape (0.05 =
-// a fade of about 400 ms, it was 0.2, about 230 ms).
-const DRUM_ATTACK: (f32, f32) = (0.0005, note(1.0 / 512.0));
+// MUSICAL: tune by ear (user, 2026-10-20: full Shape too short). The choke
+// amount at full Shape (0.05 = a fade of about 400 ms, it was 0.2, about
+// 230 ms).
 const DRUM_CHOKE_OPEN: f32 = 0.05;
 
 // MUSICAL: tune by ear (user, 2026-10-20). Where the bass's Shape starts.
