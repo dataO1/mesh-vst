@@ -190,6 +190,52 @@ impl std::fmt::Display for OpChain {
     }
 }
 
+// MUSICAL: tune by ear (user, 2026-10-21: the seed picks `?` by where the
+// segment sits: answers at period ends, mutations on repeats, diminution
+// before a section change). The weights of each place.
+const SEEDED_BEFORE_CHANGE: [(Op, f32); 5] = [(Op::DoubleTime, 3.0), (Op::HalfTime, 1.0), (Op::Dotted, 1.0), (Op::Triplets, 1.0), (Op::Thin, 1.0)];
+const SEEDED_PERIOD_END: [(Op, f32); 5] = [(Op::Answer, 3.0), (Op::Inversion, 2.0), (Op::Question, 1.0), (Op::Mutate, 1.0), (Op::Retrograde, 1.0)];
+const SEEDED_REPEAT: [(Op, f32); 5] = [(Op::Mutate, 3.0), (Op::Retrograde, 1.0), (Op::Rotation, 1.0), (Op::Syncopate, 1.0), (Op::Legato, 1.0)];
+const SEEDED_ANY: [(Op, f32); 11] = [
+    (Op::Retrograde, 1.0),
+    (Op::Inversion, 1.0),
+    (Op::Sequence, 1.0),
+    (Op::RhythmRetrograde, 1.0),
+    (Op::Rotation, 1.0),
+    (Op::Syncopate, 1.0),
+    (Op::Legato, 1.0),
+    (Op::Staccato, 1.0),
+    (Op::Mutate, 2.0),
+    (Op::Dotted, 1.0),
+    (Op::Passing, 1.0),
+];
+
+/// Where a segment sits in its form, for [`seeded`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Place {
+    pub period_end: bool,
+    pub repeat: bool,
+    pub before_change: bool,
+}
+
+/// The operator `?` stands for, from a seed and the segment's place.
+pub fn seeded(h: u64, place: Place) -> Op {
+    let table: &[(Op, f32)] = if place.before_change {
+        &SEEDED_BEFORE_CHANGE
+    } else if place.period_end {
+        &SEEDED_PERIOD_END
+    } else if place.repeat {
+        &SEEDED_REPEAT
+    } else {
+        &SEEDED_ANY
+    };
+    let mut weights = [0.0f32; 11];
+    for (w, (_, x)) in weights.iter_mut().zip(table) {
+        *w = *x;
+    }
+    table[rng::weighted_pick(h, &weights[..table.len()]).unwrap_or(0)].0
+}
+
 /// Bars a span holds at most: a longer segment repeats its first
 /// [`MAX_SPAN_BARS`] transformed.
 pub const MAX_SPAN_BARS: usize = 16;
@@ -849,6 +895,22 @@ mod tests {
             apply(&chain, &mut v, &OpCtx { drums: true, ..ctx(1.0) });
             assert_eq!(v, hits, "{op:?}");
         }
+    }
+
+    #[test]
+    fn the_seeded_operator_follows_the_place() {
+        let most = |place: Place| {
+            let mut count = std::collections::BTreeMap::new();
+            for i in 0..400u64 {
+                let op = seeded(rng::derive(i, 3), place);
+                assert_ne!(op, Op::Seeded);
+                *count.entry(op.as_char()).or_insert(0) += 1;
+            }
+            count.into_iter().max_by_key(|(_, n)| *n).unwrap().0
+        };
+        assert_eq!(most(Place { period_end: true, ..Place::default() }), 'a', "answers end periods");
+        assert_eq!(most(Place { repeat: true, ..Place::default() }), 'm', "repeats mutate");
+        assert_eq!(most(Place { before_change: true, period_end: true, ..Place::default() }), 'x', "double time before a change");
     }
 
     #[test]

@@ -605,10 +605,18 @@ impl PatternLane {
 }
 
 impl PatternLane {
-    /// The operators segment `pos` plays (D47): the seeded `?` resolved.
-    fn resolve_ops(&self, pos: &FormPos, _form_seed: u32, _lane: u8) -> OpChain {
+    /// The operators segment `pos` plays (D47): the seeded `?` resolved by
+    /// the form's seed (a follower's are its host's).
+    fn resolve_ops(&self, pos: &FormPos, form_seed: u32, lane: u8) -> OpChain {
         let mut chain = OpChain::default();
-        for op in pos.ops.iter().filter(|o| *o != Op::Seeded) {
+        let place = ops::Place { period_end: pos.period_end, repeat: pos.repeat, before_change: pos.before_change };
+        for (k, op) in pos.ops.iter().enumerate() {
+            let op = if op == Op::Seeded {
+                let h = rng::hash(form_seed, lane, pos.segment, k as u8, S_SEEDED_OP ^ pos.second as u32);
+                ops::seeded(h, place)
+            } else {
+                op
+            };
             chain.push(op);
         }
         chain
@@ -775,6 +783,7 @@ struct PartCtx {
 // variation). How far the operators go at Variation 0.
 const OP_AMOUNT_FLOOR: f32 = 0.15;
 const S_SPAN: u32 = 0xF60;
+const S_SEEDED_OP: u32 = 0xF61;
 
 /// Speed step of a bass block, seeded by its letter seed.
 fn block_rate(seed: u32, lane: u8, class: SeedClass) -> i8 {
@@ -1250,6 +1259,30 @@ mod tests {
                 assert_eq!(a, v, "the same notes");
                 assert_ne!(a_order, v_order, "in another order");
             }
+        }
+    }
+
+    #[test]
+    fn variation_scales_how_far_a_variant_moves() {
+        // Notes of a variant bar that are not where A's bar has them.
+        let moved = |variation: f32, form: &str| {
+            let mut total = 0;
+            for seed in 1..=6u32 {
+                let mut lane = PatternLane::bass(seed, seed);
+                lane.rate = 1;
+                lane.set_param("variation", variation);
+                lane.set_form(Form::parse(form).unwrap());
+                let bars = render_all(&lane, 8);
+                for b in 0..4 {
+                    let plain: std::collections::BTreeSet<(u16, u8)> = bars[b].iter().filter(|e| e.kind == EventKind::NoteOn).map(|e| (e.tick, e.key)).collect();
+                    total += bars[b + 4].iter().filter(|e| e.kind == EventKind::NoteOn && !plain.contains(&(e.tick, e.key))).count();
+                }
+            }
+            total
+        };
+        for form in ["A4 Am4 A8", "A4 Ar4 A8", "A4 Ad4 A8", "A4 A?4 A8"] {
+            let (little, full) = (moved(0.0, form), moved(1.0, form));
+            assert!(little > 0 && full > little, "{form}: {little} at Variation 0, {full} at 1");
         }
     }
 
