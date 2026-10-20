@@ -303,7 +303,8 @@ impl Player {
         let h = self.host.iter().find(|h| h.song_bar == song_bar && h.flags & splice::FORMED != 0)?;
         let into = h.form_offset as f64 + (t - song_bar as f64 * TICKS_PER_BAR as f64);
         let host_bar = h.form_bar as u64 + (into / TICKS_PER_BAR as f64 + 1e-6).floor() as u64;
-        Some(FormFollow { form: h.form, seed: h.form_seed, lane: h.form_lane, bar: host_bar })
+        let relation = ((2.0 * self.splice.clamp(0.0, 1.0) - 1.0) * 100.0).round() as i8;
+        Some(FormFollow { form: h.form, seed: h.form_seed, lane: h.form_lane, bar: host_bar, relation })
     }
 
     /// Set what Splice gives pattern bar `bar` for the next render: the
@@ -317,7 +318,7 @@ impl Player {
             stamp = line.keys.iter().chain(&line.lens).fold(stamp.rotate_left(7) ^ line.relation.to_bits() as u64, |h, v| h.rotate_left(3) ^ *v as u64);
         }
         if let Some(f) = follow {
-            stamp = stamp.rotate_left(11) ^ f.bar ^ ((f.form as u64) << 56) ^ ((f.seed as u64) << 24);
+            stamp = stamp.rotate_left(11) ^ f.bar ^ ((f.form as u64) << 56) ^ ((f.seed as u64) << 24) ^ ((f.relation as u8 as u64) << 48);
         }
         self.lane.focus = focus;
         self.lane.host_line = line;

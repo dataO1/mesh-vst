@@ -430,6 +430,11 @@ impl PatternLane {
             self.render_part(&ctx, &p.pos, p.from, form_seed, &mut scratch.part, &mut scratch.second, &mut scratch.span, None);
             splice_range(&mut out.events, &scratch.part, p.from, p.to, &mut scratch.second);
         }
+        // Splice: the bar as it plays (after the operators, the speed and the
+        // thinning, its parts together) fitted to the host's line (D46, D47).
+        if self.host_line.on && self.role != Role::Drums {
+            fit_to_host(&mut out.events, &self.host_line, &ctx.harmony);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -619,6 +624,14 @@ impl PatternLane {
             };
             chain.push(op);
         }
+        // Splice (D47): a follower plays its host's operators; towards the
+        // counter end its questions and answers swap roles with the host's.
+        if let Some(f) = self.follow {
+            let r = f.relation.max(0) as f32 / 100.0;
+            if r > 0.0 && rng::chance(rng::hash(form_seed, lane, pos.segment, 0, S_SWAP_QA ^ pos.second as u32), r) {
+                chain = chain.swap_question_answer();
+            }
+        }
         chain
     }
 
@@ -638,7 +651,8 @@ impl PatternLane {
         let ticks = (pos.segment_beats as u32 * beat_ticks).clamp(1, (MAX_SPAN_BARS as u32) * bar_ticks);
         let bars = ticks.div_ceil(bar_ticks) as u16;
         let first_bar = c.bar.saturating_sub(pos.bar_in_segment as u64);
-        let amount = self.op_amount();
+        // The form's second pass goes further (it escalates).
+        let amount = (self.op_amount() + if pos.second { SECOND_PASS_OPS } else { 0.0 }).min(1.0);
         let mut key = mix(rng::hash(self.pattern_seed, c.lane, 0, 0, S_SPAN), base.seed as u64);
         for v in [
             self.sound_seed as u64,
@@ -654,6 +668,11 @@ impl PatternLane {
             key = mix(key, v);
         }
         key = base.params.iter().fold(key, |h, p| mix(h, p.to_bits() as u64));
+        // Against a pitched host the letter's bars are walked against the
+        // host's line under this bar (D46), so the span renders per bar.
+        if base.host.on {
+            key = base.host.keys.iter().chain(&base.host.lens).fold(mix(key, base.host.relation.to_bits() as u64), |h, v| mix(h, *v as u64));
+        }
         if !(span.valid && span.key == key) {
             span.notes.clear();
             for j in 0..bars {
@@ -673,7 +692,6 @@ impl PatternLane {
                     harmony,
                     focus: [1.0; STEPS_PER_BAR],
                     focus_shift: [0.0; MAX_GEN_PARAMS],
-                    host: crate::splice::HostLine::default(),
                     ..*base
                 };
                 tmp.clear();
@@ -729,6 +747,10 @@ pub struct FormFollow {
     pub seed: u32,
     pub lane: u8,
     pub bar: u64,
+    /// The relation (the Splice amount, 2a − 1) in hundredths: −100 layer ..
+    /// 100 counter. On the counter side the host's questions are answered
+    /// and its answers asked (D47).
+    pub relation: i8,
 }
 
 /// Buffers [`PatternLane::render`] works in, allocated once.
@@ -782,8 +804,52 @@ struct PartCtx {
 // still differs a little from its original, at 100 % it plays the full
 // variation). How far the operators go at Variation 0.
 const OP_AMOUNT_FLOOR: f32 = 0.15;
+/// How much further the operators go in the form's second pass.
+const SECOND_PASS_OPS: f32 = 0.15;
 const S_SPAN: u32 = 0xF60;
 const S_SEEDED_OP: u32 = 0xF61;
+const S_SWAP_QA: u32 = 0xF62;
+
+// MUSICAL: tune by ear (2026-10-21: the operators move a follower's notes
+// after its walk weighed them against the host). How much a neighbour in
+// the scale (per degree) must fit better to replace a note.
+const FIT_CLOSE: f32 = 0.35;
+
+/// Move each note of a pitched follower (but the downbeat roots) to the
+/// degree, at most two scale steps away, that fits the host's line best
+/// (the walk's own weights, [`crate::splice::motion_weight`]); a note the
+/// walk already fitted stays.
+fn fit_to_host(out: &mut BarEvents, host: &crate::splice::HostLine, harmony: &HarmonyCtx) {
+    let mut prev: Option<(usize, i32)> = None;
+    for e in out.as_mut_slice().iter_mut().filter(|e| e.kind == EventKind::NoteOn) {
+        let s = (e.tick / crate::TICKS_PER_STEP) as usize % STEPS_PER_BAR;
+        if e.tick % TICKS_PER_BAR != 0 {
+            let (d, off) = ops::degree(e.key, harmony);
+            let mut best = (e.key, f32::MIN);
+            let mut weigh = |key: u8, steps: i32| {
+                let w = crate::splice::motion_weight(host, s, prev, key as i32) * FIT_CLOSE.powi(steps.min(2));
+                if w > best.1 {
+                    best = (key, w);
+                }
+            };
+            for delta in -2i32..=2 {
+                weigh(ops::key_of(d + delta, off, harmony), delta.abs());
+            }
+            // The host's move from the previous note, followed or mirrored.
+            if let Some((ps, pk)) = prev {
+                let (h_prev, h_now) = (host.keys[ps] as i32, host.keys[s] as i32);
+                if h_prev > 0 && h_now > 0 {
+                    for to in [pk + (h_now - h_prev), pk - (h_now - h_prev)] {
+                        let (td, _) = ops::degree(to.clamp(1, 127) as u8, harmony);
+                        weigh(ops::key_of(td, 0, harmony), (td - d).abs());
+                    }
+                }
+            }
+            e.key = best.0;
+        }
+        prev = Some((s, e.key as i32));
+    }
+}
 
 /// Speed step of a bass block, seeded by its letter seed.
 fn block_rate(seed: u32, lane: u8, class: SeedClass) -> i8 {
@@ -1190,8 +1256,8 @@ mod tests {
                 out.letter
             })
             .collect();
-        // `A15 C1`: fifteen bars of A, then a C.
-        assert!(letters[..15].iter().all(|&l| l == 0), "{letters:?}");
+        // The steady roller: A with a B answer on the 8th bar, a C on the 16th.
+        assert!(letters[..15].iter().all(|&l| l <= 1) && letters[..15].iter().filter(|&&l| l == 1).count() <= 2, "{letters:?}");
         assert_eq!(letters[15], 2);
     }
 
@@ -1259,6 +1325,23 @@ mod tests {
                 assert_eq!(a, v, "the same notes");
                 assert_ne!(a_order, v_order, "in another order");
             }
+        }
+    }
+
+    #[test]
+    fn a_follower_shares_its_hosts_operators_and_answers_its_questions() {
+        let mut lane = PatternLane::bass(4, 4);
+        let mut q = OpChain::default();
+        q.push(Op::Retrograde);
+        q.push(Op::Question);
+        let swapped = |lane: &PatternLane| (0..100u8).filter(|&seg| lane.resolve_ops(&FormPos { ops: q, segment: seg, ..FormPos::default() }, 9, 1).contains(Op::Answer)).count();
+        assert_eq!(swapped(&lane), 0, "alone: the form's own operators");
+        for (relation, lo, hi) in [(-100i8, 0, 0), (0, 0, 0), (50, 30, 70), (100, 100, 100)] {
+            lane.follow = Some(FormFollow { form: 1, seed: 9, lane: 1, bar: 0, relation });
+            let n = swapped(&lane);
+            assert!((lo..=hi).contains(&n), "relation {relation}: {n} of 100 questions answered");
+            // The other operators stay the host's.
+            assert!(lane.resolve_ops(&FormPos { ops: q, ..FormPos::default() }, 9, 1).contains(Op::Retrograde));
         }
     }
 

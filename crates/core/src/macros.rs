@@ -550,7 +550,9 @@ mod style_tests {
             }
         }
         assert!(figures > 0);
-        assert!(held as f32 >= 0.95 * notes as f32, "{held} of {notes} held to the next note");
+        // (The form's operators shorten a few on purpose: questions,
+        // mutations, double time.)
+        assert!(held as f32 >= 0.9 * notes as f32, "{held} of {notes} held to the next note");
     }
 
     #[test]

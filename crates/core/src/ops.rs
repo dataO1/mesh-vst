@@ -110,6 +110,11 @@ impl Op {
         Op::ALL.iter().copied().find(|o| o.as_char() == c)
     }
 
+    /// Whether it moves pitches of the line (not the endings `q` and `a`).
+    pub fn moves_pitch(self) -> bool {
+        matches!(self, Op::Retrograde | Op::Inversion | Op::Sequence | Op::Counter | Op::OctaveUp | Op::OctaveDown)
+    }
+
     fn index(self) -> u8 {
         Op::ALL.iter().position(|o| *o == self).unwrap_or(0) as u8
     }
@@ -351,7 +356,7 @@ fn h(ctx: &OpCtx, k: u8, stream: u32, n: u32) -> u64 {
 }
 
 /// A key as a scale degree of the key (and the semitones off the scale).
-fn degree(key: u8, harmony: &HarmonyCtx) -> (i32, i32) {
+pub fn degree(key: u8, harmony: &HarmonyCtx) -> (i32, i32) {
     let scale = harmony.scale();
     let rel = key as i32 - harmony.key.root as i32;
     let (oct, pc) = (rel.div_euclid(12), rel.rem_euclid(12));
@@ -359,7 +364,7 @@ fn degree(key: u8, harmony: &HarmonyCtx) -> (i32, i32) {
     (oct * 7 + idx as i32, pc - scale[idx] as i32)
 }
 
-fn key_of(deg: i32, off: i32, harmony: &HarmonyCtx) -> u8 {
+pub fn key_of(deg: i32, off: i32, harmony: &HarmonyCtx) -> u8 {
     let scale = harmony.scale();
     let (oct, idx) = (deg.div_euclid(7), deg.rem_euclid(7) as usize);
     (harmony.key.root as i32 + 12 * oct + scale[idx] as i32 + off).clamp(1, 127) as u8
