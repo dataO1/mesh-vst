@@ -319,7 +319,7 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | **Permute** | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
 | **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell; scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
 | **Swing** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays) | swing of every off 16th |
-| **Shape** | stabby to sustained: length, expression, filter bite | tight to open: choke, loop hold, decay |
+| **Shape** | stabby to sustained: length, expression, filter bite; at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke, loop hold, decay |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style |
 | **Spread** | octave lifts, jump size | — |
 | **Slide** | slides, glide time | — |

@@ -645,7 +645,9 @@ impl LaneGenerator for BassGenerator {
             // balance, `stabs` moves it (0.5 = as the density says).
             let stab_share = lerp(SHORT_SHARE.0, SHORT_SHARE.1, note_param(ctx, P_DENSITY, su))
                 + STABS_SHIFT * (note_param(ctx, P_STABS, su) - 0.5);
-            let short = rng.chance(su, S_LENGTH, stab_share.clamp(STABS_RANGE.0, STABS_RANGE.1));
+            // No stabs at all at the sustained end (stabs 0).
+            let stab_share = stab_share.clamp(STABS_RANGE.0, STABS_RANGE.1) * (2.0 * note_param(ctx, P_STABS, su)).min(1.0);
+            let short = rng.chance(su, S_LENGTH, stab_share);
             let gate_ticks = if short {
                 let span = ((next - s).min(SHORT_LENGTH.2 as usize) as u16 * TICKS_PER_STEP) as f32;
                 (span * lerp(SHORT_LENGTH.0, SHORT_LENGTH.1, density)).max(GATE_MIN_TICKS).round() as u16
@@ -1071,8 +1073,12 @@ fn rhythm_cells(events: &mut [LiveEvent; 2 * STEPS_PER_BAR], n: usize, ctx: &Bar
                     if !c.repeat {
                         e.key = notes[k % notes.len()].key;
                     }
-                    // A cell sets its own lengths: no stab cuts them short.
+                    // A cell sets its own lengths: no stab cuts them short,
+                    // and a figure keeps them under the sustained Shape.
                     e.flags &= !flags::STAB;
+                    if c.onsets.len() > 1 {
+                        e.flags |= flags::FIGURE;
+                    }
                     if k > 0 {
                         e.flags &= !(flags::TIE | flags::ACCENT | flags::STAB);
                         e.glide = 0;
@@ -1181,6 +1187,7 @@ fn ratchets(
         }
         let mut a = e;
         a.gate = a.gate.min(gap.saturating_sub(2).max(1));
+        a.flags |= flags::FIGURE;
         out[m] = a;
         m += 1;
         for (k, &off) in offsets.iter().enumerate() {
@@ -1189,6 +1196,7 @@ fn ratchets(
             b.gate = e.gate.min(gap);
             b.note_id = e.note_id + (STEPS_PER_BAR * (k + 1)) as u16;
             b.flags &= !flags::ACCENT;
+            b.flags |= flags::FIGURE;
             out[m] = b;
             m += 1;
         }
@@ -1217,8 +1225,21 @@ fn shape_notes(events: &mut [LiveEvent], length: f32, expression: f32, roll: imp
             continue;
         }
         let has_next = i + 1 < events.len();
+        let into_figure = events.get(i + 1).is_some_and(|e| e.flags & flags::FIGURE != 0);
         let ev = &mut events[i];
         let gap = next.saturating_sub(ev.tick);
+        if ev.flags & flags::FIGURE != 0 {
+            // A ratchet or a cell plays as written.
+            continue;
+        }
+        if length >= 0.5 && into_figure {
+            // Held up to the figure, which strikes on its own.
+            let to = gap.saturating_sub(2);
+            if to > ev.gate {
+                ev.gate += ((to - ev.gate) as f32 * (length - 0.5) * 2.0) as u16;
+            }
+            continue;
+        }
         if length < 0.5 {
             let stab = ev.gate.min(STAB_TICKS);
             ev.gate = stab + ((ev.gate - stab) as f32 * length * 2.0) as u16;

@@ -35,6 +35,9 @@ pub mod flags {
     /// A stab: no sustain (the note is its decay) and the lane's stab
     /// accent (saturated attack, deeper pitch move).
     pub const STAB: u8 = 1 << 4;
+    /// A note of a rhythmic figure (a cell, a ratchet): legato from the
+    /// lane's length leaves it as written.
+    pub const FIGURE: u8 = 1 << 5;
 }
 
 /// One musical event inside a bar. `Copy`, fixed size, no heap.

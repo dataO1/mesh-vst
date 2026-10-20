@@ -228,7 +228,7 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
     lane.set_param("syncopation", v.swing);
     lane.set_param("slide", v.slide);
     // Shape: stabby, accented and moving .. sustained and calm.
-    lane.set_param("length", lerp(0.4, 0.95, v.shape));
+    lane.set_param("length", lerp(0.4, 1.0, v.shape));
     lane.set_param("expression", lerp(1.0, 0.15, v.shape));
     lane.set_param("stabs", lerp(1.0, 0.0, v.shape));
     character(p, v.shape);
@@ -352,6 +352,33 @@ mod style_tests {
         }
         let picks: std::collections::BTreeSet<u8> = (0..200).map(seeded_style).collect();
         assert_eq!(picks.len(), DRUM_STYLES.len());
+    }
+
+    #[test]
+    fn full_shape_sustains_everything_but_the_figures() {
+        use crate::event::{flags, EventKind};
+        let (mut held, mut notes, mut figures) = (0, 0, 0);
+        for seed in 1..=40 {
+            let mut lane = PatternLane::bass(seed, seed);
+            let s = LaneSettings { knobs: Knobs { shape: 1.0, ..Knobs::CENTERED }, sound_seed: seed, pattern_seed: seed, form: 1, rate: 0, mode: 0, style: None, unison: Default::default() };
+            configure(&mut lane, mudpie_params(), &s);
+            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+            for b in 0..8 {
+                lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
+                let ev: Vec<_> = out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn).copied().collect();
+                assert!(ev.iter().all(|e| e.flags & flags::STAB == 0), "no stabs at full Shape");
+                for w in ev.windows(2) {
+                    if w[0].flags & flags::FIGURE != 0 {
+                        figures += 1;
+                        continue;
+                    }
+                    notes += 1;
+                    held += (w[0].gate + 4 >= w[1].tick - w[0].tick) as u32;
+                }
+            }
+        }
+        assert!(figures > 0);
+        assert!(held as f32 >= 0.95 * notes as f32, "{held} of {notes} held to the next note");
     }
 
     #[test]
