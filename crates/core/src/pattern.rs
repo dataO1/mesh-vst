@@ -45,6 +45,40 @@ const BLOCK_RATE_FILLER: [(i8, f32); 3] = [(0, 0.35), (1, 0.45), (-1, 0.2)];
 const S_BLOCK_RATE: u32 = 0xF51;
 /// RNG stream of the sound seed a filler letter derives.
 const S_SOUND: u32 = 0xF52;
+const S_PERMUTE: u32 = 0xF53;
+
+/// Chunks a bar is cut into for Permute: half beats.
+pub const PERMUTE_CHUNKS: usize = 8;
+
+/// Rearrange the bar (the Permute knob): the bar is cut into
+/// [`PERMUTE_CHUNKS`] chunks and seeded swaps move them, the first
+/// `amount × chunks` of a fixed seeded swap list, so turning the knob up only
+/// adds moves. The first chunk (the downbeat) stays. Events keep their place
+/// inside their chunk; the bar stays sorted.
+fn permute(out: &mut BarEvents, amount: f32, seed: u32, lane: u8, bar_in_phrase: u8) {
+    let swaps = (amount.clamp(0.0, 1.0) * PERMUTE_CHUNKS as f32).round() as usize;
+    if swaps == 0 {
+        return;
+    }
+    // Where each chunk's content plays.
+    let mut dest: [usize; PERMUTE_CHUNKS] = std::array::from_fn(|i| i);
+    // The same swaps for the bars of a 4-bar block, so a block keeps its shape.
+    let h = |k: u8, s: u32| rng::hash(seed, lane, bar_in_phrase % 4, k, s);
+    for k in 0..swaps {
+        let a = 1 + rng::below(h(k as u8, S_PERMUTE), (PERMUTE_CHUNKS - 1) as u32) as usize;
+        let mut b = 1 + rng::below(h(k as u8, S_PERMUTE + 1), (PERMUTE_CHUNKS - 2) as u32) as usize;
+        if b >= a {
+            b += 1;
+        }
+        dest.swap(a, b);
+    }
+    let chunk = TICKS_PER_BAR / PERMUTE_CHUNKS as u16;
+    for e in out.as_mut_slice() {
+        let c = (e.tick / chunk) as usize % PERMUTE_CHUNKS;
+        e.tick = dest[c] as u16 * chunk + e.tick % chunk;
+    }
+    out.sort();
+}
 
 /// One rendered bar.
 #[derive(Clone, Default)]
@@ -74,6 +108,8 @@ pub struct PatternLane {
     pub mode: u8,
     /// Bars of a phrase: the drums fill its last bar (D25).
     pub phrase_bars: u32,
+    /// Permute 0..1: how many of the bar's chunks swap places (seeded).
+    pub permute: f32,
     /// Generator parameters, indexed like [`LaneGenerator::param_names`].
     pub params: [f32; MAX_GEN_PARAMS],
 }
@@ -106,7 +142,7 @@ impl PatternLane {
     ) -> Self {
         let mut forms = vec![Form::single()];
         forms.extend(DEFAULT_FORMS.iter().map(|f| Form::parse(f).expect("built-in form parses")));
-        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, phrase_bars: 8, params }
+        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, phrase_bars: 8, permute: 0.0, params }
     }
 
     pub fn role(&self) -> Role {
@@ -233,6 +269,7 @@ impl PatternLane {
             scratch.sort();
             splice_second_half(out, scratch);
         }
+        permute(out, self.permute, seed, c.lane, c.bar_in_phrase);
         let mut feel = Feel::of(seed, c.lane, class);
         feel.swing = (feel.swing + knob_swing).min(1.0);
         feel.apply(out, seed, c.lane);
@@ -385,6 +422,29 @@ mod tests {
                 out.events.as_slice().to_vec()
             })
             .collect()
+    }
+
+    #[test]
+    fn permute_moves_chunks_and_keeps_the_downbeat() {
+        let chunk = TICKS_PER_BAR / PERMUTE_CHUNKS as u16;
+        for drums in [true, false] {
+            let lane = |amount: f32| {
+                let mut l = if drums { PatternLane::drums(DrumLayout::standard(), 7, 3) } else { PatternLane::bass(7, 3) };
+                l.permute = amount;
+                l
+            };
+            let plain = render_all(&lane(0.0), 8);
+            let full = render_all(&lane(1.0), 8);
+            let mut moved = 0;
+            for (a, b) in plain.iter().zip(&full) {
+                assert_eq!(a.len(), b.len(), "every hit stays");
+                let first = |v: &[crate::event::LiveEvent]| v.iter().filter(|e| e.tick < chunk).map(|e| (e.tick, e.target, e.key)).collect::<Vec<_>>();
+                assert_eq!(first(a), first(b), "the downbeat chunk stays");
+                let ticks = |v: &[crate::event::LiveEvent]| v.iter().map(|e| (e.tick, e.target)).collect::<Vec<_>>();
+                moved += (ticks(a) != ticks(b)) as usize;
+            }
+            assert!(moved >= 6, "most bars change: {moved} of 8");
+        }
     }
 
     #[test]

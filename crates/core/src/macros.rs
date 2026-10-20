@@ -13,7 +13,8 @@ use crate::sampler::{CcMap, LaneSamplerParams, ModConfig, ModEnv, ModLfo};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Knobs {
     pub density: f32,
-    pub intensity: f32,
+    /// Rearranges the bar: beat chunks swap places (0 = as generated).
+    pub permute: f32,
     pub variation: f32,
     pub swing: f32,
     pub shape: f32,
@@ -31,16 +32,16 @@ impl Default for Knobs {
 }
 
 impl Knobs {
-    /// Every knob at the seed's suggestion.
+    /// Every knob at the seed's suggestion, Permute off.
     pub const CENTERED: Self =
-        Self { density: 0.5, intensity: 0.5, variation: 0.5, swing: 0.5, shape: 0.5, morph: 0.5, spread: 0.5, slide: 0.5 };
+        Self { density: 0.5, permute: 0.0, variation: 0.5, swing: 0.5, shape: 0.5, morph: 0.5, spread: 0.5, slide: 0.5 };
 
     fn as_array(&self) -> [f32; 8] {
-        [self.density, self.intensity, self.variation, self.swing, self.shape, self.morph, self.spread, self.slide]
+        [self.density, self.permute, self.variation, self.swing, self.shape, self.morph, self.spread, self.slide]
     }
 
     fn from_array(a: [f32; 8]) -> Self {
-        Self { density: a[0], intensity: a[1], variation: a[2], swing: a[3], shape: a[4], morph: a[5], spread: a[6], slide: a[7] }
+        Self { density: a[0], permute: a[1], variation: a[2], swing: a[3], shape: a[4], morph: a[5], spread: a[6], slide: a[7] }
     }
 }
 
@@ -51,18 +52,19 @@ pub type Centers = Knobs;
 // falls in, per mode (from the Mesh starter style's defaults and their
 // usual playing range).
 const DRUM_CENTRES: [(f32, f32); 8] =
-    [(0.35, 0.65), (0.4, 0.6), (0.25, 0.55), (0.0, 0.35), (0.35, 0.7), (0.1, 0.7), (0.5, 0.5), (0.5, 0.5)];
+    [(0.35, 0.65), (0.5, 0.5), (0.25, 0.55), (0.0, 0.35), (0.35, 0.7), (0.1, 0.7), (0.5, 0.5), (0.5, 0.5)];
 const BASS_CENTRES: [(f32, f32); 8] =
-    [(0.35, 0.65), (0.4, 0.6), (0.3, 0.6), (0.0, 0.25), (0.25, 0.75), (0.1, 0.9), (0.05, 0.4), (0.3, 0.7)];
+    [(0.35, 0.65), (0.5, 0.5), (0.3, 0.6), (0.0, 0.25), (0.25, 0.75), (0.1, 0.9), (0.05, 0.4), (0.3, 0.7)];
 const S_CENTRE: u32 = 0xC40;
 
 impl Centers {
     /// The seed's suggestion per knob. The pattern seed places the groove
     /// knobs (density, variation, swing, spread, slide), the sound seed the
-    /// sound knobs (intensity, shape, morph).
+    /// sound knobs (shape, morph). Permute has no seeded centre: the knob is
+    /// the amount.
     pub fn of(role: Role, pattern_seed: u32, sound_seed: u32) -> Self {
         let table = if role == Role::Drums { &DRUM_CENTRES } else { &BASS_CENTRES };
-        let sound = [false, true, false, false, true, true, false, false];
+        let sound = [false, false, false, false, true, true, false, false];
         let mut out = [0.5; 8];
         for (i, ((lo, hi), o)) in table.iter().zip(out.iter_mut()).enumerate() {
             let seed = if sound[i] { sound_seed } else { pattern_seed };
@@ -125,7 +127,11 @@ pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettin
     lane.rate = s.rate;
     lane.mode = s.mode;
     lane.select_form(s.form);
-    apply(role, &resolved, lane, &mut sp);
+    // Accent strength: the sound seed's, scaled by Variation.
+    let seeded = rng::range_f32(rng::hash(s.sound_seed, 0, 0, 0, S_ACCENT), 0.3, 0.7);
+    let accent = (seeded * (0.5 + resolved.variation)).clamp(0.0, 1.0);
+    lane.permute = resolved.permute;
+    apply(role, &resolved, accent, lane, &mut sp);
     if role == Role::Drums {
         lane.set_param("style", style_value(s.style.unwrap_or_else(|| seeded_style(s.pattern_seed))));
     } else {
@@ -136,6 +142,7 @@ pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettin
 }
 
 const S_VOICE: u32 = 0xC50;
+const S_ACCENT: u32 = 0xC51;
 
 // MUSICAL: first draft, tune by ear. Around the designed mudpie voice.
 /// The sound seed's mudpie voice (design D20): filter, resonance, filter and
@@ -176,15 +183,17 @@ pub fn style_value(index: u8) -> f32 {
 
 /// Set the lane's generator parameters and the sampler's from resolved knob
 /// values (see [`Centers::resolve`]).
-pub fn apply(role: Role, v: &Knobs, lane: &mut PatternLane, sampler: &mut LaneSamplerParams) {
+/// `accent` 0..1: accent strength and dynamics (drums), accents, filter
+/// sweep and stab punch (bass).
+pub fn apply(role: Role, v: &Knobs, accent: f32, lane: &mut PatternLane, sampler: &mut LaneSamplerParams) {
     match role {
-        Role::Drums => apply_drums(v, lane, sampler),
-        _ => apply_bass(v, lane, sampler),
+        Role::Drums => apply_drums(v, accent, lane, sampler),
+        _ => apply_bass(v, accent, lane, sampler),
     }
 }
 
 // MUSICAL: first draft of the drum macros, tune by ear.
-fn apply_drums(v: &Knobs, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
+fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
     lane.set_param("density", v.density);
     lane.set_param("variation", v.variation);
     lane.set_param("overlay_ghost", lerp(0.1, 0.6, v.variation));
@@ -195,9 +204,9 @@ fn apply_drums(v: &Knobs, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
     lane.set_param("overlay_ride", 0.5);
     lane.set_param("overlay_shaker", 0.5);
     lane.set_param("overlay_top", 0.6);
-    // Intensity: wider dynamics and harder accents.
-    p.velocity_curve = lerp(1.0, 2.2, v.intensity);
-    p.accent_gain = lerp(1.1, 2.0, v.intensity);
+    // Accent: wider dynamics and harder accents.
+    p.velocity_curve = lerp(1.0, 2.2, accent);
+    p.accent_gain = lerp(1.1, 2.0, accent);
     // Shape: tight and dry .. open and ringing.
     p.sustain = lerp(0.35, 1.0, v.shape);
     p.decay = lerp(0.12, 0.8, v.shape);
@@ -208,12 +217,12 @@ fn apply_drums(v: &Knobs, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
 
 // MUSICAL: from Mesh live's bass lane (shape, morph, spread, slide), the
 // other knobs first draft.
-fn apply_bass(v: &Knobs, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
+fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
     lane.set_param("density", v.density);
     lane.set_param("register", 1.0);
     lane.set_param("variation", v.variation);
     lane.set_param("complexity", lerp(0.3, 0.9, v.variation));
-    lane.set_param("accent", lerp(0.2, 0.9, v.intensity));
+    lane.set_param("accent", lerp(0.2, 0.9, accent));
     lane.set_param("spread", v.spread);
     lane.set_param("slide", v.slide);
     // Shape: stabby, accented and moving .. sustained and calm.
@@ -221,9 +230,9 @@ fn apply_bass(v: &Knobs, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
     lane.set_param("expression", lerp(1.0, 0.15, v.shape));
     lane.set_param("stabs", lerp(1.0, 0.0, v.shape));
     character(p, v.shape);
-    // Intensity also deepens the filter sweep and the stab punch.
-    p.modulation.env.to_cutoff = lerp(2400.0, 6000.0, v.intensity);
-    p.punch *= lerp(0.6, 1.4, v.intensity);
+    // Accent also deepens the filter sweep and the stab punch.
+    p.modulation.env.to_cutoff = lerp(2400.0, 6000.0, accent);
+    p.punch *= lerp(0.6, 1.4, accent);
     p.morph = v.morph;
 }
 

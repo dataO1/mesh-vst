@@ -53,7 +53,7 @@ const MOD_PORT_NAMES: [&str; modout::CHANNELS] = [
     "Mod 11 phrase",
     "Mod 12 form letter",
     "Mod 13 density",
-    "Mod 14 intensity",
+    "Mod 14 permute",
     "Mod 15 mod wheel",
     "Mod 16 pressure",
 ];
@@ -99,7 +99,7 @@ pub struct MeshVst {
     bass: Option<Lane>,
     buf: Vec<StereoSample>,
     applied: Option<(Mode, Settings)>,
-    /// Mod wheel 0..1: pushes Intensity up (D24).
+    /// Mod wheel 0..1: pushes Permute up (D24).
     mod_wheel: f32,
     /// Channel pressure 0..1 (mod out 16).
     pressure: f32,
@@ -152,13 +152,13 @@ impl Default for MeshVst {
 impl MeshVst {
     fn settings(&self) -> Settings {
         let p = &self.params;
-        let intensity = p.intensity.value();
+        let permute = p.permute.value();
         let (minor, mode) = p.scale.value().family_mode();
         Settings {
             lane: LaneSettings {
             knobs: Knobs {
                 density: p.density.value(),
-                intensity: intensity + self.mod_wheel * (1.0 - intensity),
+                permute: permute + self.mod_wheel * (1.0 - permute),
                 variation: p.variation.value(),
                 swing: p.swing.value(),
                 shape: p.shape.value(),
@@ -429,7 +429,7 @@ impl MeshVst {
                     beats_per_frame: transport.bpm / 60.0 / self.sample_rate as f64,
                     letter,
                     density: self.resolved.density,
-                    intensity: self.resolved.intensity,
+                    permute: self.resolved.permute,
                     mod_wheel: self.mod_wheel,
                     pressure: self.pressure,
                     lfo_hz,

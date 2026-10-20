@@ -137,8 +137,8 @@ pub const MAX_SEED: i32 = 9999;
 pub struct MeshParams {
     #[id = "density"]
     pub density: FloatParam,
-    #[id = "intensity"]
-    pub intensity: FloatParam,
+    #[id = "permute"]
+    pub permute: FloatParam,
     #[id = "variation"]
     pub variation: FloatParam,
     #[id = "swing"]
@@ -191,8 +191,47 @@ pub struct MeshParams {
     pub ui: std::sync::Arc<std::sync::Mutex<crate::ui::UiState>>,
 }
 
-fn knob(name: &str) -> FloatParam {
-    FloatParam::new(name, 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
+/// Set to anything: a new instance starts at fixed defaults (seed 1, knobs
+/// centred), for tests.
+pub const FIXED_DEFAULTS_ENV: &str = "MESH_VST_FIXED_DEFAULTS";
+
+/// A new instance's starting values: random seeds and knobs, so every new
+/// instance plays something else. A saved state replaces them.
+struct Fresh {
+    state: Option<std::cell::Cell<u64>>,
+}
+
+impl Fresh {
+    fn new() -> Self {
+        if std::env::var_os(FIXED_DEFAULTS_ENV).is_some() {
+            return Self { state: None };
+        }
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
+        Self { state: Some(std::cell::Cell::new(t ^ (&t as *const u64 as u64) | 1)) }
+    }
+
+    fn next(&self) -> Option<u64> {
+        let s = self.state.as_ref()?;
+        let mut x = s.get();
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        s.set(x);
+        Some(x)
+    }
+
+    fn seed(&self) -> i32 {
+        self.next().map_or(1, |x| (x % (MAX_SEED as u64 + 1)) as i32)
+    }
+
+    // MUSICAL: away from the extremes.
+    fn knob(&self) -> f32 {
+        self.next().map_or(0.5, |x| 0.25 + 0.5 * (x % 1000) as f32 / 1000.0)
+    }
+}
+
+fn knob_at(name: &str, default: f32) -> FloatParam {
+    FloatParam::new(name, default, FloatRange::Linear { min: 0.0, max: 1.0 })
         .with_value_to_string(formatters::v2s_f32_percentage(0))
         .with_string_to_value(formatters::s2v_f32_percentage())
         .with_unit(" %")
@@ -204,19 +243,20 @@ fn setting(p: IntParam) -> IntParam {
 
 impl Default for MeshParams {
     fn default() -> Self {
+        let fresh = Fresh::new();
         Self {
-            density: knob("Density"),
-            intensity: knob("Intensity"),
-            variation: knob("Variation"),
-            swing: knob("Swing"),
-            shape: knob("Shape"),
-            morph: knob("Morph"),
-            spread: knob("Spread"),
-            slide: knob("Slide"),
+            density: knob_at("Density", fresh.knob()),
+            permute: knob_at("Permute", 0.0),
+            variation: knob_at("Variation", fresh.knob()),
+            swing: knob_at("Swing", fresh.knob()),
+            shape: knob_at("Shape", fresh.knob()),
+            morph: knob_at("Morph", fresh.knob()),
+            spread: knob_at("Spread", fresh.knob()),
+            slide: knob_at("Slide", fresh.knob()),
             style: EnumParam::new("Style", DrumStyle::Seed),
             mode: EnumParam::new("Mode", Mode::Drums).non_automatable(),
-            sound_seed: setting(IntParam::new("Sound seed", 1, IntRange::Linear { min: 0, max: MAX_SEED })),
-            pattern_seed: setting(IntParam::new("Pattern seed", 1, IntRange::Linear { min: 0, max: MAX_SEED })),
+            sound_seed: setting(IntParam::new("Sound seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED })),
+            pattern_seed: setting(IntParam::new("Pattern seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED })),
             form: setting(IntParam::new("Form", 1, IntRange::Linear { min: 0, max: 10 }))
                 .with_value_to_string(std::sync::Arc::new(|v| if v == 0 { "none".into() } else { v.to_string() }))
                 .with_string_to_value(std::sync::Arc::new(|s| match s.trim() { "none" => Some(0), s => s.parse().ok() })),

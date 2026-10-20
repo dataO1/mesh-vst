@@ -408,9 +408,9 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
         rep.healthy(&format!("drum style {i} plays"), &a);
         styles.push(a);
     }
-    // Swing and Morph are heard: their extremes differ by more than a trace.
+    // Swing, Morph and Permute are heard: their extremes differ by more than a trace.
     let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt();
-    for knob in ["Swing", "Morph"] {
+    for knob in ["Swing", "Morph", "Permute"] {
         let lo = render(entry, &Render { params: vec![(knob.into(), 0.0)], ..base.clone() })?;
         let hi = render(entry, &Render { params: vec![(knob.into(), 1.0)], ..base.clone() })?;
         let diff: Vec<f32> = lo.samples.iter().zip(&hi.samples).map(|(a, b)| a - b).collect();
@@ -483,6 +483,8 @@ fn main() -> Result<(), Error> {
     }
     // The user's settings (library folders) never leak in: the library comes from --library.
     std::env::set_var("XDG_CONFIG_HOME", std::env::temp_dir().join("mesh-vst-hostcheck-config"));
+    // Fixed starting values, so renders without --seed repeat.
+    std::env::set_var("MESH_VST_FIXED_DEFAULTS", "1");
     // SAFETY: loading a plugin runs its code; this tool is for our own bundle.
     let entry = unsafe { PluginEntry::load(&bundle)? };
 

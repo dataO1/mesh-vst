@@ -92,7 +92,9 @@ drive external effects.
 - **D20** Two seeds. The **sound seed** picks samples from the pools (or the mudpie in Bass mode),
   and in Bass mode also the mudpie voice: cutoff, resonance, filter and pitch envelopes, LFO,
   amp decay and release, drawn around the designed voice (2026-10-19). The knobs act on top. A
-  sound roll in the editor also moves Intensity, Shape and Morph to new values (2026-10-20).
+  sound roll in Bass mode keeps the mudpie (it gets pinned) and moves every knob but Permute to
+  new values (2026-10-20). Accent strength comes from the sound seed, scaled by Variation. A new
+  instance without a saved state starts with random seeds and knobs (Permute off).
   The **pattern seed** picks the groove. Each has a dice button and a lock.
   Loading cuts silence: one-shots start at their onset, mudpies lose every silent stretch, and a
   streamed mudpie note plays at the gain that brings its start position to the sample's overall
@@ -105,11 +107,11 @@ drive external effects.
 - **D23** The parameter list is fixed and well named, grouped as Shared, Drums and Bass. The
   inactive mode's group does nothing and is hidden. DAW automation stays valid.
 - **D24** Pitch bend bends all voices. Its range is editable, with a default set by mode and seed
-  from musical steps (1, 3, 5, 7, 12, 19, 24 semitones). Mod wheel drives an Intensity macro
+  from musical steps (1, 3, 5, 7, 12, 19, 24 semitones). Mod wheel drives Permute (was an Intensity macro)
   (filter depth, drive, density together). Channel pressure and MPE per-note pressure drive the
   drive amount; MPE per-note pitch acts as pitch bend. Other CCs go through the DAW's own MIDI
   learn.
-- **D25** Energy over time comes from the DAW: automate Intensity and Density, place notes for
+- **D25** Energy over time comes from the DAW: automate Permute, Variation and Density, place notes for
   sections. The plugin adds a phrase length (4/8/16 bars, fills at phrase ends counted from song
   position) and the Mesh **form**: letter seeds A/B (main) and C/D (fillers) placed by a form
   string such as `A15 C1`. The form is a parameter with the Mesh default forms as presets, and
@@ -171,7 +173,7 @@ drive external effects.
     8 note pitch.
   - Drums: 1 velocity, 2 accent, 3 kick, 4 snare, 5 hats, 6 cymbal, 7 break/perc, 8 fill gate.
   - Both: 9 beat ramp, 10 bar ramp, 11 phrase position, 12 form letter, 13 effective density,
-    14 intensity, 15 mod wheel, 16 pressure.
+    14 permute, 15 mod wheel, 16 pressure.
 - **D35** Library side panel from the top bar: pools with counts, the unsorted bin, audition,
   drag onto a slot, and library folder management. The visual runs at 30 fps or less, pauses
   while hidden, and has a low-power static mode.
@@ -305,8 +307,8 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | Knob | Bass | Drums |
 |---|---|---|
 | **Density** | notes, note length | hits, voices coming in (tops included), loop gating |
-| **Intensity** | accents, stab drive, filter envelope depth | accents, velocity range |
-| **Variation** | syncopation, rewrites, fills | rewrites, fills, ghost notes |
+| **Permute** | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
+| **Variation** | syncopation, rewrites, fills; scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
 | **Swing** | swing | swing |
 | **Shape** | stabby to sustained: length, expression, filter bite | tight to open: choke, loop hold, decay |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style |
@@ -376,7 +378,7 @@ Each step is tested before the next one starts.
   - **Knob centers.** The seed sets each knob's middle (`macros`), using the Mesh lane-control
     mappings.
   - **Playing.** A held note gates the pattern. A stopped transport runs a free clock from the
-    note-on. Mod wheel adds to Intensity, pitch bend bends, and other CCs reach the sampler.
+    note-on. Mod wheel adds to Permute, pitch bend bends, and other CCs reach the sampler.
   - **Sounds.** A built-in synthesized kit and mudpie play until the library exists.
   - **Checks.** The CLAP bundle passes clap-validator (36 passed, 0 failed).
     `crates/hostcheck` is a headless clack host that plays a held note against a host
@@ -471,7 +473,7 @@ Each step is tested before the next one starts.
   - **Drum sources.** Held velocity, accent, per-voice hit envelopes, fill.
   - **Bass sources.** Held velocity, stab, amp and filter envelopes, LFO, scrub position,
     glide, pitch.
-  - **Shared sources.** Beat, bar and 8-bar phrase ramps, form letter, density and intensity
+  - **Shared sources.** Beat, bar and 8-bar phrase ramps, form letter, density and permute
     after the seed's centers, mod wheel, channel pressure.
   - **Checks.** The e2e host now provides every declared port and checks that both modes'
     channels stay in range and follow the hits.

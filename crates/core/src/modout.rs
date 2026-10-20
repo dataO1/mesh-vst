@@ -15,7 +15,7 @@
 //! | 6 | scrub position (held) | cymbals |
 //! | 7 | glide | break and perc |
 //! | 8 | note pitch (held) | fill (filler letters) |
-//! | 9..16 | beat ramp, bar ramp, phrase position, form letter, density, intensity, mod wheel, pressure | the same |
+//! | 9..16 | beat ramp, bar ramp, phrase position, form letter, density, permute, mod wheel, pressure | the same |
 
 use crate::event::{flags, EventKind, LiveEvent};
 use crate::generator::layout::DrumVoice;
@@ -38,7 +38,7 @@ pub const NAMES_BASS: [&str; CHANNELS] = [
     "Mod 11 phrase",
     "Mod 12 form letter",
     "Mod 13 density",
-    "Mod 14 intensity",
+    "Mod 14 permute",
     "Mod 15 mod wheel",
     "Mod 16 pressure",
 ];
@@ -66,7 +66,7 @@ pub struct BlockInfo {
     /// Form letter of the playing bar (0..=3).
     pub letter: u8,
     pub density: f32,
-    pub intensity: f32,
+    pub permute: f32,
     pub mod_wheel: f32,
     pub pressure: f32,
     /// The bass LFO's rate in Hz.
@@ -95,7 +95,7 @@ pub enum Source {
     Phrase,
     FormLetter,
     Density,
-    Intensity,
+    Permute,
     ModWheel,
     Pressure,
     Off,
@@ -125,7 +125,7 @@ impl Source {
         Source::Phrase,
         Source::FormLetter,
         Source::Density,
-        Source::Intensity,
+        Source::Permute,
         Source::ModWheel,
         Source::Pressure,
         Source::Off,
@@ -152,7 +152,7 @@ impl Source {
             Source::Phrase => "phrase",
             Source::FormLetter => "form letter",
             Source::Density => "density",
-            Source::Intensity => "intensity",
+            Source::Permute => "permute",
             Source::ModWheel => "mod wheel",
             Source::Pressure => "pressure",
             Source::Off => "off",
@@ -175,7 +175,7 @@ pub const DEFAULT_BASS: [Source; CHANNELS] = [
     Source::Phrase,
     Source::FormLetter,
     Source::Density,
-    Source::Intensity,
+    Source::Permute,
     Source::ModWheel,
     Source::Pressure,
 ];
@@ -193,7 +193,7 @@ pub const DEFAULT_DRUMS: [Source; CHANNELS] = [
     Source::Phrase,
     Source::FormLetter,
     Source::Density,
-    Source::Intensity,
+    Source::Permute,
     Source::ModWheel,
     Source::Pressure,
 ];
@@ -336,7 +336,7 @@ impl ModOut {
                 phrase,
                 letter,
                 info.density,
-                info.intensity,
+                info.permute,
                 info.mod_wheel,
                 info.pressure,
                 0.0,

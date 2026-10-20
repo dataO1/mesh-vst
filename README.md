@@ -4,7 +4,7 @@ A seeded sampler instrument (CLAP, VST3) for breakbeat drums and mudpie bass.
 
 Hold one note in your DAW and the plugin plays a pattern generated from a seed, in time with the
 host tempo and in the key of the note. Roll seeds until a groove fits, drag samples onto slots,
-and automate intensity and density for the arrangement.
+and automate density, variation and permute for the arrangement.
 
 **Status:** alpha. Every design decision (docs/design.md D1–D39) is built: seeded drum and bass
 patterns, the sample library with automatic pools, loudness calibration, unison, the editor with
@@ -84,5 +84,6 @@ built-in synthesized sounds.
 Put one long note on the track. The note's pitch is the root (bass), its velocity scales the
 hits. The pattern follows the song position, so loops and bounces repeat exactly. Set **Mode**
 (drums or bass), **Sound seed** and **Pattern seed**, then play with the eight knobs: Density,
-Intensity, Variation, Swing, Shape, Morph, Spread and Slide. Each knob's middle is the seed's
-own suggestion. The mod wheel pushes Intensity, pitch bend bends by **Bend range**.
+Permute, Variation, Swing, Shape, Morph, Spread and Slide. Each knob's middle is the seed's
+own suggestion (Permute: 0 plays the pattern as generated). The mod wheel pushes Permute, pitch
+bend bends by **Bend range**. A new instance starts with random seeds and knobs.

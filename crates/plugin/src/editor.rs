@@ -102,7 +102,7 @@ pub struct EditorData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Knob {
     Density,
-    Intensity,
+    Permute,
     Variation,
     Swing,
     Shape,
@@ -116,7 +116,7 @@ impl Knob {
     fn param(self, p: &MeshParams) -> &FloatParam {
         match self {
             Knob::Density => &p.density,
-            Knob::Intensity => &p.intensity,
+            Knob::Permute => &p.permute,
             Knob::Variation => &p.variation,
             Knob::Swing => &p.swing,
             Knob::Shape => &p.shape,
@@ -502,11 +502,24 @@ impl Gui {
                     self.record();
                     let v = self.roll_seed();
                     let params = self.data.params.clone();
+                    let bass = params.mode.value() == Mode::Bass;
+                    if bass {
+                        // Bass: the roll keeps the mudpie (its own roll picks
+                        // another) and draws a new voice.
+                        let kit = self.kit();
+                        let keep = kit.lock().ok().and_then(|k| if k.mudpie_pin.is_none() { k.mudpie.clone() } else { None });
+                        if let Some(f) = keep {
+                            if let Ok(mut k) = kit.lock() {
+                                k.mudpie_pin = Some(f);
+                            }
+                            self.data.shared.bump_kit();
+                        }
+                    }
                     self.set_int(&params.sound_seed, v);
-                    // Bass: the roll draws a new voice you can see on the
-                    // sound knobs, then shape by hand.
-                    if params.mode.value() == Mode::Bass {
-                        for p in [&params.intensity, &params.shape, &params.morph] {
+                    // Bass: the new voice shows on the knobs (all but
+                    // Permute), to shape by hand.
+                    if bass {
+                        for p in [&params.density, &params.variation, &params.swing, &params.shape, &params.morph, &params.spread, &params.slide] {
                             // MUSICAL: away from the extremes.
                             let x = 0.1 + 0.8 * (self.next_rand() % 1000) as f32 / 1000.0;
                             self.set_float(p, x);
@@ -851,7 +864,7 @@ impl Gui {
 
         // Left: the pattern knobs and settings.
         let mut left = column![small("PATTERN")].spacing(12);
-        for k in [Knob::Density, Knob::Intensity, Knob::Variation, Knob::Swing] {
+        for k in [Knob::Density, Knob::Permute, Knob::Variation, Knob::Swing] {
             left = left.push(knob(p, k));
         }
         left = left.push(column![
