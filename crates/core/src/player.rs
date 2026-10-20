@@ -110,8 +110,13 @@ pub const HOST_BARS: usize = 4;
 pub const MAX_FIRED: usize = 512;
 
 impl Player {
-    pub fn new(lane: PatternLane, sampler: Sampler) -> Self {
+    pub fn new(lane: PatternLane, mut sampler: Sampler) -> Self {
         let sample_rate = sampler.sample_rate() as f64;
+        // Drums: each tail group on its own bus ([`crate::tail::VoiceTails`]);
+        // without a bus buffer they all play on the main output.
+        if lane.role() == Role::Drums {
+            sampler.set_bus_map(crate::tail::bus_map());
+        }
         Self {
             lane,
             sampler,
@@ -302,6 +307,12 @@ impl Player {
 
     /// Render one block into `out` (overwritten).
     pub fn process(&mut self, out: &mut [StereoSample], t: &Transport) {
+        self.process_split(out, None, t);
+    }
+
+    /// [`Self::process`] with the sampler's bus voices in `bus` (see
+    /// [`Sampler::process_split`]).
+    pub fn process_split(&mut self, out: &mut [StereoSample], bus: Option<&mut [StereoSample]>, t: &Transport) {
         self.fired_len = 0;
         let n = out.len();
         let bpm = t.bpm.max(1.0);
@@ -326,7 +337,8 @@ impl Player {
         } else {
             self.until = None;
         }
-        self.sampler.process(out, samples_per_tick);
+        self.sampler.set_bpm(bpm);
+        self.sampler.process_split(out, bus, samples_per_tick);
     }
 
     /// Fire the events of song ticks `from..to` (block starts at `t0`).

@@ -868,3 +868,45 @@ fn choke_amount_shortens_instead_of_cutting() {
     let half = tail(0.5);
     assert!(half > 0.05 && half < 0.49, "partly: {half}");
 }
+
+/// Largest jump between neighbouring frames (left channel).
+fn max_step(out: &[StereoSample]) -> f32 {
+    out.windows(2).map(|w| (w[1].left - w[0].left).abs()).fold(0.0, f32::max)
+}
+
+#[test]
+fn a_note_loops_its_section_with_a_smooth_seam() {
+    // The ramp's value is the read position: a loop from tick 24 for 24
+    // ticks (frames 2400..4800 at 100 frames a tick) holds the output there.
+    let mut s = sampler(vec![(0, SlotDef::whole(ramp(48_000)))], 4);
+    s.handle_event(&LiveEvent { gate: 384, loop_at: 24, loop_len: 24, ..trig(0) }, 0);
+    let out = render(&mut s, 20_000, 100.0);
+    let pos = |v: f32| v * 48_000.0;
+    assert!(out[6000..20_000].iter().all(|x| pos(x.left) > 2400.0 - 1300.0 && pos(x.left) < 4801.0), "stays in the section");
+    assert!(max_step(&out[100..20_000]) < 0.001, "the seam is crossfaded: {}", max_step(&out[100..20_000]));
+    assert!(out[6000..20_000].iter().any(|x| pos(x.left) < 3000.0), "it comes back round");
+}
+
+#[test]
+fn a_ping_pong_loop_turns_at_its_edges() {
+    let mut s = sampler(vec![(0, SlotDef::whole(ramp(48_000)))], 4);
+    s.handle_event(&LiveEvent { gate: 384, loop_at: 24, loop_len: 24, flags: flags::PING_PONG, ..trig(0) }, 0);
+    let out = render(&mut s, 20_000, 100.0);
+    let pos: Vec<f32> = out[100..20_000].iter().map(|x| x.left * 48_000.0).collect();
+    assert!(pos[6000..].iter().all(|p| (2399.0..4801.0).contains(p)));
+    let falling = pos.windows(2).filter(|w| w[1] < w[0]).count();
+    assert!(falling > 5000, "it plays backwards half the time: {falling}");
+    assert!(max_step(&out[100..20_000]) < 0.001);
+}
+
+#[test]
+fn loop_sections_follow_the_tempo() {
+    // Twice the frames per tick, twice the section (in the sample's frames).
+    let mut s = sampler(vec![(0, SlotDef::whole(ramp(96_000)))], 4);
+    s.handle_event(&LiveEvent { gate: 384, loop_at: 24, loop_len: 24, ..trig(0) }, 0);
+    let out = render(&mut s, 30_000, 200.0);
+    let (lo, top) = out[12_000..30_000].iter().map(|x| x.left * 96_000.0).fold((f32::MAX, 0.0f32), |(a, b), v| (a.min(v), b.max(v)));
+    // 4800..9600, the seam faded over a 32nd (2069 frames at the sample
+    // rate) from just before the section.
+    assert!((2700.0..4900.0).contains(&lo) && (7400.0..9601.0).contains(&top), "{lo}..{top}");
+}

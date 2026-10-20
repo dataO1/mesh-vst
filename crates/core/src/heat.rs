@@ -76,6 +76,48 @@ impl Weigh {
     }
 }
 
+/// A slow loudness match: the gain that brings an output back to its
+/// input's loudness. Weighted roughly as loudness is (K-weighting: lows
+/// count less, highs more), so added harmonics do not fool it.
+#[derive(Debug, Clone)]
+pub(crate) struct LevelMatch {
+    /// Mean squares of the input and the output, and their follower.
+    ms_in: f32,
+    ms_out: f32,
+    level_a: f32,
+    weigh_in: Weigh,
+    weigh_out: Weigh,
+    /// The weighting's one-pole coefficients (150 Hz, 1.5 kHz).
+    wa: (f32, f32),
+    /// Least and most gain.
+    range: (f32, f32),
+}
+
+impl LevelMatch {
+    /// A match that makes up within `range` (linear gain).
+    pub(crate) fn new(sample_rate: f32, range: (f32, f32)) -> Self {
+        Self {
+            range,
+            ms_in: 0.0,
+            ms_out: 0.0,
+            level_a: one_pole(1.0 / (std::f32::consts::TAU * LEVEL_SECS), sample_rate),
+            weigh_in: Weigh::default(),
+            weigh_out: Weigh::default(),
+            wa: (one_pole(150.0, sample_rate), one_pole(1500.0, sample_rate)),
+        }
+    }
+
+    /// The gain for output frame `y` of input frame `x`.
+    #[inline]
+    pub(crate) fn gain(&mut self, x: [f32; 2], y: [f32; 2]) -> f32 {
+        let wi = self.weigh_in.weigh(x, self.wa);
+        let wo = self.weigh_out.weigh(y, self.wa);
+        self.ms_in = flush(self.ms_in + self.level_a * (0.5 * (wi[0] * wi[0] + wi[1] * wi[1]) - self.ms_in));
+        self.ms_out = flush(self.ms_out + self.level_a * (0.5 * (wo[0] * wo[0] + wo[1] * wo[1]) - self.ms_out));
+        if self.ms_out > 1e-9 { (self.ms_in / self.ms_out).sqrt().clamp(self.range.0, self.range.1) } else { 1.0 }
+    }
+}
+
 /// Heat's state per lane.
 #[derive(Debug, Clone)]
 pub struct Heat {
@@ -87,14 +129,7 @@ pub struct Heat {
     /// One-pole coefficients of the tilt split and of the DC blocker.
     tilt_a: f32,
     dc_a: f32,
-    /// Mean squares of the input and the output, and their follower.
-    ms_in: f32,
-    ms_out: f32,
-    level_a: f32,
-    weigh_in: Weigh,
-    weigh_out: Weigh,
-    /// The weighting's one-pole coefficients (150 Hz, 1.5 kHz).
-    wa: (f32, f32),
+    level: LevelMatch,
 }
 
 impl Default for Heat {
@@ -117,12 +152,7 @@ impl Heat {
             post: OnePole::default(),
             tilt_a: one_pole(TILT_HZ, sample_rate),
             dc_a: one_pole(DC_HZ, sample_rate),
-            ms_in: 0.0,
-            ms_out: 0.0,
-            level_a: one_pole(1.0 / (std::f32::consts::TAU * LEVEL_SECS), sample_rate),
-            weigh_in: Weigh::default(),
-            weigh_out: Weigh::default(),
-            wa: (one_pole(150.0, sample_rate), one_pole(1500.0, sample_rate)),
+            level: LevelMatch::new(sample_rate, LEVEL_RANGE),
         }
     }
 
@@ -168,13 +198,7 @@ impl Heat {
                 x = [flat[0] - dc[0], flat[1] - dc[1]];
             }
             // Level match: the output follows the input's loudness (slow).
-            // Weighted roughly as loudness is (K-weighting: lows count less,
-            // highs more), so added harmonics do not fool the match.
-            let wi = self.weigh_in.weigh([s.left, s.right], self.wa);
-            let wo = self.weigh_out.weigh(x, self.wa);
-            self.ms_in = flush(self.ms_in + self.level_a * (0.5 * (wi[0] * wi[0] + wi[1] * wi[1]) - self.ms_in));
-            self.ms_out = flush(self.ms_out + self.level_a * (0.5 * (wo[0] * wo[0] + wo[1] * wo[1]) - self.ms_out));
-            let g = if self.ms_out > 1e-9 { (self.ms_in / self.ms_out).sqrt().clamp(LEVEL_RANGE.0, LEVEL_RANGE.1) } else { 1.0 };
+            let g = self.level.gain([s.left, s.right], x);
             *s = StereoSample { left: flush(x[0] * g), right: flush(x[1] * g) };
         }
     }

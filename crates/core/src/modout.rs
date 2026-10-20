@@ -17,6 +17,7 @@
 //! | 8 | note pitch (held) | fill (filler letters) |
 //! | 9..16 | beat ramp, bar ramp, phrase position, form letter, density, permute, mod wheel, pressure | the same |
 
+use crate::tempo::note;
 use crate::event::{flags, EventKind, LiveEvent};
 use crate::generator::layout::DrumVoice;
 use crate::role::Role;
@@ -45,14 +46,15 @@ pub const NAMES_BASS: [&str; CHANNELS] = [
 /// Bars of the phrase channel's ramp.
 const PHRASE_BARS: f64 = 8.0;
 
-// MUSICAL: envelope times of the derived channels, first draft.
-const ACCENT_SECS: f32 = 0.15;
-const AMP_DECAY_SECS: f32 = 0.6;
+// MUSICAL: envelope times of the derived channels, first draft. Note
+// values, stretched with the tempo (`crate::tempo`).
+const ACCENT_SECS: f32 = note(1.0 / 8.0);
+const AMP_DECAY_SECS: f32 = note(3.0 / 8.0);
 const AMP_SUSTAIN: f32 = 0.7;
-const AMP_RELEASE_SECS: f32 = 0.12;
-const FILTER_SECS: f32 = 0.4;
-const HIT_SECS: f32 = 0.12;
-const GLIDE_SECS: f32 = 0.2;
+const AMP_RELEASE_SECS: f32 = note(3.0 / 32.0);
+const FILTER_SECS: f32 = note(1.0 / 4.0);
+const HIT_SECS: f32 = note(3.0 / 32.0);
+const GLIDE_SECS: f32 = note(1.0 / 8.0);
 /// Lowest and highest key of the pitch channel's range.
 const PITCH_RANGE: (f32, f32) = (24.0, 60.0);
 
@@ -238,8 +240,8 @@ impl ModOut {
         }
     }
 
-    fn coeff(&self, secs: f32) -> f32 {
-        (-1.0 / (secs * self.sample_rate).max(1.0)).exp()
+    fn coeff(&self, secs: f32, stretch: f32) -> f32 {
+        (-1.0 / (secs * stretch * self.sample_rate).max(1.0)).exp()
     }
 
     fn fire(&mut self, role: Role, e: &LiveEvent) {
@@ -292,13 +294,15 @@ impl ModOut {
     /// frame offsets, sorted. `out` holds up to [`CHANNELS`] channel buffers.
     pub fn render(&mut self, role: Role, events: &[(u32, LiveEvent)], info: &BlockInfo, out: &mut [&mut [f32]]) {
         let frames = out.iter().map(|c| c.len()).min().unwrap_or(0);
+        let bpm = info.beats_per_frame * 60.0 * self.sample_rate as f64;
+        let k = if bpm > 0.0 { crate::tempo::stretch(bpm) } else { 1.0 };
         let (accent_k, amp_k, release_k, filter_k, hit_k, glide_k) = (
-            self.coeff(ACCENT_SECS),
-            self.coeff(AMP_DECAY_SECS),
-            self.coeff(AMP_RELEASE_SECS),
-            self.coeff(FILTER_SECS),
-            self.coeff(HIT_SECS),
-            self.coeff(GLIDE_SECS),
+            self.coeff(ACCENT_SECS, k),
+            self.coeff(AMP_DECAY_SECS, k),
+            self.coeff(AMP_RELEASE_SECS, k),
+            self.coeff(FILTER_SECS, k),
+            self.coeff(HIT_SECS, k),
+            self.coeff(GLIDE_SECS, k),
         );
         let lfo_step = info.lfo_hz / self.sample_rate;
         let fill = if info.letter >= 2 { 1.0 } else { 0.0 };

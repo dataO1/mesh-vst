@@ -1,7 +1,7 @@
 //! One sampler voice: resampled playback, amp envelope, SVF lowpass, pan,
 //! choke fade and pitch glide.
 
-use std::f32::consts::{FRAC_PI_4, PI, SQRT_2};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2};
 
 use super::data::{SampleData, PAD};
 use super::interp::{Interp, SincTables};
@@ -15,7 +15,7 @@ use crate::types::StereoSample;
 /// Gain kick at a note start at full punch (+1 = +6 dB), and its fade time.
 /// It drives the saturation, so it shows as a blown-out attack.
 const PUNCH_GAIN: f32 = 1.0;
-const PUNCH_SECS: f32 = 0.03;
+const PUNCH_SECS: f32 = crate::tempo::note(3.0 / 128.0);
 /// Extra mod-envelope pitch and cutoff depth at full punch (on top of
 /// Expression).
 const PUNCH_PITCH: f32 = 1.8;
@@ -36,6 +36,16 @@ pub(crate) enum Stage {
     Decay,
     Sustain,
     Release,
+}
+
+/// A note's loop section (D43) in sample frames: its start (absolute), its
+/// length, the crossfade at the seam, and whether it plays back and forth.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Section {
+    pub lo: f64,
+    pub len: f64,
+    pub xfade: f64,
+    pub ping_pong: bool,
 }
 
 /// Everything a new voice needs, resolved from event + slot + lane params.
@@ -71,6 +81,8 @@ pub(crate) struct VoiceInit {
     pub loop_range: Option<(usize, usize)>,
     /// Stop looping on release (SFZ `loop_sustain`).
     pub loop_sustain: bool,
+    /// The note's loop section, over the slot's own loop.
+    pub section: Option<Section>,
     /// The zone's CC modulators (gain, cutoff).
     pub zone_mods: [ZoneMod; MAX_ZONE_MODS],
     /// Pitch reference for ties: the zone's root key (None = unpitched) and
@@ -121,7 +133,12 @@ pub(crate) struct VoiceState {
     loop_lo: f64,
     loop_hi: f64,
     loop_sustain: bool,
-    /// Seconds since the note started (vibrato delay and fade).
+    /// A note's loop section (not the slot's loop): its seam crossfade in
+    /// frames, and whether it plays back and forth.
+    section: bool,
+    xfade: f64,
+    ping_pong: bool,
+    /// Musical seconds since the note started (vibrato delay and fade, LFO).
     t: f32,
     /// Pitch factor of the lane modulation (bend + vibrato), per block.
     mod_pf: f64,
@@ -205,6 +222,9 @@ impl Default for VoiceState {
             loop_lo: 0.0,
             loop_hi: 0.0,
             loop_sustain: false,
+            section: false,
+            xfade: 0.0,
+            ping_pong: false,
             t: 0.0,
             mod_pf: 1.0,
             mod_gain: 1.0,
@@ -258,7 +278,9 @@ impl Default for VoiceState {
 }
 
 impl VoiceState {
-    pub fn start(&mut self, v: &VoiceInit, p: &LaneSamplerParams, sr: f32) {
+    /// `sr` is the sample rate, `ts` the samples per second of musical time
+    /// (the sample rate stretched by the tempo, [`crate::tempo`]).
+    pub fn start(&mut self, v: &VoiceInit, p: &LaneSamplerParams, sr: f32, ts: f32) {
         let len = (v.end - v.start) as f64;
         let (start, end) = (v.start as f64, v.end as f64);
         let pos = if v.reverse {
@@ -266,7 +288,7 @@ impl VoiceState {
         } else {
             (start + v.offset * len).min(end - 1.0)
         };
-        let attack_n = v.attack * sr;
+        let attack_n = v.attack * ts;
         *self = Self {
             active: true,
             age: v.age,
@@ -290,7 +312,7 @@ impl VoiceState {
             stage: if attack_n < 1.0 { Stage::Decay } else { Stage::Attack },
             level: if attack_n < 1.0 { 1.0 } else { 0.0 },
             attack_inc: 1.0 / attack_n.max(1.0),
-            decay_coef: exp_coef(v.decay, sr),
+            decay_coef: exp_coef(v.decay, ts),
             sustain: v.sustain,
             punch: v.punch,
             gain: v.gain,
@@ -300,18 +322,27 @@ impl VoiceState {
             cutoff_target: v.cutoff_offset,
             ..Self::default()
         };
+        if let Some(s) = v.section.filter(|_| !v.reverse) {
+            self.looping = true;
+            self.section = true;
+            self.loop_lo = s.lo.clamp(start, end - 2.0);
+            self.loop_hi = (s.lo + s.len).clamp(self.loop_lo + 1.0, end - 1.0);
+            self.loop_sustain = false;
+            self.xfade = s.xfade.clamp(0.0, (self.loop_hi - self.loop_lo) * 0.5).min(self.loop_lo - start);
+            self.ping_pong = s.ping_pong;
+        }
         if let Some((semis, fall)) = v.pitch_env {
             self.pe_peak = semis;
-            self.pe_inc = semis / (PITCH_ENV_ATTACK_SECS * sr).max(1.0);
-            self.pe_coef = exp_coef(fall, sr);
+            self.pe_inc = semis / (PITCH_ENV_ATTACK_SECS * ts).max(1.0);
+            self.pe_coef = exp_coef(fall, ts);
             self.pe_rising = true;
         }
-        self.update_block(p, sr, 0, &BlockMod::default());
+        self.update_block(p, sr, ts, 0, &BlockMod::default());
     }
 
     /// Recompute block-rate values from the lane parameters. `frames`: the
-    /// block length, for the cutoff glide.
-    pub fn update_block(&mut self, p: &LaneSamplerParams, sr: f32, frames: usize, m: &BlockMod) {
+    /// block length, for the cutoff glide; `ts` as in [`Self::start`].
+    pub fn update_block(&mut self, p: &LaneSamplerParams, sr: f32, ts: f32, frames: usize, m: &BlockMod) {
         // Lane modulation: bend and vibrato (faded in per note), CC filter and volume.
         let vib = if m.vibrato != 0.0 && self.t >= m.vib_delay {
             let ramp = if m.vib_fade > 0.0 { ((self.t - m.vib_delay) / m.vib_fade).min(1.0) } else { 1.0 };
@@ -336,7 +367,7 @@ impl VoiceState {
             // Stabs: the mod envelope runs slower, so the filter falls less
             // quickly (rounder stabs).
             let stretch = 1.0 + PUNCH_ENV_STRETCH * punch;
-            self.menv = mod_env_value(env, self.menv, self.t / stretch, frames as f32 / sr / stretch, self.stage == Stage::Release);
+            self.menv = mod_env_value(env, self.menv, self.t / stretch, frames as f32 / ts / stretch, self.stage == Stage::Release);
             cents += self.menv * env.to_pitch * expr * (1.0 + PUNCH_PITCH * punch);
             // Held notes keep part of the sweep, so the filter does not close
             // on them (user, 2026-10-18: the sustain sounded too low).
@@ -355,9 +386,9 @@ impl VoiceState {
         self.mod_gain = gain;
         self.sat = if punch > 0.0 { 10f32.powf(PUNCH_SAT_DB * punch / 20.0) } else { 1.0 };
         self.sat_back = self.sat.powf(-PUNCH_SAT_BACK);
-        self.t += frames as f32 / sr;
+        self.t += frames as f32 / ts;
         if p.cutoff_glide > 0.0 && frames > 0 {
-            let coef = (-(frames as f32) / (p.cutoff_glide * sr)).exp();
+            let coef = (-(frames as f32) / (p.cutoff_glide * ts)).exp();
             self.cutoff_offset = self.cutoff_target + (self.cutoff_offset - self.cutoff_target) * coef;
         } else if p.cutoff_glide <= 0.0 {
             self.cutoff_offset = self.cutoff_target;
@@ -379,7 +410,7 @@ impl VoiceState {
         self.morph = p.filter_morph.map(|(lo, hi)| ((fc / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0));
         self.op_a = 1.0 - (-2.0 * PI * fc / sr).exp();
 
-        self.release_coef = exp_coef(p.release, sr);
+        self.release_coef = exp_coef(p.release, ts);
     }
 
     /// Enter the release stage.
@@ -490,15 +521,29 @@ impl VoiceState {
         // Frames whose interpolation taps stay inside the slot; loops read
         // wrapped taps outside this range so the seam is continuous.
         let (safe_lo, safe_hi) = (lo as usize + 4, (hi as usize).saturating_sub(6));
+        // A note's section reads the sample around it as it is (no wrapped
+        // taps); a repeating one crossfades into its start before the seam.
+        let (section, xf) = (self.section, self.xfade);
+        let fade_from = if section && !self.ping_pong && xf >= 1.0 { hi - xf } else { f64::INFINITY };
 
         for o in out.iter_mut() {
             let i = self.pos as usize;
             let frac = (self.pos - i as f64) as f32;
-            let s = if self.looping && (i < safe_lo || i > safe_hi) {
+            let mut s = if self.looping && !section && (i < safe_lo || i > safe_hi) {
                 self.read_wrapped::<I>(buf, i, frac, kernel)
             } else {
                 I::read(buf, i + PAD, frac, kernel)
             };
+            if self.pos > fade_from && self.dir > 0.0 {
+                // Raised cosine from the seam's end into the section's start
+                // (equal gain: the two ends are the same sound, mostly in phase).
+                let t = ((self.pos - fade_from) / xf).min(1.0) as f32;
+                let j = self.pos - len;
+                let o = I::read(buf, j as usize + PAD, (j - j.floor()) as f32, kernel);
+                let b = (t * FRAC_PI_2).sin().powi(2);
+                let a = 1.0 - b;
+                s = StereoSample { left: s.left * a + o.left * b, right: s.right * a + o.right * b };
+            }
 
             // Amp envelope.
             match self.stage {
@@ -591,7 +636,13 @@ impl VoiceState {
                 step = self.rate * self.dir * pitch_factor(self.pe) * mpf;
             }
             self.pos += step;
-            if self.looping && self.pos >= hi {
+            if section && self.ping_pong && ((self.dir > 0.0 && self.pos >= hi) || (self.dir < 0.0 && self.pos < lo)) {
+                // Back and forth: turn at the section's edges.
+                let edge = if self.dir > 0.0 { hi } else { lo };
+                self.pos = (2.0 * edge - self.pos).clamp(lo, hi);
+                self.dir = -self.dir;
+                step = -step;
+            } else if self.looping && self.pos >= hi {
                 self.pos -= len * ((self.pos - lo) / len).floor();
             } else if self.looping && self.dir < 0.0 && self.pos < lo {
                 self.pos += len * ((hi - self.pos) / len).floor();

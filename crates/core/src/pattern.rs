@@ -286,10 +286,6 @@ pub struct PatternLane {
     /// Splice: the focus per step the player sets for the next render
     /// ([`crate::splice::focus`]; all 1 = off).
     pub focus: [f32; STEPS_PER_BAR],
-    /// Drums: each voice's decay (an event `decay` byte, 0 = the lane's), by
-    /// [`DrumVoice`] index. Shape sets it, so it reaches the snare and the
-    /// cymbals but never the kick.
-    pub voice_decay: [u8; 8],
     /// Generator parameters, indexed like [`LaneGenerator::param_names`].
     pub params: [f32; MAX_GEN_PARAMS],
 }
@@ -322,7 +318,7 @@ impl PatternLane {
     ) -> Self {
         let mut forms = vec![Form::single()];
         forms.extend(DEFAULT_FORMS.iter().map(|f| Form::parse(f).expect("built-in form parses")));
-        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, phrase_bars: 8, permute: 0.0, focus: [1.0; STEPS_PER_BAR], voice_decay: [0; 8], params }
+        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, phrase_bars: 8, permute: 0.0, focus: [1.0; STEPS_PER_BAR], params }
     }
 
     pub fn role(&self) -> Role {
@@ -491,13 +487,6 @@ impl PatternLane {
             }
         }
         splice_thin(out, &self.focus, seed, c.lane, c.bar_in_phrase);
-        if self.role == Role::Drums {
-            for e in out.as_mut_slice().iter_mut().filter(|e| e.kind == EventKind::Trigger && e.decay == 0) {
-                if let Some(v) = DrumVoice::of_target(e.target) {
-                    e.decay = self.voice_decay[v as usize];
-                }
-            }
-        }
         voices
     }
 }
@@ -604,6 +593,17 @@ fn boost_filler(names: &[&str], params: &mut [f32; MAX_GEN_PARAMS]) {
     }
 }
 
+/// A note's loop section at `k` times its speed's length (none when it no
+/// longer fits its tick bytes).
+fn scale_loop(e: &mut LiveEvent, k: f32) {
+    let (at, len) = (e.loop_at as f32 * k, e.loop_len as f32 * k);
+    if e.loop_len == 0 || at + len > u8::MAX as f32 || len < 1.0 {
+        e.loop_len = 0;
+    } else {
+        (e.loop_at, e.loop_len) = (at as u8, len as u8);
+    }
+}
+
 /// Play the bar at `2^exponent` speed (clamped to −2..=1). Below 1 each bar
 /// plays the next part of the rendered bar stretched over the whole bar; a
 /// note held over the part start comes back on its first tick. 1 plays the
@@ -624,6 +624,8 @@ fn apply_speed(out: &mut BarEvents, exponent: i8, bar: u64, scratch: &mut BarEve
                 e.gate = (e.tick + e.gate - from).min(part) * k;
                 e.tick = 0;
                 e.flags &= !(flags::TIE | flags::ACCENT);
+                // Picked up mid-note: its loop section is behind it.
+                e.loop_len = 0;
                 e.note_id = e.note_id.wrapping_add(0x2000);
                 scratch.push(e);
             }
@@ -631,6 +633,7 @@ fn apply_speed(out: &mut BarEvents, exponent: i8, bar: u64, scratch: &mut BarEve
                 let mut e = *e;
                 e.tick = (e.tick - from) * k;
                 e.gate = e.gate.saturating_mul(k).min(TICKS_PER_BAR - e.tick);
+                scale_loop(&mut e, k as f32);
                 scratch.push(e);
             }
         }
@@ -641,6 +644,7 @@ fn apply_speed(out: &mut BarEvents, exponent: i8, bar: u64, scratch: &mut BarEve
                     let mut e = *e;
                     e.tick = e.tick / 2 + offset;
                     e.gate = if e.gate > 0 { (e.gate / 2).max(1) } else { 0 };
+                    scale_loop(&mut e, 0.5);
                     if offset > 0 {
                         // Distinct voices for the repeat (NoteOff matching).
                         e.note_id = e.note_id.wrapping_add(0x4000);

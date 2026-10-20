@@ -509,11 +509,11 @@ pub fn trigger(tick: u16, target: u8, vel: u8) -> LiveEvent {
 
 // MUSICAL: first draft, tune by ear (user). Pitched lanes: note attack
 // follows the density, slow and soft when sparse, sharp when dense.
-/// Attack at density 0 and 1, in seconds.
-pub const ATTACK_BY_DENSITY: (f32, f32) = (0.08, 0.01);
+/// Attack at density 0 and 1, in seconds (at [`crate::tempo::REF_BPM`]).
+pub const ATTACK_BY_DENSITY: (f32, f32) = (crate::tempo::note(1.0 / 16.0), crate::tempo::note(1.0 / 128.0));
 /// Note length as a share of the gap to the next note at density 0 and 1.
 /// Bass attack at density 0 and 1 (user: longer than the synths).
-pub const BASS_ATTACK_BY_DENSITY: (f32, f32) = (0.12, 0.02);
+pub const BASS_ATTACK_BY_DENSITY: (f32, f32) = (crate::tempo::note(3.0 / 32.0), crate::tempo::note(1.0 / 64.0));
 pub const LENGTH_BY_DENSITY: (f32, f32) = (1.0, 0.3);
 
 /// The event `attack` byte for a pitched lane at `density`.
@@ -851,8 +851,8 @@ mod tests {
     #[test]
     fn density_sets_attack_and_streams_spread_over_the_file() {
         use crate::sampler::attack_secs;
-        assert!((attack_secs(density_attack(0.0)) - 0.08).abs() < 0.004);
-        assert!((attack_secs(density_attack(1.0)) - 0.01).abs() < 0.001);
+        assert!((attack_secs(density_attack(0.0)) - ATTACK_BY_DENSITY.0).abs() < 0.004);
+        assert!((attack_secs(density_attack(1.0)) - ATTACK_BY_DENSITY.1).abs() < 0.001);
         let p = [0.5; MAX_GEN_PARAMS];
         let mask = [0u8; STEPS_PER_BAR];
         let c = crate::generator::test_util::ctx(3, 0, &p, &mask);

@@ -193,6 +193,10 @@ pub struct MeshParams {
     #[id = "tail"]
     pub tail: EnumParam<Tail>,
 
+    /// The last stage's multiband squash: mild .. strong.
+    #[id = "squash"]
+    pub squash: FloatParam,
+
     /// Splice (D42): 0 stacked on the host .. 0.5 off .. 1 in its gaps.
     #[id = "splice"]
     pub splice: FloatParam,
@@ -310,6 +314,8 @@ impl Default for MeshParams {
             heat: knob_at("Heat", 0.6 * (fresh.knob() - 0.25) + 0.1),
             tail: EnumParam::new("Tail", Tail::seeded(sound as u32)),
             splice: knob_at("Splice", 0.5),
+            // MUSICAL: tune by ear.
+            squash: knob_at("Squash", 0.3),
             style: EnumParam::new("Style", DrumStyle::Seed),
             mode: EnumParam::new("Mode", Mode::Drums).non_automatable(),
             sound_seed: setting(IntParam::new("Sound seed", sound, IntRange::Linear { min: 0, max: MAX_SEED })),

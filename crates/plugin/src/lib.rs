@@ -115,8 +115,12 @@ pub struct MeshVst {
     heat: mesh_vst_core::heat::Heat,
     /// The drums' ring modulator (Morph).
     ring: mesh_vst_core::heat::RingMod,
-    /// The drums' release tails (Shape).
-    tail: mesh_vst_core::tail::Tail,
+    /// The drums' release tails (Shape), per voice group, and the sampler's
+    /// bus output they grow on.
+    tail: mesh_vst_core::tail::VoiceTails,
+    buses: Vec<StereoSample>,
+    /// The last stage: the multiband squash.
+    squash: mesh_vst_core::squash::Squash,
     /// The monoizer below 80 Hz.
     mono: mesh_vst_core::heat::MonoLows,
     /// Splice (D42): the shared table, the sidechain's hits, this lane's
@@ -162,7 +166,9 @@ impl Default for MeshVst {
             resolved: Knobs::CENTERED,
             heat: mesh_vst_core::heat::Heat::default(),
             ring: mesh_vst_core::heat::RingMod::default(),
-            tail: mesh_vst_core::tail::Tail::new(48_000.0),
+            tail: mesh_vst_core::tail::VoiceTails::new(48_000.0),
+            buses: Vec::new(),
+            squash: mesh_vst_core::squash::Squash::new(48_000.0),
             mono: mesh_vst_core::heat::MonoLows::default(),
             link: None,
             sidechain: link::SidechainOcc::default(),
@@ -523,15 +529,22 @@ impl MeshVst {
             Mode::Bass => self.bass.as_mut(),
         };
         let buf = &mut self.buf[..n];
+        let buses = &mut self.buses[..mesh_vst_core::tail::GROUPS * n];
+        let drums = mode == Mode::Drums;
         match lane {
+            Some(l) if drums => l.player.process_split(buf, Some(&mut *buses), &transport),
             Some(l) => l.player.process(buf, &transport),
-            None => buf.fill(StereoSample::silence()),
+            None => {
+                buf.fill(StereoSample::silence());
+                buses.fill(StereoSample::silence());
+            }
         }
         // Drums: the ring modulator on Morph, and Heat focused by Tone.
-        let tone = if mode == Mode::Drums {
-            // Release tails above Shape's middle, the shaper in front.
+        let tone = if drums {
+            // Release tails above Shape's middle, per voice, the shaper in front.
             let at = (transport.beat * 60.0 / transport.bpm.max(1.0) * self.sample_rate as f64).max(0.0) as u64;
-            self.tail.process(buf, self.resolved.shape, self.params.tail.value().mode(), at);
+            let stretch = mesh_vst_core::tempo::stretch(transport.bpm);
+            self.tail.process(buf, buses, self.resolved.shape, self.params.tail.value().mode(), at, stretch);
             let (hz, mix, shape) = macros::ring(self.params.sound_seed.value() as u32, self.resolved.morph);
             self.ring.process(buf, hz, mix, shape, transport.beat * 60.0 / transport.bpm.max(1.0));
             self.resolved.tone
@@ -542,6 +555,8 @@ impl MeshVst {
         if self.params.mono_lows.value() {
             self.mono.process(buf);
         }
+        // Last: the squash, after everything else.
+        self.squash.process(buf, self.params.squash.value(), drums, mesh_vst_core::tempo::stretch(transport.bpm));
         self.meter.process(buf);
         // Splice: the sidechain's level per 16th of the song.
         if self.ui.host.load(std::sync::atomic::Ordering::Relaxed) == link::SIDECHAIN {
@@ -570,7 +585,9 @@ impl MeshVst {
                 }
                 .map_or((mesh_vst_core::role::Role::Drums, &[][..], 0, 3.0), |l| {
                     let letter = l.player.rendered().map_or(0, |(_, b)| b.letter);
-                    (l.player.lane().role(), l.player.fired(), letter, l.base.modulation.lfo.rate)
+                    // The sampler's LFO rate is per musical second: at the host's tempo.
+                    let hz = l.base.modulation.lfo.rate / mesh_vst_core::tempo::stretch(transport.bpm);
+                    (l.player.lane().role(), l.player.fired(), letter, hz)
                 });
                 let info = BlockInfo {
                     playing: transport.playing,
@@ -670,7 +687,9 @@ impl Plugin for MeshVst {
         self.modout = ModOut::new(config.sample_rate);
         self.heat = mesh_vst_core::heat::Heat::new(config.sample_rate);
         self.ring = mesh_vst_core::heat::RingMod::new(config.sample_rate);
-        self.tail = mesh_vst_core::tail::Tail::new(config.sample_rate);
+        self.tail = mesh_vst_core::tail::VoiceTails::new(config.sample_rate);
+        self.squash = mesh_vst_core::squash::Squash::new(config.sample_rate);
+        self.buses = vec![StereoSample::silence(); mesh_vst_core::tail::GROUPS * config.max_buffer_size as usize];
         self.mono = mesh_vst_core::heat::MonoLows::new(config.sample_rate);
         self.meter = link::BandMeter::new(config.sample_rate);
         if let Ok(mut u) = self.params.ui.lock() {

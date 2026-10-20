@@ -10,7 +10,7 @@ use super::interp::{sinc_tables, Hermite, Interp, Interpolation, Linear, Sinc8, 
 use super::params::{
     attack_secs, decay_secs, glide_secs, LaneSamplerParams, ModConfig, ZoneMod, ZoneTarget, CHOKE_FADE_SECS, PITCH_ENV_ATTACK_SECS,
 };
-use super::voice::{BlockMod, VoiceInit, VoiceState};
+use super::voice::{BlockMod, Section, VoiceInit, VoiceState};
 use super::unison::{Copy as UnisonCopy, Unison};
 use crate::event::{flags, EventKind, LiveEvent};
 use crate::MAX_EVENTS_PER_BAR;
@@ -18,7 +18,7 @@ use crate::types::{StereoBuffer, StereoSample};
 
 // MUSICAL: the choke amount's longest fade, at the open end.
 /// Fade of a choke at the smallest non-zero amount.
-const CHOKE_OPEN_SECS: f32 = 0.5;
+const CHOKE_OPEN_SECS: f32 = crate::tempo::note(3.0 / 8.0);
 
 /// Width of the region around the generator's position the Morph knob moves
 /// a stream's notes over, as a share of the sample (knob centre = the
@@ -120,6 +120,11 @@ struct Voice {
 ///   the oldest voice cut.
 pub struct Sampler {
     sr: f32,
+    /// Samples per second of musical time: the sample rate stretched by the
+    /// tempo ([`Self::set_bpm`]) and the lane's feel.
+    ts: f32,
+    /// [`crate::tempo::stretch`] of the host tempo.
+    stretch: f32,
     params: LaneSamplerParams,
     bank: Option<Shared<SampleBank>>,
     voices: Box<[Voice]>,
@@ -155,6 +160,10 @@ pub struct Sampler {
 /// Pitch bend smoothing time constant (no zipper on stepped bend curves).
 const BEND_SMOOTH_SECS: f32 = 0.004;
 
+// MUSICAL: tune by ear (user: start at about 50 ms).
+/// Crossfade at a note's loop seam (D43).
+const LOOP_XFADE_SECS: f32 = crate::tempo::note(1.0 / 32.0);
+
 // MUSICAL: short enough to free the voice fast, long enough not to click.
 /// Fade of a stolen voice.
 pub const STEAL_FADE_SECS: f32 = 0.005;
@@ -170,6 +179,8 @@ impl Sampler {
             .into_boxed_slice();
         Self {
             sr: sample_rate as f32,
+            ts: sample_rate as f32,
+            stretch: 1.0,
             params: LaneSamplerParams::default(),
             bank: None,
             voices,
@@ -191,6 +202,13 @@ impl Sampler {
             vib_phase: 0.0,
             rr: Box::new([0; 256]),
         }
+    }
+
+    /// The host tempo: the lane's musical times (envelopes, glides, the
+    /// choke, the LFO) are written for [`crate::tempo::REF_BPM`] and stretch
+    /// with it. Until set, they play as written.
+    pub fn set_bpm(&mut self, bpm: f64) {
+        self.stretch = crate::tempo::stretch(bpm);
     }
 
     /// Route voices started on targets `lo..hi` to the second output of
@@ -361,9 +379,10 @@ impl Sampler {
         self.spt = spt;
 
         let p = self.params;
+        self.ts = self.sr * self.stretch * p.feel.clamp(0.5, 2.0);
         let m = self.block_mod(n);
         for v in self.voices.iter_mut().filter(|v| v.st.active) {
-            v.st.update_block(&p, self.sr, n, &m);
+            v.st.update_block(&p, self.sr, self.ts, n, &m);
         }
 
         // Stable sort pending by offset (insertion sort, usually sorted).
@@ -482,7 +501,7 @@ impl Sampler {
             return;
         }
         let secs = CHOKE_FADE_SECS * (CHOKE_OPEN_SECS / CHOKE_FADE_SECS).powf(1.0 - amount.min(1.0));
-        let fade = secs * self.sr;
+        let fade = secs * self.ts;
         for v in self.voices.iter_mut() {
             if v.st.active && (group == 0 || v.st.group == group) {
                 v.st.choke(fade);
@@ -524,7 +543,7 @@ impl Sampler {
                 .map(|v| v.st.note_id);
             if let Some(id) = newest {
                 // Expression moves the glide a little; the event sets its time.
-                let glide = (glide_secs(ev.glide) * self.params.expression.clamp(0.75, 1.5) * self.sr) as f64;
+                let glide = (glide_secs(ev.glide) * self.params.expression.clamp(0.75, 1.5) * self.ts) as f64;
                 for v in self.voices.iter_mut().filter(|v| v.st.active && v.st.held && v.st.note_id == id) {
                     let rate = v.st.rate_for(ev.key, ev.cents as f64);
                     v.st.glide_to(rate, glide);
@@ -586,6 +605,16 @@ impl Sampler {
             let at = (ev.start as f64 / u16::MAX as f64 + morph).rem_euclid(1.0).min(0.999);
             (at, slot.sample.level_gain(at))
         };
+        // The note's loop section (D43), in the sample's frames from where
+        // the note starts there.
+        let section = (held && ev.loop_len > 0 && !ev.has(flags::REVERSE))
+            .then(|| {
+                let per_tick = self.spt * rate;
+                let lo = slot.start as f64 + offset * slot.len() as f64 + ev.loop_at as f64 * per_tick;
+                let xfade = LOOP_XFADE_SECS as f64 * self.ts as f64 * rate;
+                Section { lo, len: ev.loop_len as f64 * per_tick, xfade, ping_pong: ev.has(flags::PING_PONG) }
+            })
+            .filter(|s| s.len >= 2.0 && s.lo + s.len < slot.end as f64 - 8.0);
         let init = VoiceInit {
             age: self.age,
             group,
@@ -614,7 +643,7 @@ impl Sampler {
             },
             attack: if ev.attack != 0 { attack_secs(ev.attack) } else { p.attack },
             pitch_env: if slot.pitched && ev.kind == EventKind::NoteOn {
-                pitch_env(gate_ticks * self.spt / self.sr as f64)
+                pitch_env(gate_ticks * self.spt / self.ts as f64)
             } else {
                 None
             },
@@ -623,6 +652,7 @@ impl Sampler {
             punch: if stab { p.punch } else { 0.0 },
             loop_range: slot.loop_range,
             loop_sustain: slot.loop_sustain,
+            section,
             zone_mods: slot.zone_mods,
             root_key: pitched.then_some(slot.root_key),
             root_rate,
@@ -644,7 +674,7 @@ impl Sampler {
         let v = &mut self.voices[idx];
         v.data = Some(data);
         v.bus = self.bus_map[ev.target as usize];
-        v.st.start(&init, &self.params, self.sr);
+        v.st.start(&init, &self.params, self.sr, self.ts);
         // Over the limit: the oldest sounding voice fades out.
         let sounding = self.voices.iter().filter(|v| v.st.active && !v.st.is_choking()).count();
         if sounding > self.max_active {
@@ -684,11 +714,11 @@ impl Sampler {
 /// Pitch rise of the shortest notes in semitones.
 const PITCH_ENV_SEMIS: f32 = 1.5;
 /// Notes up to this long get the full rise. It fades out by `PITCH_ENV_LONG_SECS`.
-const PITCH_ENV_SHORT_SECS: f64 = 0.12;
-const PITCH_ENV_LONG_SECS: f64 = 0.6;
+const PITCH_ENV_SHORT_SECS: f64 = crate::tempo::note(3.0 / 32.0) as f64;
+const PITCH_ENV_LONG_SECS: f64 = crate::tempo::note(3.0 / 8.0) as f64;
 /// Fall time: this share of the note, between the bounds.
 const PITCH_ENV_FALL_SHARE: f64 = 0.7;
-const PITCH_ENV_FALL_SECS: (f64, f64) = (0.03, 0.1);
+const PITCH_ENV_FALL_SECS: (f64, f64) = (crate::tempo::note(3.0 / 128.0) as f64, crate::tempo::note(1.0 / 16.0) as f64);
 
 /// Pitch envelope (rise in semitones, fall in seconds) of a note lasting
 /// `secs`. `None` for long or held notes.

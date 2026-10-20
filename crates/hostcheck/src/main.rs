@@ -445,12 +445,12 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     }
     // Swing, Morph and Permute are heard: their extremes differ by more than a trace.
     let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt();
-    for knob in ["Groove", "Morph", "Permute", "Tone", "Heat"] {
-        let lo = render(entry, &Render { params: vec![(knob.into(), 0.0)], ..base.clone() })?;
-        let hi = render(entry, &Render { params: vec![(knob.into(), 1.0)], ..base.clone() })?;
+    for (mode, knob) in [("drums", "Groove"), ("drums", "Morph"), ("drums", "Permute"), ("drums", "Tone"), ("drums", "Heat"), ("drums", "Squash"), ("bass", "Squash")] {
+        let lo = render(entry, &Render { mode, params: vec![(knob.into(), 0.0)], ..base.clone() })?;
+        let hi = render(entry, &Render { mode, params: vec![(knob.into(), 1.0)], ..base.clone() })?;
         let diff: Vec<f32> = lo.samples.iter().zip(&hi.samples).map(|(a, b)| a - b).collect();
         let db = 20.0 * (rms(&diff) / rms(&lo.samples).max(1e-9)).log10();
-        rep.check(&format!("{knob} changes the drums"), db > -20.0, format!("difference {db:.1} dB below the drums"));
+        rep.check(&format!("{knob} changes the {mode}"), db > -20.0, format!("difference {db:.1} dB below the {mode}"));
     }
     // The three release tails at full Shape sound apart.
     let mut tails = Vec::new();

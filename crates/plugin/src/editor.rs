@@ -113,6 +113,7 @@ pub enum Knob {
     Heat,
     Gain,
     Splice,
+    Squash,
 }
 
 impl Knob {
@@ -130,6 +131,7 @@ impl Knob {
             Knob::Heat => &p.heat,
             Knob::Gain => &p.gain,
             Knob::Splice => &p.splice,
+            Knob::Squash => &p.squash,
         }
     }
 }
@@ -989,6 +991,9 @@ impl Gui {
         for k in [Knob::Density, Knob::Permute, Knob::Variation, Knob::Groove] {
             left = left.push(knob(p, k, self.hit_marker(k)));
         }
+        // The lane's last stage.
+        left = left.push(small("OUTPUT"));
+        left = left.push(knob(p, Knob::Squash, None));
         left = left.push(column![
             small("PHASE"),
             row![

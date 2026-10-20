@@ -9,6 +9,7 @@ use crate::pattern::{BarParams, PatternLane};
 use crate::role::Role;
 use crate::rng;
 use crate::sampler::{CcMap, LaneSamplerParams, ModConfig, ModEnv, ModLfo};
+use crate::tempo::note;
 
 /// Knob positions, 0..1, 0.5 = the seed's suggestion.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -254,8 +255,9 @@ fn seeded_voice(p: &mut LaneSamplerParams, sound_seed: u32) {
     m.env.to_cutoff *= r(3, 0.2, 2.0);
     // A pitch blip on some voices, none on others.
     m.env.to_pitch = if r(4, 0.0, 1.0) < 0.4 { 0.0 } else { r(5, 60.0, 600.0) };
-    // A slow drift .. a fast wobble, light .. deep.
-    m.lfo.rate = 2f32.powf(r(6, -1.5, 3.0));
+    // A slow drift .. a fast wobble, light .. deep: half .. eight times the
+    // designed rate, on the beat grid.
+    m.lfo.rate = 2f32.powf(r(6, -1.5, 3.0).round());
     m.lfo.to_cutoff = r(7, 0.0, 2800.0);
     p.decay *= 2f32.powf(r(8, -0.8, 0.8));
     p.release *= 2f32.powf(r(9, -0.7, 1.2));
@@ -271,10 +273,10 @@ fn width_and_liquid(p: &mut LaneSamplerParams, spread: f32, slide: f32) {
     let m = &mut p.modulation;
     m.lfo.to_cutoff *= lerp(0.3, 1.8, spread) / lerp(0.3, 1.8, 0.5);
     m.env.to_cutoff *= lerp(0.7, 1.4, spread) / lerp(0.7, 1.4, 0.5);
-    p.cutoff_glide = lerp(0.004, 0.16, slide);
+    p.cutoff_glide = lerp(note(1.0 / 256.0), note(1.0 / 8.0), slide);
     m.vib_depth = 30.0 * ((slide - 0.4) / 0.6).max(0.0).powf(1.5);
-    m.vib_delay = 0.18;
-    m.vib_fade = 0.3;
+    m.vib_delay = note(1.0 / 8.0);
+    m.vib_fade = note(1.0 / 4.0);
 }
 
 // MUSICAL: first draft, tune by ear (user: the ring mod comes in gradually,
@@ -319,15 +321,9 @@ pub fn apply(role: Role, v: &Knobs, accent: f32, lane: &mut PatternLane, sampler
         Role::Drums => apply_drums(v, accent, lane, sampler),
         _ => apply_bass(v, accent, lane, sampler),
     }
+    // Groove: the lane's own times straight, dotted or in triplets.
+    sampler.feel = crate::tempo::feel(v.swing);
 }
-
-// MUSICAL: first draft, tune by ear. Decay (seconds) of the voices Shape
-// reaches, at Shape 0 and 1: the snare most, the cymbals and percussion a
-// little. The kick, the break and the top loop play whole.
-const SHAPE_DECAY: [(crate::generator::layout::DrumVoice, (f32, f32)); 5] = {
-    use crate::generator::layout::DrumVoice as V;
-    [(V::Snare, (0.06, 0.6)), (V::Hats, (0.12, 0.3)), (V::Ride, (0.25, 0.6)), (V::Shaker, (0.1, 0.25)), (V::Perc, (0.1, 0.3))]
-};
 
 // MUSICAL: first draft of the drum macros, tune by ear.
 fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
@@ -353,18 +349,12 @@ fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSampl
     // Accent: wider dynamics and harder accents.
     p.velocity_curve = lerp(1.0, 2.2, accent);
     p.accent_gain = lerp(1.1, 2.0, accent);
-    // Shape: tight and dry .. open and ringing, per voice (user: mostly the
-    // snare, a little the cymbals, never the kick). The lane plays every hit
-    // whole; the voices that Shape reaches get their own decay.
-    p.sustain = 1.0;
-    p.decay = 0.8;
-    p.release = 0.03;
-    let decay = |range: (f32, f32)| crate::sampler::decay_byte(lerp(range.0, range.1, v.shape));
-    let mut voice_decay = [0u8; 8];
-    for (voice, range) in SHAPE_DECAY {
-        voice_decay[voice as usize] = decay(range);
-    }
-    lane.voice_decay = voice_decay;
+    // Shape: tight and dry .. the hits whole. It shortens every voice but
+    // lengthens none: the release tails above its middle do that, per voice
+    // (`tail::VoiceTails`).
+    p.sustain = lerp(0.35, 1.0, v.shape);
+    p.decay = lerp(note(3.0 / 32.0), note(1.0 / 2.0), v.shape);
+    p.release = lerp(note(1.0 / 64.0), note(3.0 / 32.0), v.shape);
     // The choke amount follows Shape: tight cuts, open lets the hats ring (D27).
     p.choke_amount = lerp(1.0, 0.2, v.shape);
 }
@@ -424,16 +414,17 @@ pub fn mudpie_params() -> LaneSamplerParams {
     let mut p = LaneSamplerParams {
         cutoff_hz: 400.0,
         resonance: 0.35,
-        attack: 0.002,
-        decay: 0.6,
+        attack: note(1.0 / 512.0),
+        decay: note(3.0 / 8.0),
         sustain: 0.85,
-        release: 0.12,
-        cutoff_glide: 0.03,
+        release: note(3.0 / 32.0),
+        cutoff_glide: note(3.0 / 128.0),
         ..LaneSamplerParams::default()
     };
     let mut m = ModConfig {
-        env: ModEnv { decay: 0.4, sustain: 0.0, release: 0.2, to_pitch: 200.0, to_cutoff: 4800.0, ..ModEnv::default() },
-        lfo: ModLfo { rate: 3.0, to_cutoff: 600.0, ..ModLfo::default() },
+        env: ModEnv { decay: note(1.0 / 4.0), sustain: 0.0, release: note(1.0 / 8.0), to_pitch: 200.0, to_cutoff: 4800.0, ..ModEnv::default() },
+        // One cycle per quarter note.
+        lfo: ModLfo { rate: 1.0 / note(1.0 / 4.0), to_cutoff: 600.0, ..ModLfo::default() },
         vib_rate: 5.5,
         ..ModConfig::default()
     };
@@ -693,25 +684,6 @@ mod style_tests {
         assert!(low > high + 0.25, "kick and snare share {low} at Tone 0, {high} at 1");
     }
 
-
-    #[test]
-    fn shape_lengthens_the_snare_most_and_never_the_kick() {
-        use crate::event::EventKind;
-        use crate::generator::layout::DrumVoice;
-        let decays = |shape: f32| {
-            let mut lane = PatternLane::drums(DrumLayout::standard(), 4, 4);
-            let s = LaneSettings { knobs: Knobs { shape, ..Knobs::CENTERED }, sound_seed: 4, pattern_seed: 4, form: 0, rate: 0, mode: 0, style: Some(1), unison: Default::default() };
-            configure(&mut lane, LaneSamplerParams::default(), &s);
-            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
-            lane.render(0, MusicalKey::new(5, true), &mut out, &mut scratch);
-            let of = |v: DrumVoice| out.events.as_slice().iter().filter(|e| e.kind == EventKind::Trigger && DrumVoice::of_target(e.target) == Some(v)).map(|e| e.decay).max();
-            (of(DrumVoice::Kick), of(DrumVoice::Snare), of(DrumVoice::Hats))
-        };
-        let (short, long) = (decays(0.0), decays(1.0));
-        assert_eq!((short.0, long.0), (Some(0), Some(0)), "the kick plays whole");
-        let gain = |a: Option<u8>, b: Option<u8>| crate::sampler::decay_secs(b.unwrap_or(1)) / crate::sampler::decay_secs(a.unwrap_or(1));
-        assert!(gain(short.1, long.1) > 2.0 * gain(short.2, long.2), "snare {:?}, hats {:?}", (short.1, long.1), (short.2, long.2));
-    }
     #[test]
     fn groove_lays_the_snare_back_and_shapes_the_hats() {
         use crate::event::EventKind;

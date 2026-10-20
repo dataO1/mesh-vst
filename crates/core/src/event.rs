@@ -38,6 +38,8 @@ pub mod flags {
     /// A note of a rhythmic figure (a cell, a ratchet): legato from the
     /// lane's length leaves it as written.
     pub const FIGURE: u8 = 1 << 5;
+    /// The note's loop section plays back and forth (else it repeats).
+    pub const PING_PONG: u8 = 1 << 6;
 }
 
 /// One musical event inside a bar. `Copy`, fixed size, no heap.
@@ -79,6 +81,12 @@ pub struct LiveEvent {
     /// The 16th step the generator wrote the event at, before swing, permute
     /// and speed move it: the step its per-note parameters were read at.
     pub step: u8,
+    /// Mudpie loops (D43): where the note's loop section starts after the
+    /// note's own start, and how long it is, in ticks; `loop_len` 0 = none.
+    /// The voice plays into the section, then loops it, crossfaded at the
+    /// seam (or back and forth with [`flags::PING_PONG`]).
+    pub loop_at: u8,
+    pub loop_len: u8,
 }
 
 impl LiveEvent {

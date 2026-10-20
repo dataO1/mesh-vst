@@ -202,7 +202,7 @@ const FILTER_HALF_OCTAVES: f32 = 2.21;
 const SLIDE_MAX_GAP_STEPS: usize = 4;
 // MUSICAL: user 2026-10-20: the Slide knob reaches about 250 ms.
 /// Glide time of a slide, seconds: Slide 0 .. 1.
-const SLIDE_SECS: (f32, f32) = (0.03, 0.25);
+const SLIDE_SECS: (f32, f32) = (crate::tempo::note(3.0 / 128.0), crate::tempo::note(3.0 / 16.0));
 
 /// The glide byte of a slide at Slide `slide`.
 fn slide_glide(slide: f32) -> u8 {
@@ -724,6 +724,9 @@ impl LaneGenerator for BassGenerator {
             |step| rng::weighted_pick(rng.at(step, S_FIGURE), &figure_weights).unwrap_or(0),
         );
         shape_notes(&mut events[..n], |e| note_length(ctx, e), param(ctx, P_EXPRESSION), param(ctx, P_SLIDE), |step| rng.unit(step, S_LEGATO));
+        // Loops last, on the notes as long as density and length left them
+        // (Splice thins the bar after this).
+        loops(&mut events[..n], variation * persona.looping, &rng);
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -825,11 +828,13 @@ struct Persona {
     ratchet: f32,
     /// How much tonal stability steers the walk (exponent on [`STABILITY`]).
     tonal: f32,
+    /// How much the seed loops its long notes ([`loops`]).
+    looping: f32,
 }
 
 impl Persona {
     /// No character: the rhythm and slides as the parameters say.
-    const PLAIN: Self = Self { sync: 0.0, slide: 1.0, half: 0.0, ratchet: 0.0, tonal: 1.0 };
+    const PLAIN: Self = Self { sync: 0.0, slide: 1.0, half: 0.0, ratchet: 0.0, tonal: 1.0, looping: 0.65 };
 
     fn new(ctx: &BarCtx) -> Self {
         let u = |k: u8| rng::unit_f32(rng::hash(ctx.seed, ctx.lane, 0, k, S_PERSONA));
@@ -840,6 +845,7 @@ impl Persona {
             half: PERSONA_HALF_MAX * u(2) * u(2),
             ratchet: PERSONA_RATCHET_MAX * u(3) * u(3),
             tonal: lerp(PERSONA_TONAL.0, PERSONA_TONAL.1, u(4)),
+            looping: lerp(PERSONA_LOOP.0, PERSONA_LOOP.1, u(5)),
         }
     }
 }
@@ -1224,6 +1230,54 @@ fn ratchets(
 
 /// The Length a note reads: its own move (step and height) around the
 /// lane's, fading out towards full length so long lines stay held.
+// MUSICAL: first draft, tune by ear (user: loops are part of the seed like
+// ratchets and triplets, Variation sets how often, only long notes loop).
+/// Shortest note (ticks) that can loop: an 8th.
+const LOOP_MIN_GATE: u16 = 2 * TICKS_PER_STEP;
+/// Share of the long notes that loop at full Variation on the loopiest seed.
+const LOOP_SHARE_MAX: f32 = 0.7;
+/// A seed's loop tendency range.
+const PERSONA_LOOP: (f32, f32) = (0.3, 1.0);
+/// Loop lengths in ticks (a 32nd, a 16th triplet, a 16th, an 8th triplet,
+/// an 8th, a quarter triplet, a quarter) and their weights.
+const LOOP_LENGTHS: [(u8, f32); 7] = [(12, 1.0), (16, 0.6), (24, 1.5), (32, 1.0), (48, 1.2), (64, 0.5), (96, 0.4)];
+/// Where the section starts after the note (ticks; at least a 32nd, so the
+/// seam can fade in from before it).
+const LOOP_STARTS: [u8; 4] = [12, 24, 48, 96];
+/// Share of the loops that play back and forth.
+const PING_PONG_SHARE: f32 = 0.35;
+const S_LOOP: u32 = 0x225;
+const S_LOOP_LEN: u32 = 0x226;
+const S_LOOP_AT: u32 = 0x227;
+const S_LOOP_PONG: u32 = 0x228;
+
+/// Loop some long notes (D43): each draws, per seed and step, whether it
+/// loops (`share`), the section's length and start so that it fits at
+/// least two rounds into the note, and whether it plays back and forth.
+fn loops(events: &mut [LiveEvent], share: f32, rng: &PhraseRng) {
+    if share <= 0.0 {
+        return;
+    }
+    let chance = LOOP_SHARE_MAX * share.clamp(0.0, 1.0).powf(1.5);
+    for ev in events.iter_mut().filter(|e| e.kind == EventKind::NoteOn && e.gate >= LOOP_MIN_GATE && !e.has(flags::TIE)) {
+        let step = (ev.tick / TICKS_PER_STEP) as u8;
+        if !rng.chance(step, S_LOOP, chance) {
+            continue;
+        }
+        let gate = ev.gate;
+        let fits = |len: u8, at: u8| at as u16 + 2 * len as u16 <= gate;
+        let weights: [f32; LOOP_LENGTHS.len()] = std::array::from_fn(|k| if fits(LOOP_LENGTHS[k].0, LOOP_STARTS[0]) { LOOP_LENGTHS[k].1 } else { 0.0 });
+        let Some(k) = rng::weighted_pick(rng.at(step, S_LOOP_LEN), &weights) else { continue };
+        let len = LOOP_LENGTHS[k].0;
+        let starts = LOOP_STARTS.iter().filter(|&&a| fits(len, a)).count().max(1);
+        ev.loop_len = len;
+        ev.loop_at = LOOP_STARTS[(rng.at(step, S_LOOP_AT) % starts as u64) as usize];
+        if rng.chance(step, S_LOOP_PONG, PING_PONG_SHARE) {
+            ev.flags |= flags::PING_PONG;
+        }
+    }
+}
+
 fn note_length(ctx: &BarCtx, ev: &LiveEvent) -> f32 {
     let shape = NoteShape { step: ev.step, gate: None, pitch_class: Some((ev.key as i32 - ctx.harmony.key.root as i32).rem_euclid(12) as u8) };
     held_length(param(ctx, P_LENGTH), note_param_for(ctx, P_LENGTH, shape))
@@ -1322,6 +1376,33 @@ mod tests {
         // Stream positions vary on every note by design; the musical
         // content is everything else.
         render(g, &c).as_slice().iter().map(|e| LiveEvent { start: 0, ..*e }).collect()
+    }
+
+    #[test]
+    fn variation_loops_some_long_notes_and_only_long_ones() {
+        let g = BassGenerator::new(PARAM_DEFAULTS, BassRules::default(), Vec::new());
+        let count = |variation: f32| {
+            let p = params(|p| {
+                p[P_VARIATION] = variation;
+                p[P_LENGTH] = 1.0;
+                p[P_STABS] = 0.0;
+            });
+            let (mut looped, mut pong) = (0, 0);
+            for seed in 0..40 {
+                for b in 0..8 {
+                    for e in bar(&g, seed, b, &p, &EMPTY).iter().filter(|e| e.loop_len > 0) {
+                        looped += 1;
+                        pong += e.has(flags::PING_PONG) as u32;
+                        assert!(e.gate >= LOOP_MIN_GATE && e.loop_at >= 12 && e.loop_at as u16 + 2 * e.loop_len as u16 <= e.gate, "{e:?}");
+                    }
+                }
+            }
+            (looped, pong)
+        };
+        assert_eq!(count(0.0).0, 0, "no loops without Variation");
+        let (looped, pong) = count(1.0);
+        assert!(looped > 20 && pong > 0 && pong < looped, "{looped} loops, {pong} back and forth");
+        assert!(count(0.5).0 < looped);
     }
 
     fn steps(ev: &[LiveEvent]) -> Vec<usize> {
@@ -1984,10 +2065,10 @@ mod tests {
     }
 
     #[test]
-    fn slide_sets_the_glide_time_up_to_a_quarter_second() {
+    fn slide_sets_the_glide_time_up_to_a_dotted_16th() {
         let secs = |s: f32| crate::sampler::glide_secs(slide_glide(s));
-        assert!((secs(0.0) - 0.03).abs() < 0.003, "{}", secs(0.0));
-        assert!((secs(1.0) - 0.25).abs() < 0.01, "{}", secs(1.0));
+        assert!((secs(0.0) - SLIDE_SECS.0).abs() < 0.003, "{}", secs(0.0));
+        assert!((secs(1.0) - SLIDE_SECS.1).abs() < 0.01, "{}", secs(1.0));
         assert!(secs(0.5) > secs(0.0) && secs(1.0) > secs(0.5));
         // The line's slides carry it.
         let g = generator();

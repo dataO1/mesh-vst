@@ -13,6 +13,10 @@
 //! - [`TailMode::Noise`]: three noise bands (low, mid, high) follow the
 //!   hits' level in their band and fade over the tail time.
 //!
+//! Each drum voice group grows its own tail ([`VoiceTails`]): the snare the
+//! longest and strongest, the hats and cymbals shorter and a little weaker,
+//! the kick a very short, faint one, the loops none.
+//!
 //! Noise and phases come from the song position, never from free-running
 //! state, so a render repeats exactly. RT-safe: buffers are allocated in
 //! [`Tail::new`].
@@ -22,6 +26,8 @@ use std::sync::Arc;
 use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 
+use crate::generator::layout::DrumVoice;
+use crate::tempo::note;
 use crate::types::StereoSample;
 
 /// How the tail is grown.
@@ -45,10 +51,57 @@ impl TailMode {
 const S_TAIL: u32 = 0xC53;
 
 // MUSICAL: first draft, tune by ear (user: tails from Shape 50 % up, at
-// most about 150 ms, mostly the snare, a little the hats, never the kick; the
-// shaper brings the attack up a little at low Shape and the tail out above).
-/// Tail time at the start of the range and at full Shape.
-const TAIL_SECS: (f32, f32) = (0.03, 0.15);
+// most an 8th on the snare, the hats shorter and a little weaker, the kick
+// very little and short; the shaper brings the attack up a little at low
+// Shape and the tail out above).
+/// Tail time at the start of the range and at full Shape (the snare's).
+const TAIL_SECS: (f32, f32) = (note(1.0 / 64.0), note(1.0 / 8.0));
+/// Tail groups: the kick, the snare, the hats, cymbals and percussion.
+pub const GROUPS: usize = 3;
+/// Each group's tail level and time against the snare's.
+const GROUP_GAIN: [f32; GROUPS] = [0.15, 1.0, 0.75];
+const GROUP_LENGTH: [f32; GROUPS] = [0.25, 1.0, 0.5];
+
+/// The tail group of a drum voice; the loops (break, top) grow none.
+pub fn group(voice: DrumVoice) -> Option<usize> {
+    match voice {
+        DrumVoice::Kick => Some(0),
+        DrumVoice::Snare => Some(1),
+        DrumVoice::Hats | DrumVoice::Ride | DrumVoice::Shaker | DrumVoice::Perc => Some(2),
+        DrumVoice::Break | DrumVoice::Top => None,
+    }
+}
+
+/// The drum sampler's bus map: group `g` on bus `g + 1`, the rest on the
+/// main output ([`crate::sampler::Sampler::set_bus_map`]).
+pub fn bus_map() -> [u8; 256] {
+    std::array::from_fn(|t| DrumVoice::of_target(t as u8).and_then(group).map_or(0, |g| g as u8 + 1))
+}
+
+/// The drum lane's tails, one per group.
+pub struct VoiceTails {
+    tails: Vec<Tail>,
+}
+
+impl VoiceTails {
+    pub fn new(sample_rate: f32) -> Self {
+        Self { tails: (0..GROUPS).map(|_| Tail::new(sample_rate)).collect() }
+    }
+
+    /// Grow each group's tail on its bus and mix it into `main`. `buses`
+    /// holds [`GROUPS`] buses of `main.len()` frames back to back (the
+    /// sampler's split output); `at` is the song position in samples,
+    /// `stretch` the tempo's ([`crate::tempo::stretch`]).
+    pub fn process(&mut self, main: &mut [StereoSample], buses: &mut [StereoSample], shape: f32, mode: TailMode, at: u64, stretch: f32) {
+        let n = main.len();
+        for (g, (tail, bus)) in self.tails.iter_mut().zip(buses.chunks_mut(n.max(1))).enumerate() {
+            tail.process(bus, shape, mode, at, (GROUP_GAIN[g], GROUP_LENGTH[g] * stretch));
+            for (m, b) in main.iter_mut().zip(bus.iter()) {
+                *m += *b;
+            }
+        }
+    }
+}
 /// Tail level at full Shape (linear, against the hits).
 const TAIL_GAIN: f32 = 0.6;
 /// Shaper: most attack boost (at Shape 0) and sustain boost (full Shape), dB.
@@ -244,15 +297,16 @@ impl Tail {
     }
 
     /// Shape `buf` and add its tail. `shape` is the resolved Shape value,
-    /// `at` the song position of the first frame in samples.
-    pub fn process(&mut self, buf: &mut [StereoSample], shape: f32, mode: TailMode, at: u64) {
+    /// `at` the song position of the first frame in samples, `(gain,
+    /// length)` scale the tail's level and time (the group's and the tempo's).
+    pub fn process(&mut self, buf: &mut [StereoSample], shape: f32, mode: TailMode, at: u64, (gain, length): (f32, f32)) {
         let (tail, attack_db, sustain_db) = shaping(shape);
-        self.shape_transients(buf, attack_db, sustain_db);
+        self.shape_transients(buf, attack_db, sustain_db * gain);
         if tail <= 0.0 {
             return;
         }
-        let secs = TAIL_SECS.0 + (TAIL_SECS.1 - TAIL_SECS.0) * tail;
-        let gain = TAIL_GAIN * tail;
+        let secs = (TAIL_SECS.0 + (TAIL_SECS.1 - TAIL_SECS.0) * tail) * length;
+        let gain = TAIL_GAIN * tail * gain;
         match mode {
             TailMode::Vocoder => self.vocoder(buf, secs, gain, at),
             TailMode::Spectral => self.spectral(buf, secs, gain, at),
@@ -428,11 +482,16 @@ mod tests {
         (sum / n.max(1) as f32).sqrt()
     }
 
+    /// What a stage added to `dry`.
+    fn added(wet: &[StereoSample], dry: &[StereoSample]) -> Vec<StereoSample> {
+        wet.iter().zip(dry).map(|(w, d)| StereoSample { left: w.left - d.left, right: w.right - d.right }).collect()
+    }
+
     fn run(shape: f32, mode: TailMode, at: u64) -> Vec<StereoSample> {
         let mut b = hits(3.0);
         let mut t = Tail::new(SR);
         for (k, chunk) in b.chunks_mut(256).enumerate() {
-            t.process(chunk, shape, mode, at + 256 * k as u64);
+            t.process(chunk, shape, mode, at + 256 * k as u64, (1.0, 1.0));
         }
         b
     }
@@ -464,7 +523,7 @@ mod tests {
             let mut wet = kick.clone();
             let mut t = Tail::new(SR);
             for (k, chunk) in wet.chunks_mut(256).enumerate() {
-                t.process(chunk, 1.0, mode, 256 * k as u64);
+                t.process(chunk, 1.0, mode, 256 * k as u64, (1.0, 1.0));
             }
             let (d, w) = (after_hits(&kick, 0.15, 0.3), after_hits(&wet, 0.15, 0.3));
             assert!(w < 1.5 * d + 1e-4, "{mode:?}: the kick rings on ({w} vs {d})");
@@ -483,10 +542,40 @@ mod tests {
     fn low_shape_lifts_the_attack_a_little() {
         let dry = hits(1.0);
         let mut b = dry.clone();
-        Tail::new(SR).process(&mut b, 0.0, TailMode::Vocoder, 0);
+        Tail::new(SR).process(&mut b, 0.0, TailMode::Vocoder, 0, (1.0, 1.0));
         let peak = |v: &[StereoSample]| v.iter().map(|s| s.left.abs()).fold(0.0f32, f32::max);
         let lift = 20.0 * (peak(&b) / peak(&dry)).log10();
         assert!((0.3..=3.5).contains(&lift), "{lift} dB");
+    }
+
+    #[test]
+    fn the_snare_rings_longest_the_hats_less_the_kick_barely() {
+        // The same hit on each group's bus, alone.
+        let tail_of = |g: usize| {
+            let dry = hits(2.0);
+            let n = dry.len();
+            let mut buses = vec![StereoSample::default(); GROUPS * n];
+            buses[g * n..(g + 1) * n].copy_from_slice(&dry);
+            let mut main = vec![StereoSample::default(); n];
+            let mut tails = VoiceTails::new(SR);
+            tails.process(&mut main, &mut buses, 1.0, TailMode::Noise, 0, 1.0);
+            after_hits(&added(&main, &dry), 0.02, 0.2)
+        };
+        let (kick, snare, hats) = (tail_of(0), tail_of(1), tail_of(2));
+        assert!(snare > 1.5 * hats && hats > 2.0 * kick, "kick {kick}, snare {snare}, hats {hats}");
+        assert_eq!(group(DrumVoice::Break), None);
+    }
+
+    #[test]
+    fn tails_stretch_with_the_tempo() {
+        let ring = |stretch: f32| {
+            let dry = hits(2.0);
+            let mut b = dry.clone();
+            let mut t = Tail::new(SR);
+            t.process(&mut b, 1.0, TailMode::Noise, 0, (1.0, stretch));
+            after_hits(&added(&b, &dry), 0.12, 0.25)
+        };
+        assert!(ring(2.0) > 1.5 * ring(1.0), "half the tempo, a longer tail");
     }
 
     #[test]

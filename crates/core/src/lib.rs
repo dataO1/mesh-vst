@@ -27,7 +27,9 @@ pub mod role;
 pub mod sampler;
 pub mod spec;
 pub mod splice;
+pub mod squash;
 pub mod tail;
+pub mod tempo;
 pub mod types;
 
 /// Steps (16ths) per bar.
