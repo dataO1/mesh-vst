@@ -8,6 +8,7 @@ pub mod calibrate;
 pub mod error;
 pub mod event;
 pub mod form;
+pub mod ops;
 pub mod gc;
 pub mod generator;
 pub mod harmony;

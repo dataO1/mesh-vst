@@ -17,6 +17,7 @@ use std::fmt;
 
 use crate::event::{BarEvents, EventKind, LiveEvent};
 use crate::harmony::seeded_chord;
+use crate::ops::{Op, OpChain};
 use crate::rng;
 use crate::{TICKS_PER_BAR, TICKS_PER_STEP};
 
@@ -198,6 +199,8 @@ pub struct Segment {
     /// `A*`: the lane plays another of its sounds here (instrument option or
     /// drum kit, seeded).
     pub swap: bool,
+    /// `Ar`, `A2id`: operators on the letter's first bars (D47).
+    pub ops: OpChain,
     /// Length in beats (quarter bars): `A7` is 28, `C*.5` is 2.
     pub beats: u16,
     /// Index of the written segment this one comes from, [`NO_SOURCE`] for a
@@ -238,7 +241,7 @@ pub struct Form {
 pub enum FormError {
     #[error("empty form")]
     Empty,
-    #[error("bad segment '{0}' (expected a letter A-D, optional ' and *, and a length in bars in quarters, like A7, B'4, C*.5 or D*.25; -8 rests, ~A8 plays only in the drums' breaks; a | starts the synth lanes' form)")]
+    #[error("bad segment '{0}' (expected a letter A-D, optional ' and *, operators (r i t c u w q a R o d e y h x l s n p m ?) and a length in bars in quarters, in any order, like A7, B'4, C*.5, A2r or Ar2; -8 rests, ~A8 plays only in the drums' breaks; a | starts the synth lanes' form)")]
     Segment(String),
     #[error("form is {0} bars, at most {MAX_FORM_BARS} allowed")]
     TooLong(u32),
@@ -246,6 +249,10 @@ pub enum FormError {
 
 /// Bars one pass of a form fills (the cycle is twice this).
 pub const FORM_BARS: u16 = 64;
+/// Bars of a period and of a section, for the seeded operator's view of
+/// where a segment sits (D47).
+const PERIOD_BARS: u16 = 4;
+const SECTION_BARS: u16 = 16;
 
 // MUSICAL: first draft, tune by ear (user: steady base, breaks at the
 // 16-bar points, a bigger breakout at the end of 64, like an EDM build).
@@ -300,19 +307,29 @@ impl Form {
                 None if play == Play::Rest => Letter::A,
                 None => return Err(bad()),
             };
-            let mut rest = chars.as_str();
-            let (mut prime, mut swap) = (false, false);
-            loop {
-                if let Some(r) = rest.strip_prefix('\'').or_else(|| rest.strip_prefix('′')) {
-                    prime = true;
-                    rest = r;
-                } else if let Some(r) = rest.strip_prefix('*') {
-                    swap = true;
-                    rest = r;
-                } else {
-                    break;
+            // Marks and the length in any order (`A'7`, `A2r`, `Ar2`), the
+            // length one run of digits.
+            let (mut prime, mut swap, mut ops) = (false, false, OpChain::default());
+            let (mut count, mut counted) = (String::new(), false);
+            for ch in chars {
+                if ch.is_ascii_digit() || ch == '.' {
+                    if counted {
+                        return Err(bad());
+                    }
+                    count.push(ch);
+                    continue;
+                }
+                counted |= !count.is_empty();
+                match ch {
+                    '\'' | '′' => prime = true,
+                    '*' => swap = true,
+                    c => match Op::from_char(c) {
+                        Some(op) if play != Play::Rest && ops.push(op) => {}
+                        _ => return Err(bad()),
+                    },
                 }
             }
+            let rest = count.as_str();
             let beats = if rest.is_empty() {
                 BEATS_PER_BAR as u32
             } else {
@@ -328,7 +345,7 @@ impl Form {
                 return Err(FormError::TooLong(total.div_ceil(BEATS_PER_BAR as u32)));
             }
             let source = pattern.len().min(NO_SOURCE as usize - 1) as u8;
-            pattern.push(Segment { letter, play, prime, swap, beats: beats as u16, source });
+            pattern.push(Segment { letter, play, prime, swap, ops, beats: beats as u16, source });
         }
         if pattern.is_empty() {
             return Err(FormError::Empty);
@@ -339,7 +356,7 @@ impl Form {
 
     /// One bar of A forever (a style without forms).
     pub fn single() -> Self {
-        let seg = Segment { letter: Letter::A, play: Play::All, prime: false, swap: false, beats: BEATS_PER_BAR, source: 0 };
+        let seg = Segment { letter: Letter::A, play: Play::All, prime: false, swap: false, ops: OpChain::default(), beats: BEATS_PER_BAR, source: 0 };
         Self { pattern: vec![seg], lead: None, segments: vec![seg], beats: BEATS_PER_BAR }
     }
 
@@ -398,7 +415,9 @@ impl Form {
             }
             if at < start + seg.beats {
                 let next = self.segments[(i + 1) % self.segments.len()];
+                let prev = self.segments[(i + self.segments.len() - 1) % self.segments.len()];
                 let in_segment = (at - start) / BEATS_PER_BAR;
+                let end = start + seg.beats;
                 return FormPos {
                     segment: i as u8,
                     source: seg.source,
@@ -406,6 +425,13 @@ impl Form {
                     play: seg.play,
                     prime: seg.prime,
                     swap: seg.swap,
+                    ops: seg.ops,
+                    beat_in_segment: at - start,
+                    segment_beats: seg.beats,
+                    start_beat: start,
+                    period_end: end.is_multiple_of(PERIOD_BARS * BEATS_PER_BAR),
+                    repeat: prev.letter == seg.letter && self.segments.len() > 1,
+                    before_change: end.is_multiple_of(SECTION_BARS * BEATS_PER_BAR) || next.letter.class() != seg.letter.class(),
                     bar_in_segment: in_segment,
                     segment_bars: seg.bars(),
                     // Filler bars keep counting from the last main segment.
@@ -497,7 +523,7 @@ fn expand(pattern: &[Segment], total: u16) -> Vec<Segment> {
         for (from, to, letter, swap) in STRUCTURE_BREAKS {
             for b in &mut beats[(from * BEATS_PER_BAR) as usize..(to * BEATS_PER_BAR) as usize] {
                 if b.letter.class() == SeedClass::Main && b.play == Play::All {
-                    *b = Segment { letter, play: Play::All, prime: false, swap, beats: 1, source: NO_SOURCE };
+                    *b = Segment { letter, play: Play::All, prime: false, swap, ops: OpChain::default(), beats: 1, source: NO_SOURCE };
                 }
             }
         }
@@ -510,7 +536,7 @@ fn expand(pattern: &[Segment], total: u16) -> Vec<Segment> {
         match out.last_mut() {
             Some(last)
                 if !restart
-                    && (last.letter, last.play, last.prime, last.swap, last.source) == (b.letter, b.play, b.prime, b.swap, b.source)
+                    && (last.letter, last.play, last.prime, last.swap, last.ops, last.source) == (b.letter, b.play, b.prime, b.swap, b.ops, b.source)
                     && pattern_beats(pattern, last.source) > (i - run_start) as u16 =>
             {
                 last.beats += 1;
@@ -612,11 +638,11 @@ impl fmt::Display for Form {
             if i > 0 {
                 f.write_str(" ")?;
             }
-            let (prime, swap) = (if s.prime { "'" } else { "" }, if s.swap { "*" } else { "" });
+            let (prime, swap, ops) = (if s.prime { "'" } else { "" }, if s.swap { "*" } else { "" }, s.ops);
             match s.play {
                 Play::Rest => write!(f, "-{}", fmt_beats(s.beats))?,
-                Play::Breaks => write!(f, "~{}{prime}{swap}{}", s.letter.as_char(), fmt_beats(s.beats))?,
-                Play::All => write!(f, "{}{prime}{swap}{}", s.letter.as_char(), fmt_beats(s.beats))?,
+                Play::Breaks => write!(f, "~{}{prime}{swap}{ops}{}", s.letter.as_char(), fmt_beats(s.beats))?,
+                Play::All => write!(f, "{}{prime}{swap}{ops}{}", s.letter.as_char(), fmt_beats(s.beats))?,
             }
         }
         if let Some(lead) = &self.lead {
@@ -638,6 +664,19 @@ pub struct FormPos {
     pub prime: bool,
     /// The lane plays another of its sounds (`*`).
     pub swap: bool,
+    /// The segment's operators (D47).
+    pub ops: OpChain,
+    /// Beats from the segment's start to here, and the segment's length.
+    pub beat_in_segment: u16,
+    pub segment_beats: u16,
+    /// The segment's first beat in the pass.
+    pub start_beat: u16,
+    /// Where the segment sits, for the seeded operator (`?`): it ends a
+    /// 4-bar period, repeats the letter before it, or ends before a change
+    /// (a 16-bar seam or another class of letter).
+    pub period_end: bool,
+    pub repeat: bool,
+    pub before_change: bool,
     pub bar_in_segment: u16,
     pub segment_bars: u16,
     /// Bars since the last main segment (A/B) started. The chord
@@ -659,6 +698,13 @@ impl Default for FormPos {
             play: Play::All,
             prime: false,
             swap: false,
+            ops: OpChain::default(),
+            beat_in_segment: 0,
+            segment_beats: BEATS_PER_BAR,
+            start_beat: 0,
+            period_end: false,
+            repeat: false,
+            before_change: false,
             bar_in_segment: 0,
             segment_bars: 1,
             bars_since_main: 0,
@@ -979,6 +1025,28 @@ mod tests {
         assert!(matches!(Form::parse("A60 C5"), Err(FormError::TooLong(65))));
         for f in DEFAULT_FORMS {
             assert_eq!(Form::parse(f).unwrap().to_string(), f, "built-in forms round-trip");
+        }
+    }
+
+    #[test]
+    fn operators_chain_in_any_order_with_the_length() {
+        use crate::ops::Op;
+        let f = Form::parse("A3 A2r A2'r Ar2 A3rd B.5q Ba.5 A?1").unwrap();
+        let ops: Vec<String> = f.pattern().iter().map(|s| s.ops.to_string()).collect();
+        assert_eq!(ops, ["", "r", "r", "r", "rd", "q", "a", "?"]);
+        assert_eq!(f.pattern()[1].beats, 8, "A2r is two bars");
+        assert!(f.pattern()[2].prime && f.pattern()[2].ops.contains(Op::Retrograde), "A2'r is primed and reversed");
+        assert_eq!(f.pattern()[4].ops.get(0), Some(Op::Retrograde), "marks apply left to right");
+        assert_eq!(f.pattern()[5].beats, 2);
+        // Printed canonically (marks, then the length) and back.
+        assert_eq!(f.to_string(), "A3 Ar2 A'r2 Ar2 Ard3 Bq.5 Ba.5 A?1");
+        assert_eq!(Form::parse(&f.to_string()).unwrap(), f);
+        // A position carries its segment's operators and where it sits.
+        let p = f.pos(4);
+        assert_eq!((p.ops.to_string(), p.beat_in_segment, p.segment_beats), ("r".to_string(), 4, 8));
+        for bad in ["A2r3", "Az2", "-2r", "Arrrrrrr1", "A1.5.5", "Ar"] {
+            let ok = Form::parse(bad).is_ok();
+            assert_eq!(ok, bad == "Ar", "{bad}");
         }
     }
 
