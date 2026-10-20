@@ -6,8 +6,9 @@
 //! set the same thing. `'` (another second half) and `*` (another sound)
 //! stay what they were. Pure and allocation-free.
 
-use crate::event::LiveEvent;
+use crate::event::{flags, EventKind, LiveEvent};
 use crate::harmony::HarmonyCtx;
+use crate::{rng, TICKS_PER_BAR, TICKS_PER_STEP};
 
 /// One operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -231,11 +232,558 @@ pub fn sort(notes: &mut [SpanNote]) {
     notes.sort_unstable_by_key(|n| (n.at, n.seq));
 }
 
-fn apply_one(_op: Op, _k: u8, _notes: &mut Vec<SpanNote>, _ctx: &OpCtx) {}
+const BAR: u32 = TICKS_PER_BAR as u32;
+const BEAT: u32 = BAR / 4;
+const STEP: u32 = TICKS_PER_STEP as u32;
+const S_OPS: u32 = 0xF70;
+
+// MUSICAL: first draft, tune by ear (user, 2026-10-21: at 0 % Variation a
+// little, at 100 % the full variation; the scaling of design D47's table).
+/// Inversion: the intervals mirrored at half size at the least.
+const INVERT_LEAST: f32 = 0.5;
+/// Sequence steps (scale degrees) a seed moves its motif by.
+const SEQUENCE_STEPS: [i32; 6] = [2, 3, -2, 4, -3, 1];
+/// Counter line: the share of moves made contrary, at the least; the
+/// largest contrary step (degrees).
+const COUNTER_LEAST: f32 = 0.5;
+const COUNTER_STEP_MAX: i32 = 3;
+/// Question: the open degrees (the 2nd and the 5th over the key root).
+const OPEN_DEGREES: [i32; 2] = [1, 4];
+/// Ending notes the question and the answer rebuild at full amount.
+const ENDING_NOTES_MAX: f32 = 3.0;
+/// Rotation: the most 16ths a seed rotates by.
+const ROTATE_STEPS_MAX: i32 = 16;
+/// Share of the notes the grid operators (d, e, y), legato and thin move,
+/// at the least and in full.
+const GRID_SHARE: (f32, f32) = (0.3, 1.0);
+const LEGATO_SHARE: (f32, f32) = (0.3, 1.0);
+const THIN_SHARE: (f32, f32) = (0.15, 0.6);
+const PASSING_SHARE: (f32, f32) = (0.2, 1.0);
+/// Staccato: the gate factor at the least and in full.
+const STACCATO_FACTOR: (f32, f32) = (0.7, 0.3);
+/// Mutation: the share of the notes changed in full (at least one).
+const MUTATE_SHARE: f32 = 0.33;
+/// Drums: a ghost's velocity share, and the open ending's span (ticks).
+const GHOST_SHARE: f32 = 0.35;
+const OPEN_END_TICKS: (f32, f32) = (48.0, 192.0);
+/// Lowest and highest key an octave move may land on.
+const KEY_RANGE: (i32, i32) = (24, 100);
+/// Note ids of the notes an operator adds (a repeat, a passing note).
+const ADDED_ID: u16 = 0x3000;
+
+fn lerp(a: (f32, f32), t: f32) -> f32 {
+    a.0 + (a.1 - a.0) * t.clamp(0.0, 1.0)
+}
+
+fn is_note(n: &SpanNote) -> bool {
+    matches!(n.ev.kind, EventKind::NoteOn | EventKind::Trigger)
+}
+
+/// A downbeat note of a pitched lane: the root lock, pitch operators leave it.
+fn is_anchor(n: &SpanNote, ctx: &OpCtx) -> bool {
+    !ctx.drums && n.ev.kind == EventKind::NoteOn && n.at % BAR == 0
+}
+
+/// A pitched note the pitch operators move.
+fn is_line(n: &SpanNote, ctx: &OpCtx) -> bool {
+    !ctx.drums && n.ev.kind == EventKind::NoteOn && n.at % BAR != 0
+}
+
+/// The last `len` ticks of the span (at least `least`), scaled by the amount.
+fn window(ctx: &OpCtx, least: u32) -> (u32, u32) {
+    let least = least.min(ctx.ticks) as f32;
+    let len = least + (ctx.ticks as f32 - least) * ctx.amount.clamp(0.0, 1.0);
+    (ctx.ticks - (len.round() as u32).min(ctx.ticks), ctx.ticks)
+}
+
+fn in_window(n: &SpanNote, (from, to): (u32, u32)) -> bool {
+    n.at >= from && n.at < to
+}
+
+fn h(ctx: &OpCtx, k: u8, stream: u32, n: u32) -> u64 {
+    rng::derive(rng::hash(ctx.seed, ctx.lane, k, 0, S_OPS + stream), n)
+}
+
+/// A key as a scale degree of the key (and the semitones off the scale).
+fn degree(key: u8, harmony: &HarmonyCtx) -> (i32, i32) {
+    let scale = harmony.scale();
+    let rel = key as i32 - harmony.key.root as i32;
+    let (oct, pc) = (rel.div_euclid(12), rel.rem_euclid(12));
+    let idx = (0..7).rev().find(|&i| scale[i] as i32 <= pc).unwrap_or(0);
+    (oct * 7 + idx as i32, pc - scale[idx] as i32)
+}
+
+fn key_of(deg: i32, off: i32, harmony: &HarmonyCtx) -> u8 {
+    let scale = harmony.scale();
+    let (oct, idx) = (deg.div_euclid(7), deg.rem_euclid(7) as usize);
+    (harmony.key.root as i32 + 12 * oct + scale[idx] as i32 + off).clamp(1, 127) as u8
+}
+
+/// The degree `target` (mod 7) nearest to `near`.
+fn nearest(near: i32, target: i32) -> i32 {
+    let base = near.div_euclid(7) * 7 + target.rem_euclid(7);
+    [base - 7, base, base + 7].into_iter().min_by_key(|d| (d - near).abs()).unwrap_or(base)
+}
+
+/// Push a note within the capacity.
+fn add(notes: &mut Vec<SpanNote>, n: SpanNote) {
+    if notes.len() < notes.capacity() {
+        notes.push(n);
+    }
+}
+
+/// The room of note `i` (ticks to the next note, or to the span's end).
+fn room(notes: &[SpanNote], i: usize, ticks: u32) -> u32 {
+    notes[i + 1..].iter().find(|n| is_note(n) && n.at > notes[i].at).map_or(ticks, |n| n.at) - notes[i].at
+}
+
+/// One event per tick and target (or key): a grid that put two together
+/// keeps the first.
+fn dedupe(notes: &mut Vec<SpanNote>) {
+    sort(notes);
+    let mut last: Option<(u32, u8, u8, EventKind)> = None;
+    notes.retain(|n| {
+        if !is_note(n) {
+            return true;
+        }
+        let id = (n.at, n.ev.target, n.ev.key, n.ev.kind);
+        let keep = last != Some(id);
+        last = Some(id);
+        keep
+    });
+}
+
+fn apply_one(op: Op, k: u8, notes: &mut Vec<SpanNote>, ctx: &OpCtx) {
+    let a = ctx.amount.clamp(0.0, 1.0);
+    let hm = &ctx.harmony;
+    match op {
+        Op::Seeded => {}
+        Op::Retrograde if ctx.drums => rhythm_retrograde(notes, ctx),
+        Op::Retrograde => {
+            // The pitches of the window, in reverse order.
+            let w = window(ctx, BEAT);
+            let idx = |notes: &[SpanNote]| notes.iter().enumerate().filter(|(_, n)| is_line(n, ctx) && in_window(n, w)).map(|(i, _)| i).collect_array();
+            let (ids, len) = idx(notes);
+            for j in 0..len / 2 {
+                let (x, y) = (ids[j], ids[len - 1 - j]);
+                let kx = notes[x].ev.key;
+                notes[x].ev.key = notes[y].ev.key;
+                notes[y].ev.key = kx;
+            }
+        }
+        Op::Inversion if !ctx.drums => {
+            let f = INVERT_LEAST + (1.0 - INVERT_LEAST) * a;
+            let Some(axis) = notes.iter().find(|n| is_line(n, ctx)).map(|n| degree(n.ev.key, hm).0) else { return };
+            for n in notes.iter_mut().filter(|n| is_line(n, ctx)) {
+                let (d, off) = degree(n.ev.key, hm);
+                n.ev.key = key_of(axis - ((d - axis) as f32 * f).round() as i32, off, hm);
+            }
+        }
+        Op::Sequence if !ctx.drums => {
+            let steps = SEQUENCE_STEPS[rng::below(h(ctx, k, 1, 0), SEQUENCE_STEPS.len() as u32) as usize];
+            let w = window(ctx, ctx.ticks / 2);
+            for n in notes.iter_mut().filter(|n| is_line(n, ctx) && in_window(n, w)) {
+                let (d, off) = degree(n.ev.key, hm);
+                n.ev.key = key_of(d + steps, off, hm);
+            }
+        }
+        Op::Counter if !ctx.drums => {
+            let p = COUNTER_LEAST + (1.0 - COUNTER_LEAST) * a;
+            let mut prev: Option<(i32, i32)> = None;
+            for (i, n) in notes.iter_mut().enumerate() {
+                if is_anchor(n, ctx) {
+                    prev = None;
+                    continue;
+                }
+                if !is_line(n, ctx) {
+                    continue;
+                }
+                let (d, off) = degree(n.ev.key, hm);
+                let new = match prev {
+                    None => d,
+                    Some((orig, new)) => {
+                        let delta = d - orig;
+                        if delta != 0 && rng::chance(h(ctx, k, 2, i as u32), p) {
+                            new - delta.signum() * delta.abs().min(COUNTER_STEP_MAX)
+                        } else {
+                            new + delta
+                        }
+                    }
+                };
+                n.ev.key = key_of(new, off, hm);
+                prev = Some((d, new));
+            }
+        }
+        Op::OctaveUp | Op::OctaveDown if !ctx.drums => {
+            let shift = if op == Op::OctaveUp { 12 } else { -12 };
+            let w = window(ctx, BEAT);
+            for n in notes.iter_mut().filter(|n| is_line(n, ctx) && in_window(n, w)) {
+                let to = n.ev.key as i32 + shift;
+                if (KEY_RANGE.0..=KEY_RANGE.1).contains(&to) {
+                    n.ev.key = to as u8;
+                }
+            }
+        }
+        Op::Question | Op::Answer if ctx.drums => drum_ending(notes, ctx, op == Op::Answer),
+        Op::Question | Op::Answer => {
+            let answer = op == Op::Answer;
+            let target = if answer { 0 } else { OPEN_DEGREES[rng::below(h(ctx, k, 3, 0), 2) as usize] };
+            let ending = 1 + (a * (ENDING_NOTES_MAX - 1.0)).round() as usize;
+            let (ids, len) = notes.iter().enumerate().filter(|(_, n)| n.ev.kind == EventKind::NoteOn).map(|(i, _)| i).collect_array();
+            let Some(&last) = ids[..len].last() else { return };
+            let (d, off) = degree(notes[last].ev.key, hm);
+            let goal = nearest(d, target);
+            let _ = off;
+            for back in 0..ending.min(len) {
+                let i = ids[len - 1 - back];
+                if back > 0 && is_anchor(&notes[i], ctx) {
+                    break;
+                }
+                // The last note on the goal, the ones before stepping down to it.
+                notes[i].ev.key = key_of(goal + back as i32, 0, hm);
+            }
+            let rest = ctx.ticks - notes[last].at;
+            let g = &mut notes[last].ev.gate;
+            if answer {
+                *g = rest.min(u16::MAX as u32) as u16;
+            } else {
+                *g = (*g / 2).max(STEP as u16 / 2);
+                notes[last].ev.loop_len = 0;
+            }
+        }
+        Op::RhythmRetrograde => rhythm_retrograde(notes, ctx),
+        Op::Rotation => {
+            let (from, to) = if ctx.drums { window(ctx, BAR) } else { (0, ctx.ticks) };
+            let steps = if ctx.drums {
+                2
+            } else {
+                let most = 2 + rng::below(h(ctx, k, 4, 0), (ROTATE_STEPS_MAX - 1) as u32) as i32;
+                (1.0 + (most - 1) as f32 * a).round() as i32
+            };
+            let len = (to - from).max(1);
+            for n in notes.iter_mut().filter(|n| in_window(n, (from, to))) {
+                n.at = from + (n.at - from + steps as u32 * STEP) % len;
+            }
+        }
+        Op::Dotted | Op::Triplets => {
+            let grid = if op == Op::Dotted { 3 * STEP } else { BAR / 12 };
+            let share = lerp(GRID_SHARE, a);
+            for (i, n) in notes.iter_mut().enumerate() {
+                if !is_note(n) || is_anchor(n, ctx) || !rng::chance(h(ctx, k, 5, i as u32), share) {
+                    continue;
+                }
+                n.at = (((n.at + grid / 2) / grid) * grid).min(ctx.ticks.saturating_sub(1));
+                if n.ev.gate > 0 {
+                    n.ev.gate = ((n.ev.gate as u32 + grid / 2) / grid * grid).max(grid) as u16;
+                }
+            }
+            dedupe(notes);
+        }
+        Op::Syncopate => {
+            let share = lerp(GRID_SHARE, a);
+            for (i, n) in notes.iter_mut().enumerate() {
+                if is_note(n) && n.at % BEAT == 0 && n.at % BAR != 0 && rng::chance(h(ctx, k, 6, i as u32), share) {
+                    n.at -= STEP;
+                    if n.ev.gate > 0 {
+                        n.ev.gate += STEP as u16;
+                    }
+                }
+            }
+            dedupe(notes);
+        }
+        Op::HalfTime => {
+            let (from, to) = window(ctx, BAR);
+            let half = (to - from) / 2;
+            notes.retain(|n| !is_note(n) || n.at < from || n.at - from < half);
+            for n in notes.iter_mut().filter(|n| is_note(n) && n.at >= from) {
+                n.at = from + 2 * (n.at - from);
+                n.ev.gate = n.ev.gate.saturating_mul(2);
+            }
+        }
+        Op::DoubleTime => {
+            let (from, to) = window(ctx, BEAT);
+            let half = (to - from) / 2;
+            let len = notes.len();
+            for i in 0..len {
+                if !is_note(&notes[i]) || notes[i].at < from {
+                    continue;
+                }
+                let mut n = notes[i];
+                n.at = from + (n.at - from) / 2;
+                if n.ev.gate > 0 {
+                    n.ev.gate = (n.ev.gate / 2).max(STEP as u16 / 2);
+                }
+                n.ev.loop_len = 0;
+                notes[i] = n;
+                let mut again = n;
+                again.at += half;
+                again.seq += 1 << 20;
+                again.ev.note_id = again.ev.note_id.wrapping_add(ADDED_ID);
+                add(notes, again);
+            }
+        }
+        Op::Legato if !ctx.drums => {
+            let share = lerp(LEGATO_SHARE, a);
+            sort(notes);
+            for i in 0..notes.len() {
+                if notes[i].ev.kind != EventKind::NoteOn || notes[i].ev.gate == 0 {
+                    continue;
+                }
+                let r = room(notes, i, ctx.ticks);
+                let g = notes[i].ev.gate as u32;
+                if r > g {
+                    notes[i].ev.gate = (g as f32 + (r - g) as f32 * share).round() as u16;
+                }
+            }
+        }
+        Op::Staccato => {
+            let f = lerp(STACCATO_FACTOR, a);
+            for n in notes.iter_mut().filter(|n| is_note(n) && n.ev.gate > 0) {
+                n.ev.gate = ((n.ev.gate as f32 * f).round() as u16).max(STEP as u16 / 2);
+                n.ev.loop_len = 0;
+            }
+        }
+        Op::Thin => {
+            let p = lerp(THIN_SHARE, a);
+            let mut i = 0u32;
+            notes.retain(|n| {
+                i += 1;
+                !(is_note(n) && n.at % BEAT != 0 && !is_anchor(n, ctx) && rng::chance(h(ctx, k, 7, i), p))
+            });
+        }
+        Op::Passing if !ctx.drums => {
+            let share = lerp(PASSING_SHARE, a);
+            sort(notes);
+            let len = notes.len();
+            for i in 0..len {
+                if notes[i].ev.kind != EventKind::NoteOn {
+                    continue;
+                }
+                let Some(j) = (i + 1..len).find(|&j| notes[j].ev.kind == EventKind::NoteOn) else { continue };
+                let (from, to) = (degree(notes[i].ev.key, hm).0, degree(notes[j].ev.key, hm).0);
+                let gap = notes[j].at - notes[i].at;
+                if (to - from).abs() < 2 || gap < 2 * STEP || !rng::chance(h(ctx, k, 8, i as u32), share) {
+                    continue;
+                }
+                let at = notes[i].at + (gap / 2) / STEP * STEP;
+                let mut pass = notes[i];
+                pass.at = at;
+                pass.seq += 1 << 20;
+                pass.ev.key = key_of(from + (to - from).signum(), 0, hm);
+                pass.ev.gate = (notes[j].at - at).min(u16::MAX as u32) as u16;
+                pass.ev.note_id = pass.ev.note_id.wrapping_add(ADDED_ID);
+                pass.ev.flags &= !(flags::TIE | flags::ACCENT);
+                pass.ev.loop_len = 0;
+                notes[i].ev.gate = notes[i].ev.gate.min((at - notes[i].at) as u16);
+                add(notes, pass);
+            }
+        }
+        Op::Mutate => mutate(notes, ctx, k),
+        // Pitch and length operators on the drums.
+        _ => {}
+    }
+}
+
+/// Indices of matching notes, without allocating (at most a span's notes).
+trait CollectArray {
+    fn collect_array(self) -> ([usize; MAX_LINE], usize);
+}
+
+/// Most notes one pitch operator reorders.
+const MAX_LINE: usize = 512;
+
+impl<I: Iterator<Item = usize>> CollectArray for I {
+    fn collect_array(self) -> ([usize; MAX_LINE], usize) {
+        let mut out = [0usize; MAX_LINE];
+        let mut n = 0;
+        for i in self.take(MAX_LINE) {
+            out[n] = i;
+            n += 1;
+        }
+        (out, n)
+    }
+}
+
+/// `R` (and `r` on the drums): the window's rhythm mirrored; a pitched
+/// lane keeps its pitch order.
+fn rhythm_retrograde(notes: &mut Vec<SpanNote>, ctx: &OpCtx) {
+    let (from, to) = window(ctx, BEAT);
+    let moves = |n: &SpanNote| is_note(n) && in_window(n, (from, to)) && !is_anchor(n, ctx);
+    let (ids, len) = notes.iter().enumerate().filter(|(_, n)| moves(n)).map(|(i, _)| i).collect_array();
+    let mut keys = [0u8; MAX_LINE];
+    for (j, &i) in ids[..len].iter().enumerate() {
+        keys[j] = notes[i].ev.key;
+        let n = &mut notes[i];
+        let dur = if n.ev.gate > 0 { (n.ev.gate as u32).min(to - n.at) } else { STEP };
+        n.at = (from + to).saturating_sub(n.at + dur).max(from);
+    }
+    if !ctx.drums {
+        // The pitches in their order on the mirrored rhythm.
+        let (mut slots, _) = ids[..len].iter().copied().collect_array();
+        slots[..len].sort_unstable_by_key(|&i| (notes[i].at, notes[i].seq));
+        for (j, &i) in slots[..len].iter().enumerate() {
+            notes[i].ev.key = keys[j];
+        }
+    }
+}
+
+/// `q` / `a` on the drums: an open ending (the last hits gone) or a closed
+/// one (a strong hit on the last beat, nothing after it).
+fn drum_ending(notes: &mut Vec<SpanNote>, ctx: &OpCtx, closed: bool) {
+    let a = ctx.amount.clamp(0.0, 1.0);
+    let from = ctx.ticks.saturating_sub(lerp(OPEN_END_TICKS, a).round() as u32);
+    if closed {
+        let last_beat = ctx.ticks.saturating_sub(BEAT);
+        let Some(mut hit) = notes.iter().find(|n| is_note(n)).copied() else { return };
+        notes.retain(|n| !is_note(n) || n.at < last_beat || n.at < from);
+        hit.at = last_beat;
+        hit.seq += 1 << 20;
+        hit.ev.vel = hit.ev.vel.max(110);
+        add(notes, hit);
+    } else {
+        notes.retain(|n| !is_note(n) || n.at < from);
+    }
+}
+
+/// `m`: a few seeded notes change. Pitched: a neighbour, an octave, half or
+/// twice the length, or gone; drums: a ghost, gone, or a ghost after it.
+fn mutate(notes: &mut Vec<SpanNote>, ctx: &OpCtx, k: u8) {
+    let a = ctx.amount.clamp(0.0, 1.0);
+    let movable = |n: &SpanNote| is_note(n) && !is_anchor(n, ctx);
+    let count = notes.iter().filter(|n| movable(n)).count();
+    if count == 0 {
+        return;
+    }
+    let changes = ((count as f32 * MUTATE_SHARE * a).round() as usize).max(1);
+    let hm = ctx.harmony;
+    for c in 0..changes {
+        let hc = h(ctx, k, 9, c as u32);
+        let pick = rng::below(hc, count as u32) as usize;
+        let Some(i) = notes.iter().enumerate().filter(|(_, n)| movable(n)).nth(pick).map(|(i, _)| i) else { continue };
+        let kind = rng::below(rng::derive(hc, 1), 4);
+        if ctx.drums {
+            match kind {
+                0 | 1 => notes[i].ev.vel = ((notes[i].ev.vel as f32 * GHOST_SHARE) as u8).max(1),
+                2 if notes[i].at % BEAT != 0 => notes[i].ev.vel = 0,
+                _ => {
+                    let mut ghost = notes[i];
+                    ghost.at += STEP;
+                    ghost.seq += 1 << 20;
+                    ghost.ev.vel = ((ghost.ev.vel as f32 * GHOST_SHARE) as u8).max(1);
+                    if ghost.at < ctx.ticks {
+                        add(notes, ghost);
+                    }
+                }
+            }
+            continue;
+        }
+        let r = room(notes, i, ctx.ticks);
+        let n = &mut notes[i].ev;
+        match kind {
+            0 => {
+                let (d, off) = degree(n.key, &hm);
+                let step = if rng::chance(rng::derive(hc, 2), 0.5) { 1 } else { -1 };
+                n.key = key_of(d + step, off, &hm);
+            }
+            1 => {
+                let to = n.key as i32 + if rng::chance(rng::derive(hc, 2), 0.5) { 12 } else { -12 };
+                if (KEY_RANGE.0..=KEY_RANGE.1).contains(&to) {
+                    n.key = to as u8;
+                }
+            }
+            2 if n.gate > 0 => {
+                n.gate = if rng::chance(rng::derive(hc, 2), 0.5) { (n.gate / 2).max(STEP as u16 / 2) } else { (n.gate as u32 * 2).min(r) as u16 };
+            }
+            _ => n.vel = 0,
+        }
+    }
+    // Velocity 0 marks a dropped note.
+    notes.retain(|n| !(is_note(n) && n.ev.vel == 0));
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::key::MusicalKey;
+
+    /// C minor, two bars: the root on each downbeat, a rising line on the
+    /// other beats (quarter notes).
+    fn line() -> Vec<SpanNote> {
+        let keys = [36u8, 39, 41, 43, 36, 44, 46, 48];
+        let mut v = Vec::with_capacity(64);
+        for (i, k) in keys.iter().enumerate() {
+            let ev = LiveEvent { kind: EventKind::NoteOn, key: *k, vel: 100, gate: 72, ..Default::default() };
+            v.push(SpanNote { at: i as u32 * BEAT, seq: i as u32, ev });
+        }
+        v
+    }
+
+    fn ctx(amount: f32) -> OpCtx {
+        let harmony = HarmonyCtx { key: MusicalKey::new(0, true), chord_degree: 0, progression: 0, mode: 0 };
+        OpCtx { ticks: 2 * BAR, amount, seed: 7, lane: 1, drums: false, harmony }
+    }
+
+    fn run(op: Op, amount: f32, notes: &[SpanNote]) -> Vec<SpanNote> {
+        let mut v = Vec::with_capacity(64);
+        v.extend_from_slice(notes);
+        let mut chain = OpChain::default();
+        chain.push(op);
+        apply(&chain, &mut v, &ctx(amount));
+        v
+    }
+
+    fn keys(v: &[SpanNote]) -> Vec<u8> {
+        v.iter().map(|n| n.ev.key).collect()
+    }
+
+    #[test]
+    fn pitch_operators_keep_the_downbeat_roots_and_scale_with_the_amount() {
+        let src = line();
+        let line_keys = |v: &[SpanNote]| v.iter().filter(|n| n.at % BAR != 0).map(|n| n.ev.key).collect::<Vec<_>>();
+        for op in [Op::Retrograde, Op::Inversion, Op::Sequence, Op::Counter, Op::OctaveUp, Op::OctaveDown, Op::Question, Op::Answer] {
+            for amount in [0.0, 1.0] {
+                let v = run(op, amount, &src);
+                assert_eq!(v.iter().map(|n| n.at).collect::<Vec<_>>(), src.iter().map(|n| n.at).collect::<Vec<_>>(), "{op:?}: the rhythm stays");
+                assert!(v.iter().filter(|n| n.at % BAR == 0).all(|n| n.ev.key == 36), "{op:?}: the roots stay");
+            }
+            let (little, full) = (line_keys(&run(op, 0.0, &src)), line_keys(&run(op, 1.0, &src)));
+            let changed = |k: &[u8]| k.iter().zip(line_keys(&src)).filter(|(a, b)| **a != *b).count();
+            assert!(changed(&full) >= changed(&little) && changed(&full) > 0, "{op:?}: {little:?} .. {full:?}");
+        }
+        // Retrograde in full: the line backwards.
+        assert_eq!(line_keys(&run(Op::Retrograde, 1.0, &src)), [48, 46, 44, 43, 41, 39]);
+        // Inversion in full mirrors every step in the scale around the first
+        // note (C minor: Eb F G Ab Bb C becomes Eb D C Bb Ab G).
+        assert_eq!(line_keys(&run(Op::Inversion, 1.0, &src)), [39, 38, 36, 34, 32, 31]);
+        // The answer ends on the root, held to the end; the question on the
+        // 2nd or the 5th, shorter.
+        let a = run(Op::Answer, 0.0, &src);
+        let last = a.last().unwrap();
+        assert_eq!((last.ev.key % 12, last.at + last.ev.gate as u32), (0, 2 * BAR));
+        let q = run(Op::Question, 0.0, &src);
+        let last = q.last().unwrap();
+        assert!([2, 7].contains(&(last.ev.key % 12)) && last.ev.gate < 72, "{:?}", last.ev);
+        // Octaves: up an octave.
+        assert!(line_keys(&run(Op::OctaveUp, 1.0, &src)).iter().zip(line_keys(&src)).all(|(a, b)| *a == b + 12));
+    }
+
+    #[test]
+    fn pitch_operators_leave_drum_hits() {
+        let hits: Vec<SpanNote> = line().into_iter().map(|mut n| {
+            n.ev.kind = EventKind::Trigger;
+            n.ev.key = 0;
+            n
+        }).collect();
+        for op in [Op::Inversion, Op::Sequence, Op::Counter, Op::OctaveUp, Op::OctaveDown, Op::Legato, Op::Passing] {
+            let mut v = Vec::with_capacity(64);
+            v.extend_from_slice(&hits);
+            let mut chain = OpChain::default();
+            chain.push(op);
+            apply(&chain, &mut v, &OpCtx { drums: true, ..ctx(1.0) });
+            assert_eq!(v, hits, "{op:?}");
+        }
+    }
 
     #[test]
     fn every_operator_has_its_own_mark() {

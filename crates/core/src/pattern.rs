@@ -641,7 +641,6 @@ impl PatternLane {
             pos.segment as u64 | (pos.second as u64) << 8 | (pos.letter.index() as u64) << 16,
             base.harmony.key.root as u64 | (base.harmony.key.minor as u64) << 8 | (self.mode as u64) << 16,
             self.phrase_bars as u64,
-            c.phrase as u64,
             amount.to_bits() as u64,
         ] {
             key = mix(key, v);
@@ -661,6 +660,7 @@ impl PatternLane {
                 let fill = self.role == Role::Drums && ((base.class == SeedClass::Filler && j + 1 == bars) || phrase_end);
                 let mut ctx = BarCtx {
                     bar_in_phrase: (j as u64 % BARS_PER_PHRASE) as u8,
+                    phrase: (first_bar / BARS_PER_PHRASE) as u32,
                     fill,
                     harmony,
                     focus: [1.0; STEPS_PER_BAR],
@@ -1237,9 +1237,18 @@ mod tests {
             for b in [4u64, 3, 6, 4] {
                 assert_eq!(bar_alone(&lane, b), ordered[b as usize], "bar {b}");
             }
-            if drums {
-                // No transform yet: the variant's bars are A's first bars.
-                assert_eq!(ordered[3], ordered[0]);
+            if !drums {
+                // `A2r` after `A3`: A's first two bars, their pitches reordered.
+                let keys = |bars: &[Vec<crate::event::LiveEvent>]| {
+                    let mut k: Vec<(u8, u16)> = bars.iter().flatten().filter(|e| e.kind == EventKind::NoteOn).map(|e| (e.key, e.gate)).collect();
+                    let order: Vec<u8> = k.iter().map(|x| x.0).collect();
+                    k.sort_unstable();
+                    (k.into_iter().map(|x| x.0).collect::<Vec<_>>(), order)
+                };
+                let (a, a_order) = keys(&ordered[0..2]);
+                let (v, v_order) = keys(&ordered[3..5]);
+                assert_eq!(a, v, "the same notes");
+                assert_ne!(a_order, v_order, "in another order");
             }
         }
     }
