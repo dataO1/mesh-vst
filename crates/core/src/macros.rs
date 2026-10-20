@@ -316,6 +316,14 @@ pub fn apply(role: Role, v: &Knobs, accent: f32, lane: &mut PatternLane, sampler
     }
 }
 
+// MUSICAL: first draft, tune by ear. Decay (seconds) of the voices Shape
+// reaches, at Shape 0 and 1: the snare most, the cymbals and percussion a
+// little. The kick, the break and the top loop play whole.
+const SHAPE_DECAY: [(crate::generator::layout::DrumVoice, (f32, f32)); 5] = {
+    use crate::generator::layout::DrumVoice as V;
+    [(V::Snare, (0.06, 0.6)), (V::Hats, (0.12, 0.3)), (V::Ride, (0.25, 0.6)), (V::Shaker, (0.1, 0.25)), (V::Perc, (0.1, 0.3))]
+};
+
 // MUSICAL: first draft of the drum macros, tune by ear.
 fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
     lane.set_param("density", v.density);
@@ -340,10 +348,18 @@ fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSampl
     // Accent: wider dynamics and harder accents.
     p.velocity_curve = lerp(1.0, 2.2, accent);
     p.accent_gain = lerp(1.1, 2.0, accent);
-    // Shape: tight and dry .. open and ringing.
-    p.sustain = lerp(0.35, 1.0, v.shape);
-    p.decay = lerp(0.12, 0.8, v.shape);
-    p.release = lerp(0.02, 0.15, v.shape);
+    // Shape: tight and dry .. open and ringing, per voice (user: mostly the
+    // snare, a little the cymbals, never the kick). The lane plays every hit
+    // whole; the voices that Shape reaches get their own decay.
+    p.sustain = 1.0;
+    p.decay = 0.8;
+    p.release = 0.03;
+    let decay = |range: (f32, f32)| crate::sampler::decay_byte(lerp(range.0, range.1, v.shape));
+    let mut voice_decay = [0u8; 8];
+    for (voice, range) in SHAPE_DECAY {
+        voice_decay[voice as usize] = decay(range);
+    }
+    lane.voice_decay = voice_decay;
     // The choke amount follows Shape: tight cuts, open lets the hats ring (D27).
     p.choke_amount = lerp(1.0, 0.2, v.shape);
 }
@@ -667,6 +683,25 @@ mod style_tests {
         assert!(low > high + 0.25, "kick and snare share {low} at Tone 0, {high} at 1");
     }
 
+
+    #[test]
+    fn shape_lengthens_the_snare_most_and_never_the_kick() {
+        use crate::event::EventKind;
+        use crate::generator::layout::DrumVoice;
+        let decays = |shape: f32| {
+            let mut lane = PatternLane::drums(DrumLayout::standard(), 4, 4);
+            let s = LaneSettings { knobs: Knobs { shape, ..Knobs::CENTERED }, sound_seed: 4, pattern_seed: 4, form: 0, rate: 0, mode: 0, style: Some(1), unison: Default::default() };
+            configure(&mut lane, LaneSamplerParams::default(), &s);
+            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+            lane.render(0, MusicalKey::new(5, true), &mut out, &mut scratch);
+            let of = |v: DrumVoice| out.events.as_slice().iter().filter(|e| e.kind == EventKind::Trigger && DrumVoice::of_target(e.target) == Some(v)).map(|e| e.decay).max();
+            (of(DrumVoice::Kick), of(DrumVoice::Snare), of(DrumVoice::Hats))
+        };
+        let (short, long) = (decays(0.0), decays(1.0));
+        assert_eq!((short.0, long.0), (Some(0), Some(0)), "the kick plays whole");
+        let gain = |a: Option<u8>, b: Option<u8>| crate::sampler::decay_secs(b.unwrap_or(1)) / crate::sampler::decay_secs(a.unwrap_or(1));
+        assert!(gain(short.1, long.1) > 2.0 * gain(short.2, long.2), "snare {:?}, hats {:?}", (short.1, long.1), (short.2, long.2));
+    }
     #[test]
     fn groove_lays_the_snare_back_and_shapes_the_hats() {
         use crate::event::EventKind;

@@ -44,10 +44,11 @@ impl TailMode {
 
 const S_TAIL: u32 = 0xC53;
 
-// MUSICAL: first draft, tune by ear (user: tails from Shape 50 % up, the
+// MUSICAL: first draft, tune by ear (user: tails from Shape 50 % up, at
+// most about 150 ms, mostly the snare, a little the hats, never the kick; the
 // shaper brings the attack up a little at low Shape and the tail out above).
 /// Tail time at the start of the range and at full Shape.
-const TAIL_SECS: (f32, f32) = (0.25, 2.5);
+const TAIL_SECS: (f32, f32) = (0.03, 0.15);
 /// Tail level at full Shape (linear, against the hits).
 const TAIL_GAIN: f32 = 0.6;
 /// Shaper: most attack boost (at Shape 0) and sustain boost (full Shape), dB.
@@ -55,7 +56,7 @@ const ATTACK_DB: f32 = 3.0;
 const SUSTAIN_DB: f32 = 6.0;
 /// Vocoder bands: count and range.
 const BANDS: usize = 16;
-const BAND_RANGE: (f32, f32) = (150.0, 12_000.0);
+const BAND_RANGE: (f32, f32) = (300.0, 12_000.0);
 const BAND_Q: f32 = 4.0;
 /// Level of the summed bands against one (uncorrelated noise bands add in power).
 const BAND_SUM: f32 = 0.25;
@@ -69,6 +70,10 @@ const HOP: usize = FFT / 4;
 /// Noise mode band splits.
 const SPLIT_LOW: f32 = 300.0;
 const SPLIT_HIGH: f32 = 4000.0;
+/// Below this the tail and the shaper leave the signal alone (the kick).
+const KEEP_LOWS_HZ: f32 = 200.0;
+/// Above [`SPLIT_HIGH`] (the hats, cymbals) the tail is this much of the mids'.
+const HIGH_SHARE: f32 = 0.35;
 
 /// What Shape does to the tail: (tail amount 0..1, attack dB, sustain dB).
 pub fn shaping(shape: f32) -> (f32, f32, f32) {
@@ -170,6 +175,11 @@ pub struct Tail {
     noise_fast: [f32; 3],
     dry_rel: f32,
     band_norm: [f32; BANDS],
+    /// Each band's share of the tail (the highs a little).
+    band_weight: [f32; BANDS],
+    /// The shaper's low split per channel, and its coefficient.
+    shaper_low: [f32; 2],
+    keep_a: f32,
     norm_a: f32,
     low_a: f32,
     high_a: f32,
@@ -207,6 +217,9 @@ impl Tail {
             noise_fast: [0.0; 3],
             dry_rel: release(DRY_SECS, sr),
             band_norm: [0.0; BANDS],
+            band_weight: std::array::from_fn(|b| if BAND_RANGE.0 * (top / BAND_RANGE.0).powf(b as f32 / (BANDS - 1) as f32) > SPLIT_HIGH { HIGH_SHARE } else { 1.0 }),
+            shaper_low: [0.0; 2],
+            keep_a: one_pole(KEEP_LOWS_HZ, sr),
             norm_a: one_pole(5.0, sr),
             low_a: one_pole(SPLIT_LOW, sr),
             high_a: one_pole(SPLIT_HIGH, sr),
@@ -262,10 +275,14 @@ impl Tail {
             }
             // Positive while the hit rises above its average, negative in its decay.
             let d = (20.0 * (self.fast / self.slow.max(1e-6)).log10()).clamp(-24.0, 24.0);
-            let db = if d > 0.0 { attack_db * (d / 12.0).min(1.0) } else { sustain_db * (-d / 12.0).min(1.0) };
-            let g = 10f32.powf(db / 20.0);
-            s.left *= g;
-            s.right *= g;
+            let (att, sus) = if d > 0.0 { (attack_db * (d / 12.0).min(1.0), 0.0) } else { (0.0, sustain_db * (-d / 12.0).min(1.0)) };
+            let (ga, gs) = (10f32.powf(att / 20.0), 10f32.powf(sus / 20.0));
+            // The sustain lifts only above the kick's band: the kick keeps its length.
+            for (c, v) in [&mut s.left, &mut s.right].into_iter().enumerate() {
+                let lo = &mut self.shaper_low[c];
+                *lo = flush(*lo + self.keep_a * (*v - *lo));
+                *v = (*lo + (*v - *lo) * gs) * ga;
+            }
         }
     }
 
@@ -287,8 +304,8 @@ impl Tail {
                 self.band_norm[b] = flush(self.band_norm[b] + self.norm_a * (0.5 * (l.abs() + r.abs()) - self.band_norm[b]));
                 // Only what rings on past the dry hit.
                 let k = (self.band_env[b] - self.band_fast[b]).max(0.0) / self.band_norm[b].max(1e-4) * BAND_SUM;
-                out[0] += l * k;
-                out[1] += r * k;
+                out[0] += l * k * self.band_weight[b];
+                out[1] += r * k * self.band_weight[b];
             }
             s.left += flush(out[0] * gain);
             s.right += flush(out[1] * gain);
@@ -315,8 +332,10 @@ impl Tail {
                 follow(&mut self.noise_fast[b], bands[b], self.dry_rel);
                 self.noise_norm[b] = flush(self.noise_norm[b] + self.norm_a * (0.5 * (nl[b].abs() + nr[b].abs()) - self.noise_norm[b]));
                 let k = (self.noise_env[b] - self.noise_fast[b]).max(0.0) / self.noise_norm[b].max(1e-4) * NOISE_SUM;
-                out[0] += nl[b] * k;
-                out[1] += nr[b] * k;
+                // No low band (the kick), the highs a little.
+                let w = [0.0, 1.0, HIGH_SHARE][b];
+                out[0] += nl[b] * k * w;
+                out[1] += nr[b] * k * w;
             }
             s.left += flush(out[0] * gain);
             s.right += flush(out[1] * gain);
@@ -355,7 +374,10 @@ impl Tail {
                         *held = flush((*held * decay).max(mag));
                     }
                     // Only what rings on above the dry spectrum.
-                    let excess = (*held - mag).max(0.0);
+                    // Above the kick's band, the highs a little.
+                    let hz = k as f32 * self.sr / FFT as f32;
+                    let w = if hz < KEEP_LOWS_HZ { 0.0 } else if hz > SPLIT_HIGH { HIGH_SHARE } else { 1.0 };
+                    let excess = (*held - mag).max(0.0) * w;
                     let phase = std::f32::consts::PI * noise(hop_index * 4096 + k as u64, 5 + c as u64);
                     sp.spec_out[k] = Complex::from_polar(excess, phase);
                 }
@@ -420,11 +442,32 @@ mod tests {
         for mode in TailMode::ALL {
             let dry = run(0.5, mode, 0);
             let wet = run(1.0, mode, 0);
-            let (d, w) = (after_hits(&dry, 0.25, 0.45), after_hits(&wet, 0.25, 0.45));
-            assert!(w > 10.0 * d.max(1e-6), "{mode:?}: tail {w} vs dry {d}");
+            let (d, w) = (after_hits(&dry, 0.07, 0.12), after_hits(&wet, 0.07, 0.12));
+            assert!(w > 1.2 * d.max(1e-6), "{mode:?}: tail {w} vs dry {d}");
             let hit = after_hits(&wet, 0.0, 0.04);
             assert!(w < 0.7 * hit, "{mode:?}: the tail stays under the hit ({w} vs {hit})");
             assert!(wet.iter().all(|s| s.left.is_finite()));
+        }
+    }
+
+    #[test]
+    fn the_kick_keeps_its_length() {
+        // A 55 Hz kick every half second, decaying in 60 ms.
+        let kick: Vec<StereoSample> = (0..(2.0 * SR) as usize)
+            .map(|i| {
+                let t = (i % (SR as usize / 2)) as f32 / SR;
+                let v = 0.6 * (std::f32::consts::TAU * 55.0 * t).sin() * (-t / 0.06).exp();
+                StereoSample { left: v, right: v }
+            })
+            .collect();
+        for mode in TailMode::ALL {
+            let mut wet = kick.clone();
+            let mut t = Tail::new(SR);
+            for (k, chunk) in wet.chunks_mut(256).enumerate() {
+                t.process(chunk, 1.0, mode, 256 * k as u64);
+            }
+            let (d, w) = (after_hits(&kick, 0.15, 0.3), after_hits(&wet, 0.15, 0.3));
+            assert!(w < 1.5 * d + 1e-4, "{mode:?}: the kick rings on ({w} vs {d})");
         }
     }
 

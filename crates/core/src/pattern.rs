@@ -286,6 +286,10 @@ pub struct PatternLane {
     /// Splice: the focus per step the player sets for the next render
     /// ([`crate::splice::focus`]; all 1 = off).
     pub focus: [f32; STEPS_PER_BAR],
+    /// Drums: each voice's decay (an event `decay` byte, 0 = the lane's), by
+    /// [`DrumVoice`] index. Shape sets it, so it reaches the snare and the
+    /// cymbals but never the kick.
+    pub voice_decay: [u8; 8],
     /// Generator parameters, indexed like [`LaneGenerator::param_names`].
     pub params: [f32; MAX_GEN_PARAMS],
 }
@@ -318,7 +322,7 @@ impl PatternLane {
     ) -> Self {
         let mut forms = vec![Form::single()];
         forms.extend(DEFAULT_FORMS.iter().map(|f| Form::parse(f).expect("built-in form parses")));
-        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, phrase_bars: 8, permute: 0.0, focus: [1.0; STEPS_PER_BAR], params }
+        Self { role, generator, layout, forms, form: 0, pattern_seed, sound_seed, rate: 0, mode: 0, phrase_bars: 8, permute: 0.0, focus: [1.0; STEPS_PER_BAR], voice_decay: [0; 8], params }
     }
 
     pub fn role(&self) -> Role {
@@ -487,6 +491,13 @@ impl PatternLane {
             }
         }
         splice_thin(out, &self.focus, seed, c.lane, c.bar_in_phrase);
+        if self.role == Role::Drums {
+            for e in out.as_mut_slice().iter_mut().filter(|e| e.kind == EventKind::Trigger && e.decay == 0) {
+                if let Some(v) = DrumVoice::of_target(e.target) {
+                    e.decay = self.voice_decay[v as usize];
+                }
+            }
+        }
         voices
     }
 }

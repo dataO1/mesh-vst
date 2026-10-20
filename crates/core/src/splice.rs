@@ -38,11 +38,15 @@ const SUSTAIN_WEIGHT: f32 = 0.5;
 fn voice_weight(v: DrumVoice) -> f32 {
     match v {
         DrumVoice::Kick | DrumVoice::Snare => 1.0,
-        DrumVoice::Break | DrumVoice::Top => 0.7,
-        DrumVoice::Perc => 0.6,
-        DrumVoice::Hats | DrumVoice::Ride | DrumVoice::Shaker => 0.35,
+        DrumVoice::Break | DrumVoice::Top => 0.4,
+        DrumVoice::Perc => 0.3,
+        // (user: the hats count only a little.)
+        DrumVoice::Hats | DrumVoice::Ride | DrumVoice::Shaker => 0.12,
     }
 }
+/// Gaps: a hit this strong (0..1) spills this much onto the steps beside it.
+const STRONG: f32 = 0.8;
+const GAP_SPILL: f32 = 0.6;
 /// How far the focus moves a step at the extremes (focus 1 ± this).
 pub const FOCUS_RANGE: f32 = 0.85;
 /// Most of the hits outside the focus dropped at the extremes.
@@ -94,6 +98,16 @@ pub fn focus(amount: f32, occ: &[f32; STEPS_PER_BAR]) -> [f32; STEPS_PER_BAR] {
     let s = 2.0 * amount.clamp(0.0, 1.0) - 1.0;
     if s == 0.0 {
         return [1.0; STEPS_PER_BAR];
+    }
+    // Gaps: a strong hit (kick, snare) keeps the steps beside it clear too,
+    // so the gaps at the key moments are wide.
+    let mut occ = *occ;
+    if s > 0.0 {
+        let src = occ;
+        for (i, o) in occ.iter_mut().enumerate() {
+            let near = [i.wrapping_sub(1), i + 1].iter().filter_map(|&j| src.get(j)).copied().filter(|v| *v >= STRONG).fold(0.0f32, f32::max);
+            *o = o.max(GAP_SPILL * near);
+        }
     }
     let target = occ.map(|o| if s < 0.0 { o } else { 1.0 - o });
     let mean = target.iter().sum::<f32>() / STEPS_PER_BAR as f32;

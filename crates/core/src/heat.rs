@@ -12,7 +12,8 @@
 use crate::types::StereoSample;
 
 // MUSICAL: first draft, tune by ear (user: clip hard enough, saturation
-// that scales, a crush fading in from the middle, Tone moving the focus).
+// that scales, a crush fading in from the middle, Tone moving the focus; the
+// crush only a flavour: user, too far at 4 bits and 12 held samples).
 /// Soft-clip threshold at Heat 0+ and at full Heat.
 const CLIP_THRESHOLD: (f32, f32) = (0.95, 0.25);
 /// Where the saturation and the crush start, as Heat values.
@@ -28,10 +29,10 @@ const MAKEUP_LEVEL: f32 = 0.3;
 /// RMS of a sine against a square of the same peak.
 const SQUARE_RMS: f32 = std::f32::consts::FRAC_1_SQRT_2;
 /// Bits at the crush's start and at full Heat, and the most samples held.
-const BITS: (f32, f32) = (12.0, 4.0);
-const HOLD_MAX: f32 = 12.0;
+const BITS: (f32, f32) = (12.0, 7.0);
+const HOLD_MAX: f32 = 4.0;
 /// The crush's share of the signal at full Heat.
-const CRUSH_MIX_MAX: f32 = 1.0;
+const CRUSH_MIX_MAX: f32 = 0.5;
 /// Tilt split frequency and the tilt at full Tone and full Heat, in dB.
 pub const TILT_HZ: f32 = 700.0;
 const TILT_DB: f32 = 12.0;
@@ -258,8 +259,8 @@ mod tests {
         let input = sine(0.3, 9600);
         let steps = |b: &[StereoSample]| b.windows(2).filter(|w| (w[0].left - w[1].left).abs() < 1e-4).count();
         let held: Vec<usize> = [0.45, 0.6, 0.8, 1.0].iter().map(|&h| steps(&heated(h, 0.5, &input))).collect();
-        assert!(held.windows(2).all(|w| w[1] >= w[0]), "{held:?}");
-        assert!(held[0] < held[3] / 4, "{held:?}");
+        // Below the middle no held samples beyond chance, above it there are.
+        assert!(held[1..].iter().all(|h| *h > held[0]), "{held:?}");
     }
 
     #[test]

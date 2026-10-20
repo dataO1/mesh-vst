@@ -386,6 +386,12 @@ pub fn attack_secs(v: u8) -> f32 {
 }
 
 /// Seconds to the nearest event `attack` byte (never 0, which means "lane default").
+/// Seconds to an event `decay` byte ([`decay_secs`] inverted).
+pub fn decay_byte(secs: f32) -> u8 {
+    let t = (secs.clamp(0.005, 10.0) / 0.005).ln() / (10.0f32 / 0.005).ln();
+    (1.0 + t * 254.0).round().clamp(1.0, 255.0) as u8
+}
+
 pub fn attack_byte(secs: f32) -> u8 {
     let t = (secs.clamp(0.001, 2.0) / 0.001).ln() / (2.0f32 / 0.001).ln();
     (1.0 + t * 254.0).round().clamp(1.0, 255.0) as u8
