@@ -94,6 +94,15 @@ fn config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("mesh-vst"))
 }
 
+/// The bass clips (D50): the shipped ones and the user's from
+/// `~/.config/mesh-vst/clips/a` .. `d` (unreadable files are skipped).
+pub fn bass_clips() -> std::sync::Arc<mesh_vst_core::clips::ClipSet> {
+    match config_dir().map(|d| d.join("clips")).filter(|d| d.is_dir()) {
+        Some(dir) => std::sync::Arc::new(mesh_vst_core::clips::ClipSet::with_dir(&dir).0),
+        None => mesh_vst_core::clips::ClipSet::builtin(),
+    }
+}
+
 pub fn cache_file() -> Option<PathBuf> {
     dirs::cache_dir().map(|d| d.join("mesh-vst").join("library.json"))
 }
@@ -261,16 +270,8 @@ impl Job {
                 }
                 let (_, sample) = self.bass.as_ref()?;
                 let bank = Shared::new(&gc_handle(), mudpie_bank(sample.clone()));
-                let lufs = calibrate::lane_lufs(
-                    PatternLane::bass(1, seed),
-                    bank.clone(),
-                    macros::mudpie_params(),
-                    &settings,
-                    None,
-                    sr,
-                    crate::BASS_VOICES,
-                );
-                Some(Ready::Bass { bank, gain: calibrate::trim_gain(Role::Bass, lufs), settings, generation })
+                let gain = calibrate::bass_trim(|| PatternLane::bass(1, seed), bank.clone(), macros::mudpie_params(), &settings, sr, crate::BASS_VOICES);
+                Some(Ready::Bass { bank, gain, settings, generation })
             }
         }
     }

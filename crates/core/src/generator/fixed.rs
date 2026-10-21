@@ -225,6 +225,8 @@ mod tests {
             focus: [1.0; crate::STEPS_PER_BAR],
             focus_shift: [0.0; crate::generator::MAX_GEN_PARAMS],
             host: crate::splice::HostLine::default(),
+            letter: 0,
+            material_bar: 0,
         };
         let mut out = BarEvents::default();
         pattern.render_bar(&ctx, &mut out);

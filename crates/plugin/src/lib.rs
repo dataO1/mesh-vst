@@ -26,7 +26,7 @@ pub mod link;
 pub mod visual;
 pub mod worker;
 
-use params::{MeshParams, Mode, NewRootMode, PhaseMode, UnisonSpread, BEND_RANGES, SEEDED_BEND_BASS, SEEDED_BEND_DRUMS};
+use params::{BassSource, MeshParams, Mode, NewRootMode, PhaseMode, UnisonSpread, BEND_RANGES, SEEDED_BEND_BASS, SEEDED_BEND_DRUMS};
 use worker::{Garbage, Ready, Request, Worker};
 
 /// Tempo when the host gives none.
@@ -83,10 +83,11 @@ struct Settings {
 
 /// What the loudness calibration depends on: the samples, seeds, form and
 /// rate, not the knobs (Mesh calibrated at the default controls too).
-fn calibration_key(s: &LaneSettings) -> (u32, u32, Option<FormSettings>, i8, u8, Option<u8>, (u8, u32, u8)) {
+fn calibration_key(s: &LaneSettings) -> (u32, u32, Option<FormSettings>, i8, u8, Option<u8>, (u8, u32, u8), (bool, u32)) {
 
     let u = (s.unison.voices, s.unison.detune_cents.to_bits(), s.unison.mode as u8);
-    (s.sound_seed, s.pattern_seed, s.form, s.rate, s.mode, s.style, u)
+    // The bass source and the Squash it is calibrated through (D50).
+    (s.sound_seed, s.pattern_seed, s.form, s.rate, s.mode, s.style, u, (s.clips, s.squash.to_bits()))
 }
 
 /// One mode's player and the sampler params the knobs start from.
@@ -239,6 +240,9 @@ impl MeshVst {
                 },
                 seed: p.sound_seed.value() as u32,
             },
+            clips: p.bass_source.value() == BassSource::Clips,
+            // In 5 % steps: a move recalibrates the bass in the background.
+            squash: (p.squash.value() * 20.0).round() / 20.0,
             },
             minor,
             phase: match p.phase.value() {
@@ -718,7 +722,7 @@ impl Plugin for MeshVst {
 
         let mut sampler = Sampler::new(sr, BASS_VOICES);
         sampler.set_bank(basedrop::Shared::new(&gc_handle(), mudpie_bank(share(builtin::mudpie(sr)))));
-        self.bass = Some(Lane { player: Player::new(PatternLane::bass(1, 1), sampler), base: LaneSamplerParams { gain: START_BASS_GAIN, ..macros::mudpie_params() }, loaded: None, requested: None });
+        self.bass = Some(Lane { player: Player::new(PatternLane::bass_with_clips(1, 1, worker::bass_clips()), sampler), base: LaneSamplerParams { gain: START_BASS_GAIN, ..macros::mudpie_params() }, loaded: None, requested: None });
         self.applied = None;
         // The editor's visual reads the output through a ring (half a second).
         let (tx, rx) = rtrb::RingBuffer::new(sr as usize / 2);

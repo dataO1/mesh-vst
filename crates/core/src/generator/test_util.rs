@@ -40,6 +40,8 @@ pub(crate) fn ctx<'a>(
         focus: [1.0; crate::STEPS_PER_BAR],
         host: crate::splice::HostLine::default(),
         focus_shift: [0.0; crate::generator::MAX_GEN_PARAMS],
+        letter: 0,
+        material_bar: bar_in_phrase as u16,
     }
 }
 

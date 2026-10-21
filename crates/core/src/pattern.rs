@@ -334,9 +334,15 @@ impl PatternLane {
 
     /// A bass lane with the built-in rules.
     pub fn bass(pattern_seed: u32, sound_seed: u32) -> Self {
+        Self::bass_with_clips(pattern_seed, sound_seed, crate::clips::ClipSet::builtin())
+    }
+
+    /// A bass lane with these clips for clip mode (D50; the `source`
+    /// parameter picks it, the generated line by default).
+    pub fn bass_with_clips(pattern_seed: u32, sound_seed: u32, clips: std::sync::Arc<crate::clips::ClipSet>) -> Self {
         let none = BTreeMap::new();
         let defaults = defaults_from_spec(&bass::PARAM_NAMES, &bass::PARAM_DEFAULTS, &none);
-        let generator = BassGenerator::new(defaults, BassRules::from_spec(&none), Vec::new());
+        let generator = BassGenerator::new(defaults, BassRules::from_spec(&none), Vec::new()).with_clips(clips);
         Self::new(Role::Bass, Box::new(generator), DrumLayout::standard(), pattern_seed, sound_seed, defaults)
     }
 
@@ -570,6 +576,8 @@ impl PatternLane {
                 let block = if self.role == Role::Bass { self.letter_rate(c.lane, pos.letter) } else { 0 };
                 host_in_render(&self.host_line, self.rate + BASE_RATE + block, c.bar)
             },
+            letter: pos.letter.index(),
+            material_bar: (c.bar % (u16::MAX as u64 + 1)) as u16,
         };
         let voices = self.generator.voice_mask(&bar_ctx);
         let chain = self.resolve_ops(pos, form_seed, c.lane);
@@ -722,6 +730,14 @@ impl PatternLane {
         let span_beats = if phrased { pos.phrase as u32 } else { pos.segment_beats as u32 };
         let ticks = (span_beats * beat_ticks).clamp(1, (MAX_SPAN_BARS as u32) * bar_ticks);
         let bars = ticks.div_ceil(bar_ticks) as u16;
+        // Clip mode (D50): a phrase is a window of its letter's clip, which
+        // renders whole (its material) first.
+        let material = if phrased && self.role != Role::Drums { self.generator.material_beats(base) } else { None };
+        let material_ticks = material.map(|b| (b * beat_ticks).clamp(1, MAX_SPAN_BARS as u32 * bar_ticks));
+        let (render_bars, limit) = match material_ticks {
+            Some(m) => (m.div_ceil(bar_ticks) as u16, m),
+            None => (bars, ticks),
+        };
         let first_bar = if phrased { 0 } else { c.bar.saturating_sub(pos.bar_in_segment as u64) };
         let segment = if phrased { 0 } else { pos.segment as u64 };
         // The form's second pass goes further (it escalates).
@@ -737,6 +753,7 @@ impl PatternLane {
             base.harmony.key.root as u64 | (base.harmony.key.minor as u64) << 8 | (self.mode as u64) << 16,
             self.phrase_bars as u64,
             amount.to_bits() as u64,
+            limit as u64,
         ] {
             key = mix(key, v);
         }
@@ -755,7 +772,7 @@ impl PatternLane {
         span.used = stamp;
         if !(span.valid && span.key == key) {
             span.notes.clear();
-            for j in 0..bars {
+            for j in 0..render_bars {
                 // The letter's bar `j` as its segment first plays it: its
                 // chord, its fill, no Splice (that applies after).
                 let reference = FormPos { bar_in_segment: j, bars_since_main: j, last_of_segment: j + 1 == bars, prime: false, ops: OpChain::default(), ..*pos };
@@ -778,6 +795,7 @@ impl PatternLane {
                     harmony,
                     focus: [1.0; STEPS_PER_BAR],
                     focus_shift: [0.0; MAX_GEN_PARAMS],
+                    material_bar: if phrased { j } else { (first_bar + j as u64) as u16 },
                     ..*base
                 };
                 tmp.clear();
@@ -792,7 +810,7 @@ impl PatternLane {
                 }
                 for e in tmp.as_slice() {
                     let at = j as u32 * bar_ticks + e.tick as u32;
-                    if at < ticks && span.notes.len() < span.notes.capacity() {
+                    if at < limit && span.notes.len() < span.notes.capacity() {
                         let seq = span.notes.len() as u32;
                         span.notes.push(SpanNote { at, seq, ev: *e });
                     }
@@ -802,13 +820,36 @@ impl PatternLane {
                 // The phrase starts `offset` beats into the letter's notes,
                 // rotated; its notes end with it. A pitched phrase starts on
                 // one of its notes at an even beat (user, 2026-10-21).
+                // In clip mode the window starts anywhere in the clip: a
+                // seeded part of it plus the offset (D50).
+                let len = limit;
                 let shift = if self.role == Role::Drums {
                     (pos.offset as u32 * beat_ticks) % ticks
                 } else {
-                    onset_shift(&mut span.notes, pos.offset as u32, ticks, beat_ticks)
+                    let want = pos.offset as u32 + material.map_or(0, |b| clip_window(base.seed, c.lane, b));
+                    onset_shift(&mut span.notes, want, len, beat_ticks)
                 };
                 for n in span.notes.iter_mut() {
-                    n.at = (n.at + ticks - shift) % ticks;
+                    n.at = (n.at + len - shift) % len;
+                    n.ev.gate = n.ev.gate.min((len - n.at).min(u16::MAX as u32) as u16);
+                }
+                // A clip shorter than its phrase repeats; a longer one plays
+                // the phrase's window of it.
+                let written = span.notes.len();
+                let mut lap = len;
+                while lap < ticks {
+                    for i in 0..written {
+                        let mut n = span.notes[i];
+                        n.at += lap;
+                        if n.at < ticks && span.notes.len() < span.notes.capacity() {
+                            n.seq = span.notes.len() as u32;
+                            span.notes.push(n);
+                        }
+                    }
+                    lap += len;
+                }
+                span.notes.retain(|n| n.at < ticks);
+                for n in span.notes.iter_mut() {
                     n.ev.gate = n.ev.gate.min((ticks - n.at).min(u16::MAX as u32) as u16);
                 }
             }
@@ -1219,6 +1260,17 @@ fn limit_speed(out: &mut BarEvents, rate: i8, exponent: i8) {
     out.truncate(kept);
 }
 
+// MUSICAL: tune by ear (D50). A clip's window: a seeded block of this many
+// beats in the clip, the phrase's offset on top.
+const CLIP_WINDOW_BEATS: u32 = 16;
+const S_CLIP_WINDOW: u32 = 0xF63;
+
+/// The seeded start (beats) of a letter's window in its clip of `beats`.
+fn clip_window(seed: u32, lane: u8, beats: u32) -> u32 {
+    let blocks = (beats / CLIP_WINDOW_BEATS).max(1);
+    CLIP_WINDOW_BEATS * rng::below(rng::hash(seed, lane, 0, 0, S_CLIP_WINDOW), blocks)
+}
+
 /// Where a pitched phrase starts in its letter's notes (ticks): the even
 /// beat at or after `want` (beats) where a note starts, or starts at most a
 /// 16th earlier (that note is clipped to start on the beat); the letter's own
@@ -1541,6 +1593,49 @@ mod tests {
 
 
     #[test]
+    fn a_clip_phrase_is_a_window_of_its_clip_from_a_note_on_an_even_beat() {
+        let clips = crate::clips::ClipSet::builtin();
+        let beat = TICKS_PER_BAR as u32 / 4;
+        let (mut from_note, mut tried) = (0, 0);
+        for seed in 1..=40u32 {
+            let mut lane = PatternLane::bass(seed, seed);
+            lane.set_param("source", 1.0);
+            lane.set_form(Form::parse("A16:8+2").unwrap());
+            lane.rate = 1;
+            lane.phrase_bars = 64;
+            // Blocks at their own speed play their window faster or slower.
+            if lane.letter_rate(lane_index(Role::Bass), Letter::A) != 0 {
+                continue;
+            }
+            tried += 1;
+            let bars = render_all(&lane, 2);
+            let got: Vec<u32> = bars
+                .iter()
+                .enumerate()
+                .flat_map(|(b, bar)| bar.iter().filter(|e| e.kind == EventKind::NoteOn).map(move |e| b as u32 * TICKS_PER_BAR as u32 + e.tick as u32))
+                .collect();
+            // Some clip of A, read from an even beat, plays these onsets
+            // (the letter's feel moves them a little).
+            let fits = clips.letters[0].iter().any(|c| {
+                (0..c.beats as u32).step_by(2).any(|start| {
+                    let mut want: Vec<u32> = c
+                        .notes
+                        .iter()
+                        .map(|n| (n.tick + c.ticks() - start * beat) % c.ticks())
+                        .filter(|&t| t < 8 * beat)
+                        .collect();
+                    want.sort_unstable();
+                    want.len() == got.len() && want.iter().zip(&got).all(|(w, g)| w.abs_diff(*g) <= 8)
+                })
+            });
+            assert!(fits, "seed {seed}: a window of an A clip: {got:?}");
+            from_note += (got.first().is_some_and(|&t| t <= 8)) as u32;
+        }
+        assert!(tried >= 12, "{tried} seeds at the lane's speed");
+        assert!(from_note * 5 >= tried * 4, "the window starts on a note: {from_note} of {tried}");
+    }
+
+    #[test]
     fn a_phrase_loops_from_its_own_start() {
         for drums in [true, false] {
             let lane = |form: &str| {
@@ -1630,6 +1725,16 @@ mod tests {
             with_ops(PatternLane::bass(11, 4)),
             phrased(PatternLane::drums(DrumLayout::standard(), 11, 4)),
             phrased(PatternLane::bass(11, 4)),
+            {
+                let mut l = phrased(PatternLane::bass(11, 4));
+                l.set_param("source", 1.0);
+                l
+            },
+            {
+                let mut l = with_ops(PatternLane::bass(11, 4));
+                l.set_param("source", 1.0);
+                l
+            },
         ] {
 
             let key = MusicalKey::new(2, true);

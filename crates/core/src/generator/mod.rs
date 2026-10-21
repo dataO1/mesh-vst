@@ -72,6 +72,11 @@ pub struct BarCtx<'a> {
     pub focus_shift: [f32; MAX_GEN_PARAMS],
     /// Splice: a pitched host's line under this bar (D46; off by default).
     pub host: crate::splice::HostLine,
+    /// The letter being rendered (0 = A .. 3 = D).
+    pub letter: u8,
+    /// Bar of the letter's material: of its clip in clip mode (D50), which
+    /// plays bar `material_bar % clip bars`.
+    pub material_bar: u16,
 }
 
 /// One lane's pattern generator.
@@ -92,6 +97,12 @@ pub trait LaneGenerator: Send {
     /// Motif mode: the onsets the clip this seed picks has in each bar of the
     /// phrase, so the lead lane can interlock with it. `None` without clips.
     fn motif_phrase(&self, _seed: u32, _lane: u8) -> Option<[u16; 4]> {
+        None
+    }
+
+    /// Clip mode (D50): the length in beats of the clip the letter of `ctx`
+    /// plays (its material, longer than a bar). `None` when it generates.
+    fn material_beats(&self, _ctx: &BarCtx) -> Option<u32> {
         None
     }
 

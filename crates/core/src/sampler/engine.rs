@@ -539,6 +539,9 @@ impl Sampler {
                 .voices
                 .iter()
                 .filter(|v| v.st.active && v.st.held && !v.st.is_choking() && (!mono || v.st.group == group))
+                // A note whose gate ends now is over: the next one strikes
+                // (else it would glide on from where the old one got to).
+                .filter(|v| v.st.gate_ticks_left * self.spt > 1.0)
                 .max_by_key(|v| v.st.age)
                 .map(|v| v.st.note_id);
             if let Some(id) = newest {

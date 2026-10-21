@@ -11,6 +11,14 @@ pub enum Mode {
     Bass,
 }
 
+/// Where the bass line comes from (D50): the shipped and the user's clips,
+/// or the generator.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BassSource {
+    Clips,
+    Generated,
+}
+
 /// Where pattern bar 0 is (D8).
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseMode {
@@ -227,6 +235,8 @@ pub struct MeshParams {
     pub scale: EnumParam<Scale>,
     #[id = "rate"]
     pub rate: EnumParam<Rate>,
+    #[id = "bass_source"]
+    pub bass_source: EnumParam<BassSource>,
     #[id = "bend_range"]
     pub bend_range: IntParam,
     #[id = "phrase"]
@@ -333,6 +343,7 @@ impl Default for MeshParams {
             phase: EnumParam::new("Phase", PhaseMode::Continuous),
             scale: EnumParam::new("Scale", Scale::Minor),
             rate: EnumParam::new("Rate", Rate::Normal),
+            bass_source: EnumParam::new("Bass source", BassSource::Clips),
             // 0 = the seed picks; 1.. = BEND_RANGES.
             bend_range: IntParam::new("Bend range", 0, IntRange::Linear { min: 0, max: BEND_RANGES.len() as i32 })
                 .with_value_to_string(std::sync::Arc::new(|v| if v <= 0 { "seed".into() } else { format!("{} st", BEND_RANGES[(v as usize - 1).min(6)]) }))

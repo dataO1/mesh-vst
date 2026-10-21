@@ -43,7 +43,7 @@
 use std::collections::BTreeMap;
 
 use super::blocks::{
-    density_attack_in, lerp, note_param, note_param_for, NoteShape, step_motif, level_unit, note, option, param, reveals, step_tick, stream_start, velocity, LevelMap,
+    density_attack_in, lerp, metric_weight, note_param, note_param_for, NoteShape, step_motif, level_unit, note, option, param, reveals, step_tick, stream_start, velocity, LevelMap,
     PhraseRng, Tier, BASS_ATTACK_BY_DENSITY,
 };
 use super::blocks::{VARIATION_BAR, VEL_ACCENT};
@@ -52,14 +52,16 @@ use super::motif::{self, Plan, Play, Shape};
 use super::{BarCtx, LaneGenerator, MAX_GEN_PARAMS};
 use crate::event::{flags, BarEvents, EventKind, LiveEvent};
 use crate::harmony::SCALE_LEN;
+use crate::clips::{self, BassClip, ClipSet};
 use crate::motif::Motif;
+use std::sync::Arc;
 use crate::rng;
 use crate::sampler::CUTOFF_OFFSET_OCTAVES;
 use crate::{STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
 use crate::key::MusicalKey;
 
-pub const PARAM_NAMES: [&str; 12] =
-    ["density", "complexity", "variation", "kick_mode", "register", "slide", "accent", "spread", "length", "expression", "stabs", "syncopation"];
+pub const PARAM_NAMES: [&str; 13] =
+    ["density", "complexity", "variation", "kick_mode", "register", "slide", "accent", "spread", "length", "expression", "stabs", "syncopation", "source"];
 const P_DENSITY: usize = 0;
 const P_COMPLEXITY: usize = 1;
 const P_VARIATION: usize = 2;
@@ -72,6 +74,8 @@ const P_LENGTH: usize = 8;
 const P_EXPRESSION: usize = 9;
 const P_STABS: usize = 10;
 const P_SYNCOPATION: usize = 11;
+/// The Bass source (D50): below 0.5 the generated line, from 0.5 the clips.
+const P_SOURCE: usize = 12;
 
 // MUSICAL: first draft, tune by ear.
 pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.5, 0.4, 0.5, 0.0, 0.5, 0.5, 0.5, 0.3, 0.5, 0.5, 0.5, 0.0, 0.0];
@@ -175,6 +179,26 @@ const MOTIF_MIN_KEY: i32 = 24;
 const MOTIF_MAX_NOTES: usize = 12;
 /// Written velocity from which a note is an accent.
 const MOTIF_ACCENT_VEL: u8 = 110;
+
+// MUSICAL: first draft, tune by ear (D50). Clip mode.
+/// Metric weight a note needs at density 0 (the beats, 0.7, stay).
+const CLIP_THIN_MAX: f32 = 0.7;
+/// Weak notes (metric weight under this) may lift an octave, at this
+/// chance at Spread 1.
+const CLIP_LIFT_BELOW: f32 = 0.7;
+const CLIP_LIFT_MAX: f32 = 0.45;
+/// Written notes shorter than this are stabs.
+const CLIP_SHORT_TICKS: u16 = 2 * TICKS_PER_STEP;
+/// Density from which long notes split into 16ths (else 8ths).
+const CLIP_SPLIT_16THS: f32 = 0.85;
+/// Ticks between split repeats, and their velocity share.
+const CLIP_SPLIT_GAP: u16 = 4;
+const CLIP_REPEAT_VEL: f32 = 0.85;
+/// How far Complexity above its default adds to the pushes.
+const CLIP_COMPLEXITY_SYNC: f32 = 0.6;
+const S_CLIP_LIFT: u32 = 0x230;
+const S_CLIP_STAB: u32 = 0x231;
+const S_CLIP_SPLIT: u32 = 0x232;
 
 // MUSICAL: first draft, tune by ear. Register and articulation.
 /// Lowest MIDI key of the key's root at the base register (E1).
@@ -336,11 +360,27 @@ pub struct BassGenerator {
     cells: Vec<LevelMap>,
     /// Motif clips. Empty = the procedural line.
     motifs: Vec<Motif>,
+    /// The bass clips per letter (D50), played when the source is Clips.
+    clips: Arc<ClipSet>,
 }
 
 impl BassGenerator {
     pub fn new(defaults: [f32; MAX_GEN_PARAMS], rules: BassRules, cells: Vec<LevelMap>) -> Self {
-        Self { defaults, rules, cells, motifs: Vec::new() }
+        Self { defaults, rules, cells, motifs: Vec::new(), clips: Arc::new(ClipSet::default()) }
+    }
+
+    /// Play from these clips when the source is Clips (D50).
+    pub fn with_clips(mut self, clips: Arc<ClipSet>) -> Self {
+        self.clips = clips;
+        self
+    }
+
+    /// The clip `ctx`'s letter plays in clip mode, if any.
+    fn clip(&self, ctx: &BarCtx) -> Option<&BassClip> {
+        if param(ctx, P_SOURCE) < 0.5 {
+            return None;
+        }
+        self.clips.pick(ctx.letter, ctx.seed, ctx.lane)
     }
 
     /// Play these motif clips (when the rules allow it).
@@ -431,6 +471,176 @@ impl BassGenerator {
         }
     }
 
+    /// Clip mode (D50): bar `ctx.material_bar` of the letter's clip as
+    /// written, its root on the key's root and its notes in the key's scale,
+    /// moved with the chord by scale steps. The knobs reshape it as they
+    /// shape the generated line: Density at its middle plays the clip as
+    /// written, lower thins the weak notes (the beats stay), higher splits
+    /// long notes into 8ths or 16ths; Spread lifts weak notes an octave;
+    /// Syncopation (and Complexity above its default) pushes notes off the
+    /// 8ths; Stabs shortens held notes or holds stabs; Register moves the
+    /// octave; the accent, slide, Length, expression and loops act as on the
+    /// generated line; a drum host's kicks thin it (Avoid) or double it.
+    fn clip_bar(&self, ctx: &BarCtx, clip: &BassClip, out: &mut BarEvents) {
+        let bar_ticks = TICKS_PER_BAR as u32;
+        let bars = clip.ticks().div_ceil(bar_ticks).max(1);
+        let lo = (ctx.material_bar as u32 % bars) * bar_ticks;
+        let hi = (lo + bar_ticks).min(clip.ticks());
+        let density = param(ctx, P_DENSITY);
+        let variation = param(ctx, P_VARIATION);
+        let persona = if self.rules.persona { Persona::new(ctx) } else { Persona::PLAIN };
+        let rng = PhraseRng::new(ctx, variation, self.rules.phrase);
+        let octave = root_octave(ctx.harmony.key, BASS_ROOT_MIN) + register_shift(param(ctx, P_REGISTER));
+        let home = ctx.harmony.resolve_in_key(0, octave) as i32;
+        let mut fold = 0;
+        while home + fold + clip.lowest() < MOTIF_MIN_KEY {
+            fold += 12;
+        }
+        let scale = ctx.harmony.scale();
+        let root_pc = ctx.harmony.key.root as i32;
+        // The chord moves the clip by scale steps, the nearer way.
+        let chord = match ctx.harmony.chord_degree as i32 {
+            d if d > 3 => d - 7,
+            d => d,
+        };
+        let to_key = |semis: i32, degree: i32| {
+            let k = home + fold + clips::snap(semis, degree, scale);
+            if chord == 0 {
+                return k;
+            }
+            let rel = k - root_pc;
+            let idx = scale.iter().position(|&s| s as i32 == rel.rem_euclid(12)).unwrap_or(0) as i32 + chord;
+            root_pc + 12 * (rel.div_euclid(12) + idx.div_euclid(7)) + scale[idx.rem_euclid(7) as usize] as i32
+        };
+        let is_kick = |s: usize| ctx.drum_mask[s.min(STEPS_PER_BAR - 1)] >= MASK_KICK_MIN;
+        let mode = KickMode::from_param(param(ctx, P_KICK_MODE));
+        let attack = density_attack_in(density, BASS_ATTACK_BY_DENSITY);
+        let mut events = [LiveEvent::default(); 2 * STEPS_PER_BAR];
+        let mut n = 0usize;
+        let mut prev: Option<(u16, i32)> = None;
+        let mut first = true;
+        for (i, cn) in clip.notes.iter().enumerate().filter(|(_, x)| (lo..hi).contains(&x.tick)) {
+            if n >= events.len() {
+                break;
+            }
+            let tick = (cn.tick - lo) as u16;
+            let step = ((tick + TICKS_PER_STEP / 2) / TICKS_PER_STEP).min(STEPS_PER_BAR as u16 - 1) as u8;
+            let weight = metric_weight(step as usize);
+            // Density below its middle thins the weak notes; the bar's first
+            // note and the beats stay.
+            let d = note_param(ctx, P_DENSITY, step);
+            let need = CLIP_THIN_MAX * (1.0 - d / 0.5).max(0.0);
+            if !first && weight < need {
+                continue;
+            }
+            if !first && mode == KickMode::Avoid && is_kick(step as usize) && weight < 1.0 {
+                continue;
+            }
+            let mut key = to_key(cn.semis as i32, cn.degree as i32);
+            // Spread lifts weak notes an octave.
+            if weight < CLIP_LIFT_BELOW && rng.chance(step, S_CLIP_LIFT, note_param(ctx, P_SPREAD, step) * CLIP_LIFT_MAX) {
+                key += 12;
+            }
+            let key = key.clamp(0, 127);
+            let mut gate = cn.len.min(hi - cn.tick).min(u16::MAX as u32) as u16;
+            let shape = NoteShape::note(step, gate, key, ctx.harmony.key.root);
+            // Stabs: above its middle held notes turn short, below stabs hold.
+            let stabs = note_param(ctx, P_STABS, step);
+            let written_short = gate < CLIP_SHORT_TICKS;
+            let mut short = written_short;
+            if !written_short && rng.chance(step, S_CLIP_STAB, (2.0 * stabs - 1.0).max(0.0)) {
+                short = true;
+                gate = (gate / 2).max(GATE_MIN_TICKS as u16);
+            } else if written_short && rng.chance(step, S_CLIP_STAB, (1.0 - 2.0 * stabs).max(0.0)) {
+                short = false;
+                let next = clip.notes.get(i + 1).map_or(hi, |x| x.tick.min(hi));
+                gate = (next - cn.tick).min(u16::MAX as u32) as u16;
+            }
+            let random_accent = rng.chance(step, S_ACCENT, note_param_for(ctx, P_ACCENT, shape) * ACCENT_PROB_MAX);
+            let accented = random_accent || cn.vel >= MOTIF_ACCENT_VEL;
+            let vel = if random_accent { cn.vel.max(VEL_ACCENT) } else { cn.vel };
+            let mut ev = note(tick, key as u8, vel, gate, n as u16 + 1);
+            ev.attack = attack;
+            ev.start = stream_region(ctx, step);
+            ev.cutoff = self.cutoff(ctx, step, key - home, accented);
+            if accented {
+                ev.flags |= flags::ACCENT;
+            }
+            if short {
+                ev.flags |= flags::STAB;
+            }
+            if let Some((prev_tick, prev_key)) = prev {
+                if tick - prev_tick <= SLIDE_MAX_GAP_STEPS as u16 * TICKS_PER_STEP
+                    && key != prev_key
+                    && rng.chance(step, S_SLIDE, note_param_for(ctx, P_SLIDE, shape) * SLIDE_PROB_MAX * persona.slide)
+                {
+                    ev.flags |= flags::TIE;
+                    ev.glide = slide_glide(note_param_for(ctx, P_SLIDE, shape));
+                    events[n - 1].gate = tick - prev_tick + TIE_OVERLAP_TICKS;
+                }
+            }
+            events[n] = ev;
+            n += 1;
+            prev = Some((tick, key));
+            first = false;
+        }
+        // A drum host's kicks on empty steps double with the root.
+        if mode == KickMode::Double {
+            for s in (0..STEPS_PER_BAR).filter(|&s| is_kick(s)) {
+                let t = (s as u16) * TICKS_PER_STEP;
+                if n < events.len() && !events[..n].iter().any(|e| e.tick <= t && e.tick + e.gate > t) {
+                    let k = to_key(0, 0).clamp(0, 127);
+                    let mut ev = note(t, k as u8, VEL_ACCENT, TICKS_PER_STEP, n as u16 + 1);
+                    ev.attack = attack;
+                    ev.start = stream_region(ctx, s as u8);
+                    ev.flags |= flags::STAB;
+                    events[n] = ev;
+                    n += 1;
+                }
+            }
+            events[..n].sort_by_key(|e| e.tick);
+        }
+        // Density above its middle splits long notes into repeats (8ths,
+        // 16ths near the top) of the same pitch.
+        if density > 0.5 {
+            let mut k = 0;
+            while k < n {
+                let e = events[k];
+                let d = note_param(ctx, P_DENSITY, e.step);
+                let sub = if d >= CLIP_SPLIT_16THS { TICKS_PER_STEP } else { 2 * TICKS_PER_STEP };
+                let room = events.len() - n;
+                let parts = (e.gate / sub) as usize;
+                if e.kind != EventKind::NoteOn || e.has(flags::TIE) || parts < 2 || room == 0 || !rng.chance(e.step, S_CLIP_SPLIT, (2.0 * d - 1.0).max(0.0)) {
+                    k += 1;
+                    continue;
+                }
+                let extra = (parts - 1).min(room);
+                events[k].gate = sub - CLIP_SPLIT_GAP;
+                events.copy_within(k + 1..n, k + 1 + extra);
+                for r in 1..=extra {
+                    let mut x = e;
+                    x.tick = e.tick + r as u16 * sub;
+                    x.step = (x.tick / TICKS_PER_STEP) as u8;
+                    x.gate = sub - CLIP_SPLIT_GAP;
+                    x.vel = (e.vel as f32 * CLIP_REPEAT_VEL) as u8;
+                    x.flags &= !(flags::ACCENT | flags::TIE);
+                    x.note_id = e.note_id + 64 + r as u16;
+                    events[k + r] = x;
+                }
+                n += extra;
+                k += 1 + extra;
+            }
+        }
+        let complexity = param(ctx, P_COMPLEXITY);
+        let push = (param(ctx, P_SYNCOPATION) + CLIP_COMPLEXITY_SYNC * (complexity - PARAM_DEFAULTS[P_COMPLEXITY]).max(0.0)).clamp(0.0, 1.0);
+        syncopate(&mut events[..n], push, &rng);
+        shape_notes(&mut events[..n], |e| note_length(ctx, e), param(ctx, P_EXPRESSION), param(ctx, P_SLIDE), |step| rng.unit(step, S_LEGATO));
+        loops(&mut events[..n], variation * persona.looping, persona.reverses, &rng);
+        for ev in &events[..n] {
+            out.push(*ev);
+        }
+    }
+
     fn pick_degree(&self, h: u64, spread: f32) -> i32 {
         if !rng::chance(rng::derive(h, 1), self.rules.root) {
             return rng::below(h, SCALE_LEN as u32) as i32;
@@ -448,6 +658,10 @@ impl LaneGenerator for BassGenerator {
     fn render_bar(&self, ctx: &BarCtx, out: &mut BarEvents) {
         let density = param(ctx, P_DENSITY);
         if density <= 0.0 {
+            return;
+        }
+        if let Some(clip) = self.clip(ctx) {
+            self.clip_bar(ctx, clip, out);
             return;
         }
         if self.uses_motifs() {
@@ -740,6 +954,10 @@ impl LaneGenerator for BassGenerator {
 
     fn param_names(&self) -> &'static [&'static str] {
         &PARAM_NAMES
+    }
+
+    fn material_beats(&self, ctx: &BarCtx) -> Option<u32> {
+        self.clip(ctx).map(|c| c.beats as u32)
     }
 
     fn motif_phrase(&self, seed: u32, lane: u8) -> Option<[u16; 4]> {
@@ -2194,5 +2412,123 @@ mod tests {
         assert_eq!(KickMode::from_param(0.0), KickMode::Avoid);
         assert_eq!(KickMode::from_param(0.5), KickMode::Free);
         assert_eq!(KickMode::from_param(1.0), KickMode::Double);
+    }
+
+    /// A clip set holding the table clip `c` for every letter.
+    fn one_clip(c: &crate::motif::starter::StarterClip) -> Arc<ClipSet> {
+        let bytes = crate::motif::midi::write(&c.clip(crate::motif::Voice::Lowest), c.name);
+        let clip = BassClip::from_midi(c.name, &bytes).unwrap();
+        Arc::new(ClipSet { letters: std::array::from_fn(|_| vec![clip.clone()]) })
+    }
+
+    /// Clip mode with the per-note moves off.
+    fn clip_params(edit: impl FnOnce(&mut [f32; MAX_GEN_PARAMS])) -> [f32; MAX_GEN_PARAMS] {
+        params(|p| {
+            p[P_SOURCE] = 1.0;
+            p[P_VARIATION] = 0.0;
+            p[P_SPREAD] = 0.0;
+            p[P_ACCENT] = 0.0;
+            p[P_SLIDE] = 0.0;
+            edit(p);
+        })
+    }
+
+    fn clip_events(g: &BassGenerator, p: &[f32; MAX_GEN_PARAMS], material_bar: u16, harmony: crate::harmony::HarmonyCtx) -> Vec<LiveEvent> {
+        let mask = [0u8; 16];
+        let mut c = ctx(5, (material_bar % 4) as u8, p, &mask);
+        c.lane = 1;
+        c.role = crate::role::Role::Bass;
+        c.material_bar = material_bar;
+        c.harmony = harmony;
+        render(g, &c).as_slice().to_vec()
+    }
+
+    #[test]
+    fn clip_mode_plays_the_clip_as_written_at_the_middle() {
+        let table = &crate::clips::tables::A[0];
+        let clips = one_clip(table);
+        let g = generator().with_clips(clips.clone());
+        let clip = &clips.letters[0][0];
+        let p = clip_params(|_| {});
+        let key = crate::generator::test_util::a_minor();
+        for b in 0..8u16 {
+            let got = clip_events(&g, &p, b, key);
+            let lo = b as u32 * TICKS_PER_BAR as u32;
+            let written: Vec<&crate::clips::ClipNote> = clip.notes.iter().filter(|n| n.tick >= lo && n.tick < lo + TICKS_PER_BAR as u32).collect();
+            assert_eq!(got.iter().map(|e| e.tick as u32 + lo).collect::<Vec<_>>(), written.iter().map(|n| n.tick).collect::<Vec<_>>(), "bar {b}: the clip's rhythm");
+            for (e, n) in got.iter().zip(&written) {
+                assert_eq!(e.gate as u32, n.len.min(lo + TICKS_PER_BAR as u32 - n.tick), "bar {b}: as long as written");
+                // The root on the key's (A), the rest as written over it.
+                assert_eq!((e.key as i32 - got[0].key as i32), n.semis as i32 - written[0].semis as i32, "bar {b}: the intervals stay");
+            }
+            assert_eq!(got[0].key % 12, 9, "bar {b} opens on the key's root");
+        }
+        // The source param picks the generated line.
+        let generated = clip_events(&g, &clip_params(|p| p[P_SOURCE] = 0.0), 0, key);
+        assert_ne!(generated.iter().map(|e| (e.tick, e.key)).collect::<Vec<_>>(), clip_events(&g, &p, 0, key).iter().map(|e| (e.tick, e.key)).collect::<Vec<_>>());
+        let mask = [0u8; 16];
+        let mut c = ctx(5, 0, &p, &mask);
+        c.lane = 1;
+        assert_eq!(g.material_beats(&c), Some(32));
+        let off = clip_params(|p| p[P_SOURCE] = 0.0);
+        let c = ctx(5, 0, &off, &mask);
+        assert_eq!(g.material_beats(&c), None);
+    }
+
+    #[test]
+    fn clip_notes_land_in_every_key_and_mode() {
+        use crate::harmony::{HarmonyCtx, MAJOR_MODES, MINOR_MODES};
+        for table in [&crate::clips::tables::D[0], &crate::clips::tables::D[2], &crate::clips::tables::D[9], &crate::clips::tables::C[0]] {
+            let g = generator().with_clips(one_clip(table));
+            let p = clip_params(|_| {});
+            for root in 0..12u8 {
+                for minor in [true, false] {
+                    let modes = if minor { MINOR_MODES.len() } else { MAJOR_MODES.len() };
+                    for mode in 0..modes as u8 {
+                        let h = HarmonyCtx { key: MusicalKey::new(root, minor), chord_degree: 0, progression: 0, mode };
+                        let scale = h.scale();
+                        for b in 0..8 {
+                            for e in clip_events(&g, &p, b, h) {
+                                let pc = (e.key as i32 - root as i32).rem_euclid(12) as u8;
+                                assert!(scale.contains(&pc), "{}: key {} not in {root} {minor} mode {mode}", table.name, e.key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn density_thins_the_clip_and_splits_its_long_notes() {
+        let g = generator().with_clips(one_clip(&crate::clips::tables::A[3]));
+        let key = crate::generator::test_util::a_minor();
+        let count = |d: f32| (0..8).map(|b| clip_events(&g, &clip_params(|p| p[P_DENSITY] = d), b, key).len()).sum::<usize>();
+        let (low, mid, high) = (count(0.1), count(0.5), count(1.0));
+        assert!(low < mid && mid < high, "thinned, as written, split: {low} {mid} {high}");
+        // Thinned notes keep the beats.
+        for b in 0..8 {
+            for e in clip_events(&g, &clip_params(|p| p[P_DENSITY] = 0.0001), b, key).iter().skip(1) {
+                assert_eq!(e.tick % (4 * TICKS_PER_STEP), 0, "on a beat: {}", e.tick);
+            }
+        }
+        // Split notes repeat the written pitches.
+        for b in 0..8 {
+            let written: std::collections::BTreeSet<u8> = clip_events(&g, &clip_params(|_| {}), b, key).iter().map(|e| e.key).collect();
+            let split: std::collections::BTreeSet<u8> = clip_events(&g, &clip_params(|p| p[P_DENSITY] = 1.0), b, key).iter().map(|e| e.key).collect();
+            assert_eq!(written, split, "bar {b}");
+        }
+    }
+
+    #[test]
+    fn stabs_and_syncopation_reshape_the_clip() {
+        let g = generator().with_clips(one_clip(&crate::clips::tables::B[1]));
+        let key = crate::generator::test_util::a_minor();
+        let gates = |p: [f32; MAX_GEN_PARAMS]| (0..8).flat_map(|b| clip_events(&g, &p, b, key)).map(|e| e.gate as u32).sum::<u32>();
+        let mid = gates(clip_params(|_| {}));
+        assert!(gates(clip_params(|p| p[P_STABS] = 1.0)) < mid, "stabs shorten held notes");
+        assert!(gates(clip_params(|p| p[P_STABS] = 0.0)) > mid, "and hold the stabs");
+        let ticks = |p: [f32; MAX_GEN_PARAMS]| (0..8).flat_map(|b| clip_events(&g, &p, b, key)).map(|e| e.tick).collect::<Vec<_>>();
+        assert_ne!(ticks(clip_params(|p| p[P_SYNCOPATION] = 1.0)), ticks(clip_params(|_| {})), "syncopation pushes notes");
     }
 }

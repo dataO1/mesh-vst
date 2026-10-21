@@ -380,6 +380,22 @@ fn mono_group_plays_overlapping_notes_legato() {
 }
 
 #[test]
+fn a_mono_note_whose_gate_ends_now_lets_the_next_one_strike() {
+    let data = sine(441.0, 2.0, 60);
+    let mut b = SampleBank::new();
+    b.set(0, SlotDef::whole(data).with_choke(5));
+    b.set_mono(5, true);
+    let mut s = Sampler::new(SR, 4);
+    s.set_bank(shared(b));
+    // A held note of 2 ticks, rendered to its end, then the next note.
+    s.handle_event(&LiveEvent { gate: 2, ..note_on(60, 1) }, 0);
+    render(&mut s, 200, 100.0);
+    s.handle_event(&note_on(67, 2), 0);
+    render(&mut s, 64, 100.0);
+    assert_eq!(s.voices_active(), 2, "a voice of its own (the old one fades out)");
+}
+
+#[test]
 fn multisample_zones_resolve_by_key() {
     let low = sine(220.0, 1.0, 48);
     let high = sine(880.0, 1.0, 72);
