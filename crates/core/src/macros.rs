@@ -859,4 +859,43 @@ mod style_tests {
         });
         assert_eq!(allocs, 0);
     }
+
+    /// Pitch agreement of consecutive 4-bar blocks of a bass render (music
+    /// theory §6.3, as `melody.py` rep4): of the 16th steps both blocks
+    /// start a note on, the share with the same key.
+    fn rep4(lane: &PatternLane, bars: u64) -> f32 {
+        use crate::event::EventKind;
+        let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+        let mut blocks: Vec<std::collections::BTreeMap<u32, u8>> = Vec::new();
+        for blk in 0..bars / 4 {
+            let mut m = std::collections::BTreeMap::new();
+            for b in 0..4u64 {
+                lane.render(blk * 4 + b, MusicalKey::new(5, true), &mut out, &mut scratch);
+                for e in out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn) {
+                    m.insert(b as u32 * 16 + (e.tick / crate::TICKS_PER_STEP) as u32, e.key);
+                }
+            }
+            blocks.push(m);
+        }
+        let agree = |a: &std::collections::BTreeMap<u32, u8>, b: &std::collections::BTreeMap<u32, u8>| {
+            let both: Vec<u32> = a.keys().filter(|k| b.contains_key(k)).copied().collect();
+            both.iter().filter(|k| a[k] == b[k]).count() as f32 / both.len().max(1) as f32
+        };
+        blocks.windows(2).map(|w| agree(&w[0], &w[1])).sum::<f32>() / (blocks.len() - 1) as f32
+    }
+
+    #[test]
+    fn generated_forms_repeat_their_4_bar_blocks_like_the_references() {
+        let mut reps: Vec<f32> = (1..=30u32)
+            .map(|seed| {
+                let mut lane = PatternLane::bass(seed, seed);
+                let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, unison: Default::default() };
+                configure(&mut lane, mudpie_params(), &s);
+                rep4(&lane, 64)
+            })
+            .collect();
+        reps.sort_by(f32::total_cmp);
+        // The references repeat 0.33 .. 0.63 in pitch (music theory §6.3).
+        assert!((0.33..=0.7).contains(&reps[15]), "median rep4 {:.2} ({reps:?})", reps[15]);
+    }
 }
