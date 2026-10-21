@@ -111,35 +111,6 @@ pub const DEFAULT_FORMS: [&str; 10] = [
     ),
 ];
 
-// MUSICAL: first draft, tune by ear (user: the lead riff often does not play
-// at all in the first or second 64 bars, or only in breaks; several complex
-// drop forms with variety, coined to the synths). The synth lanes' form paired
-// with each of DEFAULT_FORMS, one line per 16 bars: `-8` rests, `~A8` plays
-// only in the drums' breaks. The second pass opens some rests into
-// break-only answers and some break-only segments into the full riff.
-pub const DEFAULT_LEAD_FORMS: [&str; 10] = [
-    // Steady: enters after 16 bars, answers in the breaks, riff and B to the end.
-    "-16 A15 C1 ~A16 A'8 B8",
-    // Roller: break answers, then 8-bar riffs with rests between.
-    "-8 ~A8 A7 C1 -8 A'8 B8 -8 A7 D1",
-    // B-led: two 16-bar statements on B and A', 16 bars of rest before each.
-    "-16 B8 B'8 -16 A'8 B8",
-    // Two-step: 4-bar calls with 4-bar gaps, a rest, then a full 16.
-    "A4 -4 A'4 -4 B4 -4 B'4 -4 -16 A4 A'4 B4 A'3 C1",
-    // EDM build: riff in the first drop, break-only through the breakdown, riff back.
-    "-16 A15 C1 ~A16 A'8 B7 D1",
-    // Breakouts: break answers, short riff runs, a long rest at the end.
-    "-8 ~B8 A6 C1 -1 -8 ~B8 A'7 D1 -8 -8",
-    // Call and answer: a 3.5-bar call every 8 bars, the second half silent.
-    "A3.5 -.5 -4 A'3.5 -.5 -4 B3.5 -.5 -4 A3 C1 -4 -32",
-    // Jungle chops: rest, break answers, a 12-bar riff, rest.
-    "-16 ~A16 A4 B4 A'4 -4 -16",
-    // Second half only: silent for 32 bars, then riff, answer, riff.
-    "-32 A8 B8 A'8 -8",
-    // Alternating: 8 on, 8 off, break answers, riff.
-    "A8 -8 B8 -8 ~A16 A'8 -8",
-];
-
 /// A seed letter of a form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Letter {
@@ -380,16 +351,6 @@ impl Form {
     pub fn single() -> Self {
         let seg = Segment { letter: Letter::A, play: Play::All, prime: false, swap: false, ops: OpChain::default(), beats: BEATS_PER_BAR, source: 0 };
         Self { pattern: vec![seg], lead: None, segments: vec![seg], beats: BEATS_PER_BAR }
-    }
-
-    /// The built-in forms ([`DEFAULT_FORMS`], each with its synth form from
-    /// [`DEFAULT_LEAD_FORMS`]).
-    pub fn defaults() -> Vec<Self> {
-        DEFAULT_FORMS
-            .iter()
-            .zip(DEFAULT_LEAD_FORMS)
-            .map(|(f, l)| Self::parse(&format!("{f} | {l}")).expect("built-in form parses"))
-            .collect()
     }
 
     /// The form a lane plays: synth lanes (lead, extra) play the `|` part when
@@ -1038,16 +999,6 @@ mod tests {
             }
         }
         assert!(opened > 5 && opened < 59, "some rests open, most stay: {opened}");
-    }
-
-    #[test]
-    fn built_in_synth_forms_parse_and_fill_64_bars() {
-        for f in Form::defaults() {
-            let lead = f.lead().expect("every built-in form has a synth form");
-            assert_eq!(lead.bars(), FORM_BARS, "{lead}");
-            let rest = (0..FORM_BARS as u64).filter(|&b| lead.pos(b).play != Play::All).count();
-            assert!(rest >= 8, "{lead}: the synth rests or answers somewhere");
-        }
     }
 
     #[test]
