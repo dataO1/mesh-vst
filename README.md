@@ -62,5 +62,8 @@ source (GPL-3.0), no accounts, no upsell.
    - Windows: `C:\Program Files\Common Files\CLAP` and `...\VST3`
 3. Load it on an instrument track, hold one long note, and start rolling.
 4. Optional: open **SET** in the plugin and add your sample folders.
+5. Optional: put your own bass riffs as MIDI files in `~/.config/mesh-vst/clips/a`, `b`, `c`
+   and `d` (one folder per letter, any key and length). The bass plays them when its SOURCE
+   is CLIPS, the default.
 
 <sub>building from source, tests and dev notes: [docs/building.md](docs/building.md) · design: [docs/design.md](docs/design.md) · music theory: [docs/music-theory.md](docs/music-theory.md)</sub>

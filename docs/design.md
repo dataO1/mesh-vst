@@ -362,6 +362,51 @@ drive external effects.
   - **Splice** stays the relation between instances. Layered on a pitched host, the fit after
     the operators may also take the same note an octave off to follow the host's way
     (contrary motion on the layer side fell from about 0.46 to 0.14 in the relation test).
+- **D50** **Bass clips** (2026-10-21): the bass plays from MIDI clips instead of generating its
+  line, so its riffs are musical first and the knobs shape them. `clips/`, the bass's
+  `clip_bar`.
+  - **Source.** An automatable **Bass source** setting, **Clips** (the default) or
+    **Generated** (the line as before), switched next to Rate for A/B listening. The drums
+    stay generated.
+  - **Clips.** A clip is taken as written, any length: its length is the MIDI file's end of
+    track (or its last note's end, if later), rounded up to the next beat, leading and trailing
+    rests included. It plays one voice (the lowest note of a chord). Its root is detected
+    (the motif key detector) and its notes kept as semitones over it. When it plays, the root
+    lands on the key's root and every note outside the key's scale (and mode) moves to the
+    nearest scale note (between two, the one at its own scale step); a key change follows at
+    once. The phrase follows the song's chords by scale steps, as generated phrases do.
+  - **Shipped.** Ten clips per letter, 32 beats each, written on C minor from the
+    music-theory note (root-heavy, chord tones on the beats, the dark intervals sparingly,
+    bars 4 and 8 their endings, each with its own rhythm): A states and asks (3-3-2 roller,
+    offbeat 8ths, stab and hold, long note and pickup, syncopated stabs, a pedal, a half-bar
+    call, octave quarters, a dotted chain, two-step), B answers home to the root or the 5th,
+    C are milder fills and turnarounds (scale runs, the 7th turning round, neighbours, walks),
+    D the aggressive transitions (octave stabs, the chromatic climb, the b5 and b2, stutters).
+    They are tables (`clips/tables.rs`), written to `crates/core/assets/clips/<letter>/NN.mid`
+    by `cargo run -p mesh-vst-core --example write_clips` and embedded; a test keeps the files
+    and the tables equal.
+  - **Your clips.** `*.mid` files in `~/.config/mesh-vst/clips/a` .. `d` (one folder per
+    letter) join the shipped ones when the plugin loads (up to 64 per letter; unreadable files
+    are skipped). Any key and length work; one voice is played, the lowest.
+  - **Windows.** The letter's seed picks its clip. A phrase (D48: 2 to 16 beats) is a window
+    anywhere in the clip: a seeded 16-beat part of it plus the phrase's offset, from the even
+    beat at or after that where a note starts (as D48's pitched phrases); a clip shorter than
+    the phrase repeats. Variants, operators and pins work on the window as on a generated
+    phrase.
+  - **The knobs** shape the clip in the directions they shape the generated line. Density at
+    its middle plays it as written; lower drops the weak notes (the bar's first note and the
+    beats stay), higher splits long notes into 8ths, 16ths near the top, of the same pitch.
+    Spread lifts weak notes an octave; Syncopation (and Complexity above its default) pushes
+    notes off the 8ths; the bass's stab amount shortens held notes above its middle and holds
+    stabs below it; Register moves the octave; accents, slides, Shape's length and legato,
+    the filter, Variation's loops and reversals, Contrast, the operators, the speed and Splice
+    act as on the generated line. A drum host's kicks thin the clip (avoid) or add the root
+    (double).
+  - **Loudness.** The bass is calibrated through Heat and Squash as well (measured raw, then
+    once more through them at that trim), because sustained clips leave the Squash up to 3 dB
+    quieter than it should be; the Squash knob recalibrates in 5 % steps.
+  - **A mono note whose gate ends at a new note** no longer glides into it (it played on from
+    where the held note got to, past the sample's end: a silent bar). The new note strikes.
 
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
@@ -540,7 +585,7 @@ suggested settings. Turning a knob or automating it moves away from that center.
 
 | Knob | Bass | Drums |
 |---|---|---|
-| **Density** | notes, note length | hits, voices coming in (tops included), loop gating |
+| **Density** | notes, note length; clips (D50): as written at the middle, weak notes thinned below, long notes split into 8ths or 16ths above | hits, voices coming in (tops included), loop gating |
 | **Contrast** | how far B moves from A (A plays the knobs): 0 the same settings, 1 the other side of the question and answer on every axis, in seeded directions; C and D around A and B (D49) | the same, with the drum axes |
 | *Permute* (parameter, no knob since D49) | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
 | **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell, how many long notes loop (D43); scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
@@ -557,7 +602,7 @@ A ninth, stepped and automatable parameter, **Style** (drums), picks the rhythm 
 (D39).
 
 The **settings panel** holds values that are seeded where sensible, saved with the project, and
-not knobs: Rate, Phrase, Phase, Scale, Bend range, Gain, and the mod-out assignment and
+not knobs: Rate, the Bass source (D50, next to Rate), Phrase, Phase, Scale, Bend range, Gain, and the mod-out assignment and
 meters. The form's three seeds (D48) sit in the left column. Every parameter, the seeds and
 settings included, is automatable (2026-10-21).
 
