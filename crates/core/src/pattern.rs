@@ -694,7 +694,9 @@ impl PatternLane {
                 let reference = FormPos { bar_in_segment: j, bars_since_main: j, last_of_segment: j + 1 == bars, prime: false, ops: OpChain::default(), ..*pos };
                 let mut harmony = base.harmony;
                 if self.role != Role::Drums {
-                    harmony.chord_degree = form_chord(self.pattern_seed, c.lane, &reference, base.seed, harmony.key.minor);
+                    // A phrase is written on the tonic and follows the song's
+                    // chords where it plays (below).
+                    harmony.chord_degree = if phrased { 0 } else { form_chord(self.pattern_seed, c.lane, &reference, base.seed, harmony.key.minor) };
                 }
                 let phrase_end = !phrased && self.phrase_bars > 1 && (first_bar + j as u64 + 1) % self.phrase_bars as u64 == 0;
                 let fill = self.role == Role::Drums && ((base.class == SeedClass::Filler && j + 1 == bars) || phrase_end);
@@ -744,6 +746,14 @@ impl PatternLane {
         // This bar's ticks in the span: the part from `from` starts at the
         // segment beat it is at; a segment longer than the span repeats it.
         let at_from = ((pos.beat_in_segment as u32 + if phrased { pos.skip as u32 } else { 0 }) * beat_ticks) % span.ticks;
+        // A pitched phrase moves with the bar's chord, by scale steps, the
+        // nearer way (the riff sequenced over the progression).
+        let chord_shift = match (phrased && self.role != Role::Drums, base.harmony.chord_degree as i32) {
+            (true, d) if d > 3 => d - 7,
+            (true, d) => d,
+            _ => 0,
+        };
+
         out.clear();
         let mut lap = 0u32;
         while lap < at_from + bar_ticks {
@@ -755,7 +765,12 @@ impl PatternLane {
                 let tick = from as u32 + (at - at_from);
                 if tick < bar_ticks {
                     let step = if phrased { (tick / crate::TICKS_PER_STEP as u32) as u8 } else { n.ev.step };
-                    out.push(LiveEvent { tick: tick as u16, step, ..n.ev });
+                    let mut e = LiveEvent { tick: tick as u16, step, ..n.ev };
+                    if chord_shift != 0 && e.kind == EventKind::NoteOn {
+                        let (d, off) = ops::degree(e.key, &base.harmony);
+                        e.key = ops::key_of(d + chord_shift, off, &base.harmony);
+                    }
+                    out.push(e);
                 }
             }
             lap += span.ticks;
@@ -1406,16 +1421,6 @@ mod tests {
         }
     }
 
-    /// Onsets of `bars` as (tick in the run, key), from bar 0 of the run.
-    fn onsets(bars: &[Vec<crate::event::LiveEvent>]) -> Vec<(u32, u8)> {
-        let mut v: Vec<(u32, u8)> = bars
-            .iter()
-            .enumerate()
-            .flat_map(|(b, bar)| bar.iter().filter(|e| matches!(e.kind, EventKind::NoteOn | EventKind::Trigger)).map(move |e| (b as u32 * TICKS_PER_BAR as u32 + e.tick as u32, e.key)))
-            .collect();
-        v.sort_unstable();
-        v
-    }
 
     #[test]
     fn a_phrase_loops_from_its_own_start() {
@@ -1427,13 +1432,28 @@ mod tests {
                 l.phrase_bars = 64;
                 l
             };
+            // Pitched phrases follow the song's chords: compare the bass's
+            // rhythm, and its notes as steps from the bar's first.
+            let onsets = |bars: &[Vec<crate::event::LiveEvent>]| {
+                let h = HarmonyCtx { key: MusicalKey::new(5, true), chord_degree: 0, progression: 0, mode: 0 };
+                let mut v = Vec::new();
+                for (b, bar) in bars.iter().enumerate() {
+                    let first = bar.iter().find(|e| e.kind == EventKind::NoteOn).map_or(0, |e| ops::degree(e.key, &h).0);
+                    for e in bar.iter().filter(|e| matches!(e.kind, EventKind::NoteOn | EventKind::Trigger)) {
+                        let id = if drums { e.key as i32 } else { ops::degree(e.key, &h).0 - first };
+                        v.push((b as u32 * TICKS_PER_BAR as u32 + e.tick as u32, id));
+                    }
+                }
+                v.sort_unstable();
+                v
+            };
             // Two bars of phrase: bars 2 and 3 play bars 0 and 1 again.
             let two = render_all(&lane("A16:8"), 4);
             assert_eq!(onsets(&two[2..4]), onsets(&two[0..2]), "drums {drums}: an 8-beat phrase repeats every 2 bars");
             // Half a bar: each bar plays it twice (the timing drift of the
             // letter's feel aside).
             let half = render_all(&lane("A16:2"), 2);
-            let near = |a: &[(u32, u8)], b: &[(u32, u8)]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.1 == y.1 && x.0.abs_diff(y.0) <= 3);
+            let near = |a: &[(u32, i32)], b: &[(u32, i32)]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.1 == y.1 && x.0.abs_diff(y.0) <= 3);
             let halves = |bar: &[crate::event::LiveEvent], h: u32| {
                 let mid = TICKS_PER_BAR as u32 / 2;
                 onsets(std::slice::from_ref(&bar.to_vec())).into_iter().filter(|o| (o.0 >= mid) == (h == 1)).map(|o| (o.0 % mid, o.1)).collect::<Vec<_>>()
@@ -1444,16 +1464,25 @@ mod tests {
             // An offset rotates where it starts in the letter's notes: the
             // same notes over the phrase, in another order.
             let rotated = render_all(&lane("A16:8+2"), 2);
-            let keys = |o: Vec<(u32, u8)>| {
-                let mut k: Vec<u8> = o.into_iter().map(|x| x.1).collect();
-                k.sort_unstable();
-                k
-            };
-            assert_eq!(keys(onsets(&rotated)), keys(onsets(&two[0..2])), "drums {drums}: the same notes");
-            assert_ne!(onsets(&rotated), onsets(&two[0..2]), "drums {drums}: from another beat");
+            let ticks = |o: Vec<(u32, i32)>| o.into_iter().map(|x| x.0 % (2 * TICKS_PER_BAR as u32)).collect::<Vec<_>>();
+            let beat = TICKS_PER_BAR as u32 / 4;
+            let mut moved: Vec<u32> = ticks(onsets(&two[0..2])).into_iter().map(|t| (t + 6 * beat) % (8 * beat)).collect();
+            moved.sort_unstable();
+            let got = ticks(onsets(&rotated));
+            assert!(got.len() == moved.len() && got.iter().zip(&moved).all(|(a, b)| a.abs_diff(*b) <= 3), "drums {drums}: the same notes from another beat: {got:?} vs {moved:?}");
+            if drums {
+                let ids = |o: Vec<(u32, i32)>| {
+                    let mut k: Vec<i32> = o.into_iter().map(|x| x.1).collect();
+                    k.sort_unstable();
+                    k
+                };
+                assert_eq!(ids(onsets(&rotated)), ids(onsets(&two[0..2])));
+            }
             // A skip enters the phrase later: one bar in.
             let skipped = render_all(&lane("A1:8^4 A15:8"), 1);
-            assert_eq!(onsets(&skipped[0..1]), onsets(&two[1..2]), "drums {drums}: skipped one bar in");
+            assert_eq!(ticks(onsets(&skipped[0..1])), ticks(onsets(&two[1..2])), "drums {drums}: skipped one bar in");
+
+
         }
     }
 

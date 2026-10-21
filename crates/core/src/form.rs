@@ -463,8 +463,12 @@ impl Form {
                     before_change: end.is_multiple_of(SECTION_BARS * BEATS_PER_BAR) || next.letter.class() != seg.letter.class(),
                     bar_in_segment: in_segment,
                     segment_bars: seg.bars(),
-                    // Filler bars keep counting from the last main segment.
-                    bars_since_main: if seg.letter.class() == SeedClass::Main {
+                    // Filler bars keep counting from the last main segment;
+                    // phrases (D48) count the progression from the section's start.
+                    bars_since_main: if seg.phrase > 0 {
+                        (at / BEATS_PER_BAR) % SECTION_BARS
+                    } else if seg.letter.class() == SeedClass::Main {
+
                         in_segment
                     } else {
                         (at - main_start) / BEATS_PER_BAR
