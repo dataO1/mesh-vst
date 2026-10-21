@@ -117,8 +117,9 @@ drive external effects.
 - **D25** Energy over time comes from the DAW: automate Permute, Variation and Density, place notes for
   sections. The plugin adds a phrase length (4/8/16 bars, fills at phrase ends counted from song
   position) and the Mesh **form**: letter seeds A/B (main) and C/D (fillers) placed by a form
-  string such as `A15 C1`. The form is a parameter with ten built-in forms as presets (D47), and
-  rolling the pattern seed rolls the form too. Each letter has its own seed and moves the
+  string such as `A15 C1`. The form is generated from three seeds (D48: phrases, fill plan,
+  second pass), each rolled on its own; rolling the pattern seed rolls the notes only. Each
+  letter has its own seed and moves the
   parameters around the knobs, the right-hand knobs (Shape, Morph, Spread, Slide), Permute (when
   on) and Groove most, scaled 0.6 to 1.4 by Variation; the knobs show each hit's values
   (2026-10-20). Per note only the right-hand knobs move, Shape much (a seeded share, at low
@@ -189,7 +190,8 @@ drive external effects.
   its form position (form, pattern seed, pattern bar). The Splice knob is then one relation
   axis; the rhythm stays as D42 says (neutral in the middle).
   - **Blocks (B2).** The follower plays the host's form position, so its blocks (letters,
-    swaps, fills) change with the host's; its own letter seeds give the content.
+    swaps, fills) change with the host's; its own letter seeds give the content. (Superseded
+    by D48: the follower derives a form of its own from the host's by the relation.)
   - **Pitch (B7).** Each note of the bass walk is weighed by how it moves against the host's
     line, the host's last note carried through its rests. Stacked (0): unisons, octaves and
     fifths and motion the host's way are favoured. The middle: free lines, but no parallel
@@ -259,6 +261,68 @@ drive external effects.
     transition: steady roller, question and answer (2-bar periods, answers in the last half
     bar), slow build, two-step cells, breakdown (fillers in half time), B-led, stabs and cells,
     space (thinned and held), switch-up (the second drop re-cuts the motifs), bounce.
+    (Superseded by D48: the forms are generated; these ten became the characters of its fill
+    plans. The grammar and the operators stay.)
+- **D48** **Generated forms** (2026-10-21). No more built-in forms or Form parameter: a form is
+  built from three seeds, each rolled on its own, so a wrong part can be targeted (the
+  phrases, how the 64 bars are built from them, the second pass). `arrange.rs`.
+  - **Phrases.** A, B, C and D are phrase slots, the letter is the type: A asks, B answers, C
+    is a short fill, D a bigger transition. A phrase is its letter's notes (from the pattern
+    seed, as before) looped over a seeded length in **beats, a power of two**: A and B 2, 4, 8
+    or 16 beats (weights 15/35/35/15 %, at most 4 bars), C and D 1 to 8. It loops from its own
+    start (written `A2:8`: two bars of an 8-beat phrase) and starts a seeded **offset** into
+    its letter's notes (`+2`), one per letter, mod the length, shared by the letter's variants;
+    drum offsets are even (the backbeat stays). A segment entering its phrase later (a fill
+    took its head) skips in (`^2`). A pitched phrase is written on the tonic and moves with the
+    song's chord where it plays, by scale steps the nearer way (the riff sequenced over the
+    progression); against a pitched host it is walked on the bar's chord instead. The **phrase
+    seed** draws each letter's phrase; a **pin** per phrase keeps its seed through phrase rolls.
+  - **Shape** tilts the lengths (low Shape short phrases and cells, high Shape long ones: a
+    bias on the seeded pick, the mean length rises with it), **Variation** scales the form's
+    variation: the share of the plan's `?` slots filled (25 % .. 85 %), extra fills inside a
+    section (4 % .. 30 % per 4-bar seam) and how far the second pass reaches. Both are read in
+    five bands, so a small knob move keeps the form.
+  - **Fill plans** (the **fill seed**): ten characters from the old forms (steady roller,
+    question and answer, slow build, two-step cells, breakdown, B-led, stabs and cells, space,
+    switch-up, bounce). A plan gives each 16-bar section one or more **units** (`A A A? B?a`,
+    `Aq Ba`) and its seam fill. A unit repeats over **16-beat cycles** (a unit longer than 16
+    beats takes a cycle of 32 or 64), each cycle starting it again, the last phrase clipped, so
+    unequal A and B lengths still fill a cycle; a seam fill pads what a short unit leaves of a
+    cycle, else it overwrites the section's last beats; a pickup may open the form; rare breaks
+    sit inside units (`A Ao C B?`) or come as extra fills at 4-bar seams. Every section is built
+    on its own and fills overwrite, so the **16-bar grid holds by construction**. Per form the
+    seed either varies the unit shapes per section (the letters keep their lengths) or the
+    letters' lengths per section (the shapes stay), never both. Operators live in the plan
+    only: fixed marks and `?` slots, resolved by the fill seed by their place (D47's tables).
+  - **Second pass** (the **second-pass seed**): bars 65..128 are the plan built again by one
+    seeded recipe, a second one higher up Variation: switch-up (A and B re-cut by `r i d o R`
+    from a section on), escalate (more slots and fills, pushes `x y p`), order swap (A and B
+    trade places), new answers (B plays `t i c p` on top), hook back (a section cut short, the
+    opening's unit back halfway), double end (the last 4 bars doubled up), thin drop (the pass
+    opens thinned). Variation sets how many sections a recipe reaches. It replaces D47's
+    letter swaps. A written form may give its second pass after `//`.
+  - **Rules** (music theory §5, §6.3), checked in code: the grid; the first pass's first 8
+    bars repeat unchanged (no slot, no fill but the pickup); inside a section each cycle
+    changes at most once against the one before (enforced while the slots resolve); the
+    structural repetition at the hook period (4 or 8 bars) between 0.1 and 0.95; a busier
+    second pass. A form that breaks one builds again from the same seeds with its slots, fills
+    and recipe drawn anew (up to 8 attempts, the fewest broken rules win; 0 of 10 000 forms
+    break one at the defaults). Measured on the rendered bass, consecutive 4-bar blocks agree
+    in pitch at a median of about 0.6 (the references: 0.33 .. 0.63).
+  - **Parameters.** Phrase, fill and second-pass seed are automatable parameters (all others
+    are too now, user 2026-10-21); the rolls only write seed values. A seed or band change
+    builds the form on the audio thread without allocating (about 10 µs, at most 9 attempts)
+    and plays from the next bar rendered (the old Form parameter switched the same way; the
+    4-bar boundary of `FORM_CHANGE_BARS` is not enforced). The pins are project state.
+  - **Splice.** The link (v3, `mesh-vst-link-v3`; v2 instances do not see it) carries the
+    host's form seeds and bands; the follower builds the host's form and derives its own from
+    it per 4-bar window by the relation: stacked, it takes the host's window (85 % at the end),
+    else its own; in the middle its own; in the gaps (up to 80 % each) its fill leaves a window
+    where the host fills, a fill goes where the host plays on, its variants go where the host
+    holds and stop where the host changes. The relation is read in nine bands. A follower
+    without a form of its own plays the host's. D46's note relation and D47's question and
+    answer swap stay.
+
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
 - **D31** Hat, cymbal and shaker pools. The name decides when it carries a keyword: 97% of
@@ -452,8 +516,10 @@ A ninth, stepped and automatable parameter, **Style** (drums), picks the rhythm 
 (D39).
 
 The **settings panel** holds values that are seeded where sensible, saved with the project, and
-not knobs: Rate, Form, Phrase, Phase, Scale, Bend range, Gain, and the mod-out assignment and
-meters.
+not knobs: Rate, Phrase, Phase, Scale, Bend range, Gain, and the mod-out assignment and
+meters. The form's three seeds (D48) sit in the left column. Every parameter, the seeds and
+settings included, is automatable (2026-10-21).
+
 
 **Unison (Bass only, D38).** Each note plays a seeded number of detuned copies of the mudpie
 voice. The footer's bottom-right widget sets **Voices** (maximum, 1–8), **Detune** (cents) and
