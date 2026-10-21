@@ -48,7 +48,11 @@ pub struct UiShared {
     pub link_id: AtomicU64,
     pub host: AtomicU64,
     pub host_bands: [AtomicU8; crate::link::BANDS],
+    /// The pinned phrases' seeds ([`UiState::phrase_pins`]): 0 = none, else
+    /// `1 << 32 | seed`.
+    pub phrase_pins: [AtomicU64; 4],
 }
+
 
 /// Values of [`UiShared::hit`].
 pub const HIT_VALUES: usize = mesh_vst_core::macros::KNOBS + 1;
@@ -77,6 +81,7 @@ impl Default for UiShared {
             link_id: AtomicU64::new(0),
             host: AtomicU64::new(0),
             host_bands: std::array::from_fn(|_| AtomicU8::new(0)),
+            phrase_pins: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
 }
@@ -139,7 +144,23 @@ pub fn source_index(s: mesh_vst_core::modout::Source) -> u8 {
 }
 
 impl UiShared {
+    /// Copy the saved phrase pins into the atomics the audio thread reads.
+    pub fn load_phrase_pins(&self, state: &UiState) {
+        for (a, p) in self.phrase_pins.iter().zip(state.phrase_pins) {
+            a.store(p.map_or(0, |s| 1 << 32 | s as u64), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// The phrase pins the audio thread plays.
+    pub fn phrase_pins(&self) -> [Option<u32>; 4] {
+        std::array::from_fn(|i| {
+            let v = self.phrase_pins[i].load(std::sync::atomic::Ordering::Relaxed);
+            (v >> 32 != 0).then_some(v as u32)
+        })
+    }
+
     /// Copy a saved mapping into the atomics the audio thread reads.
+
     pub fn load_mod_map(&self, state: &UiState) {
         use mesh_vst_core::modout::{DEFAULT_BASS, DEFAULT_DRUMS};
         for (m, (saved, default)) in [(&state.mod_bass, DEFAULT_BASS), (&state.mod_drums, DEFAULT_DRUMS)].into_iter().enumerate() {
@@ -167,4 +188,7 @@ pub struct UiState {
     pub link_id: u64,
     #[serde(default)]
     pub host: Option<u64>,
+    /// The form's phrases (A..D) pinned to their phrase seed (D48).
+    #[serde(default)]
+    pub phrase_pins: [Option<u32>; 4],
 }

@@ -8,12 +8,14 @@
 //!   --mode bass --seed 7 --bars 16 --key 41 --out bass.wav --mudpie pie.wav --root 41
 //! ```
 //!
-//! `--form N` plays default form N (0..=9), `--param name=value` sets a
-//! generator parameter.
+//! `--form N` plays the form seed N builds (all three form seeds N), or a
+//! form as written; `--param name=value` sets a generator parameter.
+
 
 use std::path::PathBuf;
 
-use mesh_vst_core::form::{Form, DEFAULT_FORMS};
+use mesh_vst_core::form::Form;
+use mesh_vst_core::macros::FormSettings;
 use mesh_vst_core::gc::gc_handle;
 use mesh_vst_core::kit::{grid_slices, mudpie_bank, share, DrumKit};
 use mesh_vst_core::pattern::PatternLane;
@@ -77,10 +79,15 @@ fn main() {
     let mut sampler = Sampler::new(SR, voices);
     sampler.set_bank(basedrop::Shared::new(&gc_handle(), bank));
     let mut player = Player::new(lane, sampler);
-    if let Some(i) = one("form") {
-        let i: usize = i.parse().unwrap_or_else(|_| fail("--form: not a number"));
-        let text = DEFAULT_FORMS.get(i).unwrap_or_else(|| fail("--form: 0..=9"));
-        player.lane_mut().set_form(Form::parse(text).unwrap_or_else(|e| fail(&format!("form: {e:?}"))));
+    if let Some(s) = one("form") {
+        // A seed builds a form (D48), anything else is a form as written.
+        match s.parse::<u32>() {
+            Ok(seed) => {
+                let drums = player.lane().role() == mesh_vst_core::role::Role::Drums;
+                player.lane_mut().set_form_spec(FormSettings::seeded(seed).spec(drums, 0.5, 0.5));
+            }
+            Err(_) => player.lane_mut().set_form(Form::parse(&s).unwrap_or_else(|e| fail(&format!("form: {e:?}")))),
+        }
     }
     for p in opt.get("param").into_iter().flatten() {
         let (name, value) = p.split_once('=').unwrap_or_else(|| fail("--param name=value"));

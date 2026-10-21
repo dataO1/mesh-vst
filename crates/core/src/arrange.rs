@@ -972,7 +972,133 @@ fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
     }
 }
 
+// MUSICAL: tune by ear (user, 2026-10-21: a Splice follower knows the
+// host's form and reacts by the slider: stacked near the same structure
+// with some variation, the fills together; in the gaps a contrary one, its
+// fills where the host plays, its changes where the host holds). Chance a
+// 4-bar window takes the host's at full layer; chances of the counter
+// moves at full counter.
+const LAYER_COPY: f32 = 0.85;
+const COUNTER_MOVE: f32 = 0.8;
+/// Beats at a window's end a fill counts in, and a counter fill's length.
+const FILL_ZONE: u16 = 4;
+const COUNTER_FILL_BEATS: u16 = 2;
+
+impl FormBuilder {
+    /// Build a Splice follower's form into `out` from the host's form and
+    /// its own (D48), at `relation` (−1 layer .. 1 counter), seeded by
+    /// `seed`. Each 4-bar window is the host's or the follower's own, moved:
+    /// towards the layer end it takes the host's more often; towards the
+    /// counter end its fills leave the host's and go where the host plays,
+    /// its variants leave the host's and go where the host holds. Drum
+    /// followers keep even offsets (the backbeat). RT-safe.
+    pub fn follow(&mut self, host: &Form, own: &Form, relation: f32, seed: u32, drums: bool, out: &mut Form) {
+        let full = |segs: &[Segment]| segs.iter().map(|s| s.beats as u32).sum::<u32>() == PASS_BEATS as u32;
+        let (own_first, own_second) = if full(own.pattern()) && full(own.second_pass()) { (own.pattern(), own.second_pass()) } else { (host.pattern(), host.second_pass()) };
+        derive(&mut self.first, host.pattern(), own_first, relation, seed, drums, 0);
+        derive(&mut self.second, host.second_pass(), own_second, relation, seed, drums, 1);
+        out.set_passes(&self.first, &self.second);
+    }
+}
+
+/// Push the parts of `pass` in beats `from..to` onto `out`.
+fn slice(pass: &[Segment], from: u16, to: u16, out: &mut Vec<Segment>) {
+    let mut at = 0u16;
+    for s in pass {
+        let (a, b) = (at, at + s.beats);
+        at = b;
+        if b <= from || a >= to {
+            continue;
+        }
+        let (lo, hi) = (a.max(from), b.min(to));
+        let mut seg = Segment { beats: hi - lo, ..*s };
+        if seg.phrase > 0 {
+            seg.skip = ((seg.skip as u16 + lo - a) % seg.phrase as u16) as u8;
+        }
+        if out.len() < out.capacity() {
+            out.push(seg);
+        }
+    }
+}
+
+/// The window's (beats `from..from + CYCLE_BEATS` of `pass`) fill at its
+/// end, and whether it plays a variant (an operator but `q` and `a`).
+fn window_shape(pass: &[Segment], from: u16) -> (bool, bool) {
+    let (mut fill, mut varied, mut at) = (false, false, 0u16);
+    let to = from + CYCLE_BEATS;
+    for s in pass {
+        let (a, b) = (at, at + s.beats);
+        at = b;
+        if b <= from || a >= to {
+            continue;
+        }
+        fill |= s.letter.class() == SeedClass::Filler && b > to - FILL_ZONE;
+        varied |= s.letter.class() == SeedClass::Main && s.ops.iter().any(|o| !matches!(o, Op::Question | Op::Answer));
+    }
+    (fill, varied)
+}
+
+fn derive(out: &mut Vec<Segment>, host: &[Segment], own: &[Segment], relation: f32, seed: u32, drums: bool, pass: u8) {
+    out.clear();
+    let windows = PASS_BEATS / CYCLE_BEATS;
+    for w in 0..windows {
+        let from = w * CYCLE_BEATS;
+        let to = from + CYCLE_BEATS;
+        let h = rng::hash(seed, drums as u8, w as u8, pass, S_FOLLOW);
+        let start = out.len();
+        if relation < 0.0 && rng::chance(h, -relation * LAYER_COPY) {
+            slice(host, from, to, out);
+            continue;
+        }
+        slice(own, from, to, out);
+        if relation <= 0.0 {
+            continue;
+        }
+        let p = relation * COUNTER_MOVE;
+        let ((host_fill, host_varied), (own_fill, own_varied)) = (window_shape(host, from), window_shape(own, from));
+        let window = &mut out[start..];
+        if host_fill && own_fill && rng::chance(rng::derive(h, 1), p) {
+            // The host fills: hold the line through it.
+            let main = window.iter().rev().find(|s| s.letter.class() == SeedClass::Main).copied();
+            if let Some(m) = main {
+                for s in window.iter_mut().filter(|s| s.letter.class() == SeedClass::Filler) {
+                    *s = Segment { beats: s.beats, ..m };
+                }
+            }
+        } else if !host_fill && !own_fill && rng::chance(rng::derive(h, 2), p) {
+            // The host plays on: fill here instead.
+            let c = own.iter().find(|s| s.letter == Letter::C).map_or(COUNTER_FILL_BEATS as u8, |s| s.phrase);
+            let fill = Segment { phrase: c.max(1), ..Segment::new(Letter::C, COUNTER_FILL_BEATS, 0) };
+            overwrite(out, to - COUNTER_FILL_BEATS, fill);
+        }
+        let window = &mut out[start..];
+        if host_varied && own_varied && rng::chance(rng::derive(h, 3), p) {
+            // The host changes: hold.
+            for s in window.iter_mut() {
+                let mut kept = OpChain::default();
+                for o in s.ops.iter().filter(|o| matches!(o, Op::Question | Op::Answer)) {
+                    kept.push(o);
+                }
+                s.ops = kept;
+            }
+        } else if !host_varied && !own_varied && rng::chance(rng::derive(h, 4), p) {
+            // The host holds: change here.
+            if let Some(s) = window.iter_mut().rev().find(|s| s.letter.class() == SeedClass::Main) {
+                s.ops.push(ops::seeded(rng::derive(h, 5), Place { period_end: true, ..Place::default() }));
+            }
+        }
+    }
+    if drums {
+        for s in out.iter_mut() {
+            s.offset &= !1;
+            s.skip &= !1;
+        }
+    }
+    merge(out);
+}
+
 // RNG streams (D48).
+
 const S_PHRASE: u32 = 0xF80;
 const S_LENGTH: u32 = 0xF81;
 const S_OFFSET: u32 = 0xF82;
@@ -984,6 +1110,8 @@ const S_HEAD: u32 = 0xF87;
 const S_SLOT: u32 = 0xF88;
 const S_RECIPE: u32 = 0xF89;
 const S_ATTEMPT: u32 = 0xF8A;
+const S_FOLLOW: u32 = 0xF8B;
+
 
 
 
@@ -1160,7 +1288,48 @@ mod tests {
     }
 
     #[test]
+    fn a_follower_derives_its_form_from_the_hosts_by_the_relation() {
+        let mut b = FormBuilder::new();
+        let (mut host, mut own, mut out) = (Form::generated(), Form::generated(), Form::generated());
+        // Per relation: beats like the host's, 4-bar windows where both
+        // fill at their end, windows where one does.
+        let mut stats = [(0usize, 0usize, 0usize); 3];
+        for seed in 0..120 {
+            b.build(&spec(seed, 2, 2), &mut host);
+            b.build(&spec(seed + 1000, 2, 2), &mut own);
+            for (k, relation) in [-1.0f32, 0.0, 1.0].into_iter().enumerate() {
+                b.follow(&host, &own, relation, seed, false, &mut out);
+                if relation == 0.0 {
+                    assert_eq!(out.to_string(), own.to_string(), "the middle plays its own form");
+                }
+                for beat in 0..2 * PASS_BEATS as u64 {
+                    let (x, y) = (out.pos_varied_at(beat, 0, 0), host.pos_varied_at(beat, 0, 0));
+                    stats[k].0 += ((x.letter, x.ops, x.phrase) == (y.letter, y.ops, y.phrase)) as usize;
+                }
+                for w in 0..2 * (PASS_BEATS / CYCLE_BEATS) as u64 {
+                    let fill = |f: &Form| (w * 16 + 12..w * 16 + 16).any(|b| f.pos_varied_at(b, 0, 0).letter.class() == SeedClass::Filler);
+                    let (a, h) = (fill(&out), fill(&host));
+                    stats[k].1 += (a && h) as usize;
+                    stats[k].2 += (a != h) as usize;
+                }
+                // The grid holds.
+                for pass in [out.pattern(), out.second_pass()] {
+                    assert_eq!(pass.iter().map(|s| s.beats as u32).sum::<u32>(), PASS_BEATS as u32);
+                }
+            }
+        }
+        let beats = (120 * 2 * PASS_BEATS as usize) as f32;
+        let (layer, middle, counter) = (stats[0], stats[1], stats[2]);
+        assert!(layer.0 as f32 > 0.75 * beats, "stacked: {} of {beats} beats as the host's", layer.0);
+        assert!(middle.0 < layer.0 / 2, "the middle its own: {}", middle.0);
+        assert!(counter.1 < middle.1 / 2, "in the gaps the fills leave the host's: {} vs {}", counter.1, middle.1);
+        assert!(counter.2 > middle.2, "and go where it plays: {} vs {}", counter.2, middle.2);
+        assert!(layer.1 > middle.1, "stacked the fills overlap: {} vs {}", layer.1, middle.1);
+    }
+
+    #[test]
     fn building_does_not_allocate() {
+
 
 
         let mut b = FormBuilder::new();

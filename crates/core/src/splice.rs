@@ -36,20 +36,22 @@ pub struct Occupancy {
     pub keys: [u8; STEPS_PER_BAR],
     /// The length in steps of the note sounding on each step (0 = none).
     pub lens: [u8; STEPS_PER_BAR],
-    /// The pattern seed the form position is varied with.
-    pub form_seed: u32,
+    /// What the lane's form is built from (D48): the phrase seeds of A..D,
+    /// the fill and the second-pass seed.
+    pub form_seeds: [u32; 6],
     /// The lane's pattern bar under the song bar's start.
     pub form_bar: u32,
     /// Steps a note starts on, one bit each.
     pub onsets: u16,
     /// Ticks into that pattern bar at the song bar's start.
     pub form_offset: u16,
-    /// The form the lane plays (its index) and its lane index.
-    pub form: u8,
-    pub form_lane: u8,
+    /// The form's Variation and Shape bands (low and high nibble).
+    pub form_bands: u8,
+    /// Whether the form is a drum lane's.
+    pub form_drums: u8,
     /// [`PITCHED`], [`FORMED`].
     pub flags: u8,
-    pub _pad: u8,
+    pub _pad: [u8; 5],
 }
 
 /// [`Occupancy::flags`]: the line (keys, lengths) is set.
@@ -64,17 +66,40 @@ impl Default for Occupancy {
             steps: [0; STEPS_PER_BAR],
             keys: [0; STEPS_PER_BAR],
             lens: [0; STEPS_PER_BAR],
-            form_seed: 0,
+            form_seeds: [0; 6],
             form_bar: 0,
             onsets: 0,
             form_offset: 0,
-            form: 0,
-            form_lane: 0,
+            form_bands: 0,
+            form_drums: 0,
             flags: 0,
-            _pad: 0,
+            _pad: [0; 5],
         }
     }
 }
+
+impl Occupancy {
+    /// Share what the lane's form is built from.
+    pub fn set_form(&mut self, spec: &crate::arrange::FormSpec) {
+        let s = &spec.seeds;
+        self.form_seeds = [s.phrases[0], s.phrases[1], s.phrases[2], s.phrases[3], s.fill, s.second];
+        self.form_bands = spec.variation & 0xF | (spec.shape & 0xF) << 4;
+        self.form_drums = spec.drums as u8;
+        self.flags |= FORMED;
+    }
+
+    /// What the host's form is built from.
+    pub fn form_spec(&self) -> crate::arrange::FormSpec {
+        let f = &self.form_seeds;
+        crate::arrange::FormSpec {
+            seeds: crate::arrange::FormSeeds { phrases: [f[0], f[1], f[2], f[3]], fill: f[4], second: f[5] },
+            variation: self.form_bands & 0xF,
+            shape: self.form_bands >> 4,
+            drums: self.form_drums != 0,
+        }
+    }
+}
+
 
 /// A pitched host's line under one of the follower's bars, per step of
 /// that bar, and the relation the follower takes to it (D46).

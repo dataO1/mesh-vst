@@ -26,91 +26,6 @@ pub const MAX_FORM_BARS: u16 = 64;
 /// Bars of a phrase; a form change lands on the next phrase boundary.
 pub const FORM_CHANGE_BARS: u64 = 4;
 
-// MUSICAL: tune by ear (user, 2026-10-21: forms are the deterministic big
-// picture, 64 bars a pass, the second pass varied; A and B are distinct
-// motifs that ask and answer, C and D the stark changes at the transitions;
-// related variants of a letter come from its operators, often and in short
-// steps; focused repetition, not random variation; each form its own
-// character; music-theory §1 §4 §5). One line per 16 bars, each ending on
-// a transition. Marks: `'` another second half, `*` another sound, the
-// operators of D47 (`q` asks, `a` answers, `m` mutates a repeat, `x` and
-// `h` double or halve the time before a change, ...).
-pub const DEFAULT_FORMS: [&str; 10] = [
-    // Steady roller: A repeats, a mutation on the 4th bar, B answers.
-    concat!(
-        "A3 Am1 A3 Ba1 A3 Am1 A2 A'1 C1 ",
-        "A3 Ar1 A3 Ba1 A3 Am1 A3 D1 ",
-        "B3 Bm1 B3 Aa1 B3 Bi1 B2 B'1 C*1 ",
-        "A3 Am1 A3 Ba1 A2 Ax2 A2 Aq.5 C.5 D*1"
-    ),
-    // Question and answer: two-bar periods, A asks and B answers in the
-    // last half bar, the answers developing.
-    concat!(
-        "A1.5 Aq.5 B1.5 Ba.5 A1.5 Aq.5 B1.5 Bia.5 A1.5 Aq.5 B1.5 Ba.5 A1.5 Ar.5 C2 ",
-        "A1.5 Aq.5 Bt1.5 Ba.5 A1.5 Aq.5 Bc1.5 Ba.5 A3 Ai1 B3 D1 ",
-        "B1.5 Bq.5 A1.5 Aa.5 B1.5 Bq.5 Ai1.5 Aa.5 B2 Bm2 C*2 D2 ",
-        "A1.5 Aq.5 B1.5 Ba.5 A1.5 Aqy.5 B1.5 Ba.5 A1 Ax1 Am1 Aa1 C2 D*2"
-    ),
-    // Slow build: eight plain bars, then passing notes and double time
-    // creep in, the last 16 changing every bar.
-    concat!(
-        "A8 A7 Am1 ",
-        "A4 A'4 A3 Ap1 A3 Am1 ",
-        "A2 Am2 A2 Ap2 B2 Bp2 A2 Ax1 C1 ",
-        "A1 Ax1 A1 Ap1 B1 Bx1 A1 Ad1 A1 Ax1 B1 By1 C1 Cx1 D*1 Dx1"
-    ),
-    // Two-step cells: 4-bar cells whose last half bar pushes (syncopated or
-    // rotated), the third phrase in 2-bar cells.
-    concat!(
-        "A3.5 Ay.5 A3.5 Bo.5 A3.5 Ay.5 A3 C1 ",
-        "B3.5 By.5 B3.5 Ao.5 B'3.5 Bq.5 B3 D1 ",
-        "A2 Ao2 A2 AR2 B2 Bo2 A2 C*.5 Cx.5 D1 ",
-        "A3.5 Ay.5 B3.5 Ba.5 A3.5 Aoy.5 A2 Ax1 D*1"
-    ),
-    // Breakdown: a first drop, 16 bars of the fillers in half time and held
-    // long, the drop back with answers.
-    concat!(
-        "A4 A'4 A3 Aq1 A3 C1 ",
-        "C'h4 Ch4 Dh4 Dhl3.5 Ax.5 ",
-        "A3 Aa1 A3 Bi1 A3 Am1 A2 Ax1 C1 ",
-        "B3 Ba1 A3 Ai1 B3 Bq1 Ax1 C1 D*2"
-    ),
-    // B-led: A opens and asks, B carries the rest, A answers it.
-    concat!(
-        "A4 Aq1 B3 Ba1 B3 Bm1 B2 C1 ",
-        "B3 Am1 B3 Br1 B3 Ai1 B3 D1 ",
-        "B2 Bt2 B2 B't2 A3 Aa1 B3 C1 ",
-        "B3 Ba1 B3 Bi1 B3 Bmx1 B2 C*1 D*1"
-    ),
-    // Stabs and cells: short notes, cells rotated and pushed every other
-    // bar, thinned, the fillers in triplets.
-    concat!(
-        "As2 A2 As2 Asn2 As2 Bs2 As3 C1 ",
-        "As1 Aso1 As1 Asy1 As1 Aso1 As1 Ba1 As1 Asx1 As1 Asy1 As2 Ce1 D1 ",
-        "B2 Bs2 B2 Bsd2 A2 As2 Asd2 C*1 D1 ",
-        "As1 Aso1 As1 Asy1 Bs1 Bso1 Bs1 Ba1 As1 Asx1 As1 Asdy1 Ce2 Dx1 D*1"
-    ),
-    // Space: thinned and held (what is left out is the tension), few and
-    // long changes.
-    concat!("An8 An7 Aln1 ", "An4 Anl4 An3 Ana1 An3 C1 ", "An4 Bnl4 An4 Bna3 D1 ", "An6 Anm2 An4 Anq2 Cn1 Dn1"),
-    // Switch-up: 32 bars of the plain motifs, then the second drop re-cuts
-    // them (reversed, inverted, dotted, rotated).
-    concat!(
-        "A7 Aa1 A6 Ax1 C1 ",
-        "B7 Ba1 A6 Am1 D1 ",
-        "Ar2 Ai2 Ard2 Aia2 Ao2 Ar2 Aex1 C*1 D*2 ",
-        "Bi2 Bri2 Ar2 Aa2 Bd2 Bdi2 Ax1 Aq1 C*1 D*1"
-    ),
-    // Bounce: every other bar pushed, dotted or an octave up, B answering
-    // at each 4th bar.
-    concat!(
-        "A1 Ay1 A1 Au1 A1 Ay1 B1 Ba1 A1 Ay1 A1 Au1 A1 Ad1 C1 Cx1 ",
-        "A1 Ad1 A1 Auy1 B1 Bd1 B1 Ba1 A1 Ad1 A1 Auy1 B1 Bdq1 D*1 Dx1 ",
-        "B1 By1 B1 Bu1 A1 Ay1 A1 Aa1 B1 By1 B1 Bu1 A1 Ade1 C*1 D1 ",
-        "A1 Ay1 A1 Au1 B1 Bd1 B1 Ba1 A1 Ax1 A1 Aux1 C1 Cx1 D*1 Dx1"
-    ),
-];
-
 /// A seed letter of a form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Letter {
@@ -417,8 +332,21 @@ impl Form {
         f
     }
 
+    /// One bar of A again. RT-safe.
+    pub fn set_single(&mut self) {
+        let seg = Segment::new(Letter::A, BEATS_PER_BAR, 0);
+        self.pattern.clear();
+        self.pattern.push(seg);
+        self.segments.clear();
+        self.segments.push(seg);
+        self.second.clear();
+        self.lead = None;
+        self.beats = BEATS_PER_BAR;
+    }
+
     /// Play `first` and then `second`, each a full pass. RT-safe on a form
     /// from [`Self::generated`].
+
     pub fn set_passes(&mut self, first: &[Segment], second: &[Segment]) {
         let n = MAX_PASS_SEGMENTS;
         self.pattern.clear();
@@ -1156,7 +1084,6 @@ mod tests {
 
     #[test]
     fn parses_and_prints_forms() {
-
         let f = Form::parse("A7 B1 A'7 C1").unwrap();
         assert_eq!(f.bars(), FORM_BARS, "every form fills 64 bars (128 with its second pass)");
         assert_eq!(f.to_string(), "A7 B1 A'7 C1");
@@ -1165,9 +1092,6 @@ mod tests {
         assert!(matches!(Form::parse("E4"), Err(FormError::Segment(_))));
         assert!(matches!(Form::parse("A0"), Err(FormError::Segment(_))));
         assert!(matches!(Form::parse("A60 C5"), Err(FormError::TooLong(65))));
-        for f in DEFAULT_FORMS {
-            assert_eq!(Form::parse(f).unwrap().to_string(), f, "built-in forms round-trip");
-        }
     }
 
     #[test]
@@ -1209,11 +1133,6 @@ mod tests {
         assert!(parts[0].pos.last_of_segment && parts[1].pos.last_of_segment);
         // Whole bars are one part.
         assert_eq!(f.parts(0, 1, 1).1, 1);
-        // Every built-in form is a written 64 bars.
-        for text in DEFAULT_FORMS {
-            let form = Form::parse(text).unwrap();
-            assert_eq!(form.pattern().iter().map(|s| s.beats as u32).sum::<u32>(), 256, "{text}");
-        }
     }
 
     #[test]

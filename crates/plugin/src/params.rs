@@ -1,5 +1,6 @@
-//! The plugin's parameters (design D37): eight automatable meta knobs, and
-//! settings the DAW saves but does not automate.
+//! The plugin's parameters (design D37): the meta knobs, the seeds and the
+//! settings, all automatable (user, 2026-10-21: everything that can be).
+
 
 use nice_plug::prelude::*;
 
@@ -209,8 +210,14 @@ pub struct MeshParams {
     pub sound_seed: IntParam,
     #[id = "pattern_seed"]
     pub pattern_seed: IntParam,
-    #[id = "form"]
-    pub form: IntParam,
+    /// The generated form's seeds (D48): the four phrases, the fill plan,
+    /// the second pass.
+    #[id = "phrase_seed"]
+    pub phrase_seed: IntParam,
+    #[id = "fill_seed"]
+    pub fill_seed: IntParam,
+    #[id = "second_seed"]
+    pub second_seed: IntParam,
     #[id = "phase"]
     pub phase: EnumParam<PhaseMode>,
     #[id = "scale"]
@@ -292,10 +299,6 @@ fn knob_at(name: &str, default: f32) -> FloatParam {
         .with_unit(" %")
 }
 
-fn setting(p: IntParam) -> IntParam {
-    p.non_automatable()
-}
-
 impl Default for MeshParams {
     fn default() -> Self {
         let fresh = Fresh::new();
@@ -317,17 +320,17 @@ impl Default for MeshParams {
             // MUSICAL: tune by ear.
             squash: knob_at("Squash", 0.3),
             style: EnumParam::new("Style", DrumStyle::Seed),
-            mode: EnumParam::new("Mode", Mode::Drums).non_automatable(),
-            sound_seed: setting(IntParam::new("Sound seed", sound, IntRange::Linear { min: 0, max: MAX_SEED })),
-            pattern_seed: setting(IntParam::new("Pattern seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED })),
-            form: setting(IntParam::new("Form", 1, IntRange::Linear { min: 0, max: 10 }))
-                .with_value_to_string(std::sync::Arc::new(|v| if v == 0 { "none".into() } else { v.to_string() }))
-                .with_string_to_value(std::sync::Arc::new(|s| match s.trim() { "none" => Some(0), s => s.parse().ok() })),
-            phase: EnumParam::new("Phase", PhaseMode::Continuous).non_automatable(),
-            scale: EnumParam::new("Scale", Scale::Minor).non_automatable(),
+            mode: EnumParam::new("Mode", Mode::Drums),
+            sound_seed: IntParam::new("Sound seed", sound, IntRange::Linear { min: 0, max: MAX_SEED }),
+            pattern_seed: IntParam::new("Pattern seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED }),
+            phrase_seed: IntParam::new("Phrase seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED }),
+            fill_seed: IntParam::new("Fill seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED }),
+            second_seed: IntParam::new("Second pass seed", fresh.seed(), IntRange::Linear { min: 0, max: MAX_SEED }),
+            phase: EnumParam::new("Phase", PhaseMode::Continuous),
+            scale: EnumParam::new("Scale", Scale::Minor),
             rate: EnumParam::new("Rate", Rate::Normal),
             // 0 = the seed picks; 1.. = BEND_RANGES.
-            bend_range: setting(IntParam::new("Bend range", 0, IntRange::Linear { min: 0, max: BEND_RANGES.len() as i32 }))
+            bend_range: IntParam::new("Bend range", 0, IntRange::Linear { min: 0, max: BEND_RANGES.len() as i32 })
                 .with_value_to_string(std::sync::Arc::new(|v| if v <= 0 { "seed".into() } else { format!("{} st", BEND_RANGES[(v as usize - 1).min(6)]) }))
                 .with_string_to_value(std::sync::Arc::new(|s| {
                     if s.trim() == "seed" {
@@ -336,20 +339,18 @@ impl Default for MeshParams {
                     let st: i32 = s.trim().trim_end_matches("st").trim().parse().ok()?;
                     BEND_RANGES.iter().position(|&r| r == st).map(|i| i as i32 + 1)
                 })),
-            phrase: EnumParam::new("Phrase", Phrase::Eight).non_automatable(),
-            new_root: EnumParam::new("New root", NewRootMode::Glide).non_automatable(),
-            unison_voices: setting(IntParam::new("Unison voices", 4, IntRange::Linear { min: 1, max: 8 })),
+            phrase: EnumParam::new("Phrase", Phrase::Eight),
+            new_root: EnumParam::new("New root", NewRootMode::Glide),
+            unison_voices: IntParam::new("Unison voices", 4, IntRange::Linear { min: 1, max: 8 }),
             unison_detune: FloatParam::new("Unison detune", 25.0, FloatRange::Linear { min: 0.0, max: 60.0 })
                 .with_unit(" ct")
-                .with_step_size(0.5)
-                .non_automatable(),
+                .with_step_size(0.5),
             unison_width: FloatParam::new("Unison width", 0.6, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage())
-                .with_unit(" %")
-                .non_automatable(),
-            mono_lows: BoolParam::new("Mono lows", true).non_automatable(),
-            unison_mode: EnumParam::new("Unison mode", UnisonSpread::Linear).non_automatable(),
+                .with_unit(" %"),
+            mono_lows: BoolParam::new("Mono lows", true),
+            unison_mode: EnumParam::new("Unison mode", UnisonSpread::Linear),
             gain: FloatParam::new(
                 "Gain",
                 util::db_to_gain(0.0),

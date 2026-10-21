@@ -13,9 +13,10 @@ use std::collections::BTreeMap;
 
 use crate::event::{flags, BarEvents, EventKind, LiveEvent};
 use crate::sampler::MORPH_REGION;
+use crate::arrange::{FormBuilder, FormSpec};
 use crate::form::{
-    form_chord, letter_offset, letter_seed, prime_from, prime_seed, splice_from, Feel, Form, FormPos, Letter, Play, SeedClass,
-    DEFAULT_FORMS, FILLER_BOOSTS, LETTER_OFFSETS, NOTE_JITTER_SHARE,
+    form_chord, letter_offset, letter_seed, prime_from, prime_seed, splice_from, Feel, Form, FormPos, Letter, Play, SeedClass, FILLER_BOOSTS,
+    LETTER_OFFSETS, NOTE_JITTER_SHARE,
 };
 use crate::generator::bass::{self, BassGenerator, BassRules};
 use crate::generator::blocks::{defaults_from_spec, patterned, NoteShape};
@@ -37,7 +38,12 @@ pub const fn lane_index(role: Role) -> u8 {
     }
 }
 
+/// Steps of the Splice relation on either side a follower's form is built
+/// for (D48), so a slider move does not build one on every block.
+const RELATION_BANDS: i8 = 4;
+
 /// Lowest value a letter moves a non-zero parameter to.
+
 const LETTER_FLOOR: f32 = 0.05;
 
 // MUSICAL: from Mesh live (user: the seed and the form set the bass speed per
@@ -277,9 +283,20 @@ pub struct PatternLane {
     role: Role,
     generator: Box<dyn LaneGenerator>,
     layout: DrumLayout,
-    /// Index 0: one bar of A forever (or a custom form), then the default forms.
-    forms: Vec<Form>,
-    form: usize,
+    /// The lane's form: one bar of A, a form it was given
+    /// ([`Self::set_form`]) or one built from its seeds
+    /// ([`Self::set_form_spec`], D48).
+    form: Form,
+    /// What `form` was built from.
+    spec: Option<FormSpec>,
+    builder: FormBuilder,
+    /// Splice: the host's form, built from the host's seeds, and the form
+    /// a follower plays, derived from it and its own by the relation
+    /// (D48); what they were built from.
+    host_form: Form,
+    host_spec: Option<FormSpec>,
+    derived: Form,
+    derived_from: Option<(FormSpec, Option<FormSpec>, i8)>,
     /// Seed of the groove (letters, rhythm, pitch).
     pub pattern_seed: u32,
     /// Seed of the sample picks.
@@ -331,14 +348,17 @@ impl PatternLane {
         sound_seed: u32,
         params: [f32; MAX_GEN_PARAMS],
     ) -> Self {
-        let mut forms = vec![Form::single()];
-        forms.extend(DEFAULT_FORMS.iter().map(|f| Form::parse(f).expect("built-in form parses")));
         Self {
             role,
             generator,
             layout,
-            forms,
-            form: 0,
+            form: Form::generated(),
+            spec: None,
+            builder: FormBuilder::new(),
+            host_form: Form::generated(),
+            host_spec: None,
+            derived: Form::generated(),
+            derived_from: None,
             pattern_seed,
             sound_seed,
             rate: 0,
@@ -372,12 +392,13 @@ impl PatternLane {
     }
 
     pub fn form(&self) -> &Form {
-        &self.forms[self.form]
+        &self.form
     }
 
-    /// The index of the form the lane plays (see [`Self::select_form`]).
-    pub fn form_index(&self) -> usize {
-        self.form
+    /// What the lane's form was built from (`None`: one bar of A or a form
+    /// it was given).
+    pub fn form_spec(&self) -> Option<FormSpec> {
+        self.spec
     }
 
     /// The lane index its form positions are varied for.
@@ -385,16 +406,49 @@ impl PatternLane {
         lane_index(self.role)
     }
 
-    /// Play `form` (it takes slot 0).
+    /// Play `form` (not RT-safe).
     pub fn set_form(&mut self, form: Form) {
-        self.forms[0] = form;
-        self.form = 0;
+        self.form = form;
+        self.spec = None;
     }
 
-    /// Play form `index`: 0 = slot 0 (one bar of A unless [`Self::set_form`]
-    /// put a form there), 1..=10 = [`DEFAULT_FORMS`]. RT-safe.
-    pub fn select_form(&mut self, index: usize) {
-        self.form = index.min(self.forms.len() - 1);
+    /// Play the form `spec` builds (D48), unless it plays it already.
+    /// RT-safe.
+    pub fn set_form_spec(&mut self, spec: FormSpec) {
+        if self.spec != Some(spec) {
+            self.builder.build(&spec, &mut self.form);
+            self.spec = Some(spec);
+        }
+    }
+
+    /// Play one bar of A forever (a style without forms). RT-safe.
+    pub fn clear_form(&mut self) {
+        if self.spec.is_some() {
+            self.form.set_single();
+            self.spec = None;
+        }
+    }
+
+    /// Splice: follow a host's form at its position (`None`: the lane's
+    /// own form). The follower plays a form of its own derived from the
+    /// host's by the relation (D48), built again when the host's seeds,
+    /// the lane's own or the relation's band change. RT-safe.
+    pub fn set_follow(&mut self, follow: Option<FormFollow>) {
+        if let Some(f) = follow {
+            let band = (f.relation as f32 / 100.0 * RELATION_BANDS as f32).round() as i8;
+            let key = (f.spec, self.spec, band);
+            if self.derived_from != Some(key) {
+                if self.host_spec != Some(f.spec) {
+                    self.builder.build(&f.spec, &mut self.host_form);
+                    self.host_spec = Some(f.spec);
+                }
+                let seed = self.spec.map_or(self.pattern_seed, |s| s.seeds.fill);
+                let relation = band as f32 / RELATION_BANDS as f32;
+                self.builder.follow(&self.host_form, &self.form, relation, seed, self.role == Role::Drums, &mut self.derived);
+                self.derived_from = Some(key);
+            }
+        }
+        self.follow = follow;
     }
 
     /// Render `bar` (0 = the first bar of the song, or of the note in
@@ -404,8 +458,8 @@ impl PatternLane {
         let lane = lane_index(self.role);
         // Splice: the host's form position, so the blocks change with its.
         let (parts, n_parts) = match self.follow {
-            Some(f) => self.forms[(f.form as usize).min(self.forms.len() - 1)].parts(f.bar, f.seed, f.lane),
-            None => self.forms[self.form].parts(bar, self.pattern_seed, lane),
+            Some(f) if self.derived_from.is_some_and(|d| d.0 == f.spec) => self.derived.parts(f.bar, f.spec.seeds.fill, lane),
+            _ => self.form.parts(bar, self.pattern_seed, lane),
         };
         let pos = parts[0].pos;
         let seed = letter_seed(self.pattern_seed, lane, pos.letter);
@@ -422,7 +476,7 @@ impl PatternLane {
         };
         out.events.clear();
         out.params = BarParams::default();
-        let form_seed = self.follow.map_or(self.pattern_seed, |f| f.seed);
+        let form_seed = self.follow.map_or(self.pattern_seed, |f| f.spec.seeds.fill);
         out.voices = self.render_part(&ctx, &pos, 0, form_seed, &mut out.events, &mut scratch.second, &mut scratch.span, Some(&mut out.params));
         out.letter = pos.letter.index();
         for p in &parts[1..n_parts] {
@@ -680,7 +734,9 @@ impl PatternLane {
         // host's line under this bar (D46), so the span renders per bar.
         if base.host.on {
             key = base.host.keys.iter().chain(&base.host.lens).fold(mix(key, base.host.relation.to_bits() as u64), |h, v| mix(h, *v as u64));
+            key = mix(key, base.harmony.chord_degree as u64);
         }
+
         // The slot holding this span, else the one not used last.
         let slot = spans.iter().position(|s| s.valid && s.key == key).unwrap_or_else(|| (0..SPAN_SLOTS).min_by_key(|&i| spans[i].used).unwrap_or(0));
         let stamp = spans.iter().map(|s| s.used).max().unwrap_or(0) + 1;
@@ -696,7 +752,11 @@ impl PatternLane {
                 if self.role != Role::Drums {
                     // A phrase is written on the tonic and follows the song's
                     // chords where it plays (below).
-                    harmony.chord_degree = if phrased { 0 } else { form_chord(self.pattern_seed, c.lane, &reference, base.seed, harmony.key.minor) };
+                    harmony.chord_degree = match (phrased, base.host.on) {
+                        (true, true) => base.harmony.chord_degree,
+                        (true, false) => 0,
+                        _ => form_chord(self.pattern_seed, c.lane, &reference, base.seed, harmony.key.minor),
+                    };
                 }
                 let phrase_end = !phrased && self.phrase_bars > 1 && (first_bar + j as u64 + 1) % self.phrase_bars as u64 == 0;
                 let fill = self.role == Role::Drums && ((base.class == SeedClass::Filler && j + 1 == bars) || phrase_end);
@@ -748,7 +808,8 @@ impl PatternLane {
         let at_from = ((pos.beat_in_segment as u32 + if phrased { pos.skip as u32 } else { 0 }) * beat_ticks) % span.ticks;
         // A pitched phrase moves with the bar's chord, by scale steps, the
         // nearer way (the riff sequenced over the progression).
-        let chord_shift = match (phrased && self.role != Role::Drums, base.harmony.chord_degree as i32) {
+        // (Against a pitched host it was walked on the bar's chord already.)
+        let chord_shift = match (phrased && self.role != Role::Drums && !base.host.on, base.harmony.chord_degree as i32) {
             (true, d) if d > 3 => d - 7,
             (true, d) => d,
             _ => 0,
@@ -779,14 +840,13 @@ impl PatternLane {
     }
 }
 
-/// A host's form position a follower plays (Splice, D46): its form, the
-/// seed and lane index it varies the form with, its pattern bar.
+/// A host's form position a follower plays (Splice, D46, D48): what the
+/// host's form is built from, its pattern bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FormFollow {
-    pub form: u8,
-    pub seed: u32,
-    pub lane: u8,
+    pub spec: FormSpec,
     pub bar: u64,
+
     /// The relation (the Splice amount, 2a − 1) in hundredths: −100 layer ..
     /// 100 counter. On the counter side the host's questions are answered
     /// and its answers asked (D47).
@@ -1296,22 +1356,24 @@ mod tests {
     }
 
     #[test]
-    fn forms_place_filler_letters() {
-        let mut lane = PatternLane::drums(DrumLayout::standard(), 5, 5);
-        lane.set_form(Form::parse(DEFAULT_FORMS[0]).unwrap());
-        let key = MusicalKey::new(0, true);
-        let mut out = RenderedBar::default();
-        let mut scratch = Scratch::default();
-        let letters: Vec<u8> = (0..16)
-            .map(|b| {
-                lane.render(b, key, &mut out, &mut scratch);
-                out.letter
-            })
-            .collect();
-        // The steady roller: A with a B answer on the 8th bar, a C on the 16th.
-        assert!(letters[..15].iter().all(|&l| l <= 1) && letters[..15].iter().filter(|&&l| l == 1).count() <= 2, "{letters:?}");
-        assert_eq!(letters[15], 2);
+    fn generated_forms_place_the_fills_at_the_seams() {
+        let mut fills = 0;
+        for seed in 0..40 {
+            let mut lane = PatternLane::drums(DrumLayout::standard(), 5, 5);
+            lane.set_form_spec(crate::macros::FormSettings::seeded(seed).spec(true, 0.5, 0.5));
+            let f = lane.form();
+            fills += [63u64, 127, 191, 255].iter().filter(|&&b| f.pos_at(b).letter.class() == SeedClass::Filler).count();
+            // The first 8 bars play the main letters (a pickup aside).
+            assert!((4..32).all(|b| f.pos_at(b).letter.class() == SeedClass::Main), "seed {seed}: {f}");
+            // A bar of a section's seam plays its fill.
+            let key = MusicalKey::new(0, true);
+            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+            lane.render(15, key, &mut out, &mut scratch);
+            assert!(!out.events.is_empty());
+        }
+        assert!(fills > 120, "{fills} of 160 seams end on a fill");
     }
+
 
     #[test]
     fn bass_follows_the_root() {
@@ -1389,7 +1451,7 @@ mod tests {
         let swapped = |lane: &PatternLane| (0..100u8).filter(|&seg| lane.resolve_ops(&FormPos { ops: q, segment: seg, ..FormPos::default() }, 9, 1).contains(Op::Answer)).count();
         assert_eq!(swapped(&lane), 0, "alone: the form's own operators");
         for (relation, lo, hi) in [(-100i8, 0, 0), (0, 0, 0), (50, 30, 70), (100, 100, 100)] {
-            lane.follow = Some(FormFollow { form: 1, seed: 9, lane: 1, bar: 0, relation });
+            lane.follow = Some(FormFollow { spec: FormSpec::default(), bar: 0, relation });
             let n = swapped(&lane);
             assert!((lo..=hi).contains(&n), "relation {relation}: {n} of 100 questions answered");
             // The other operators stay the host's.

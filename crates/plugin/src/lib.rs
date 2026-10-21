@@ -10,7 +10,7 @@ use std::sync::Arc;
 use mesh_vst_core::event::{flags, EventKind, LiveEvent};
 use mesh_vst_core::gc::gc_handle;
 use mesh_vst_core::kit::{mudpie_bank, share};
-use mesh_vst_core::macros::{self, Centers, Knobs, LaneSettings};
+use mesh_vst_core::macros::{self, Centers, FormSettings, Knobs, LaneSettings};
 use mesh_vst_core::modout::{self, BlockInfo, ModOut};
 use mesh_vst_core::pattern::PatternLane;
 use mesh_vst_core::player::{NewRoot, Phase, Player, Transport, TICKS_PER_BEAT};
@@ -83,7 +83,8 @@ struct Settings {
 
 /// What the loudness calibration depends on: the samples, seeds, form and
 /// rate, not the knobs (Mesh calibrated at the default controls too).
-fn calibration_key(s: &LaneSettings) -> (u32, u32, usize, i8, u8, Option<u8>, (u8, u32, u8)) {
+fn calibration_key(s: &LaneSettings) -> (u32, u32, Option<FormSettings>, i8, u8, Option<u8>, (u8, u32, u8)) {
+
     let u = (s.unison.voices, s.unison.detune_cents.to_bits(), s.unison.mode as u8);
     (s.sound_seed, s.pattern_seed, s.form, s.rate, s.mode, s.style, u)
 }
@@ -213,7 +214,12 @@ impl MeshVst {
             },
             sound_seed: p.sound_seed.value() as u32,
             pattern_seed: p.pattern_seed.value() as u32,
-            form: p.form.value().max(0) as usize,
+            form: Some(FormSettings {
+                phrase_seed: p.phrase_seed.value() as u32,
+                fill_seed: p.fill_seed.value() as u32,
+                second_seed: p.second_seed.value() as u32,
+                pins: self.ui.phrase_pins(),
+            }),
             rate: p.rate.value().exponent(),
             mode,
             style: p.style.value().index(),
@@ -694,6 +700,7 @@ impl Plugin for MeshVst {
         self.meter = link::BandMeter::new(config.sample_rate);
         if let Ok(mut u) = self.params.ui.lock() {
             self.ui.load_mod_map(&u);
+            self.ui.load_phrase_pins(&u);
             // Splice: a stable id for this instance, saved with the project.
             if u.link_id == 0 || u.link_id == link::SIDECHAIN {
                 u.link_id = editor::fresh_id();

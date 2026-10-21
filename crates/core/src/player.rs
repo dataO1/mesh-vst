@@ -304,7 +304,7 @@ impl Player {
         let into = h.form_offset as f64 + (t - song_bar as f64 * TICKS_PER_BAR as f64);
         let host_bar = h.form_bar as u64 + (into / TICKS_PER_BAR as f64 + 1e-6).floor() as u64;
         let relation = ((2.0 * self.splice.clamp(0.0, 1.0) - 1.0) * 100.0).round() as i8;
-        Some(FormFollow { form: h.form, seed: h.form_seed, lane: h.form_lane, bar: host_bar, relation })
+        Some(FormFollow { spec: h.form_spec(), bar: host_bar, relation })
     }
 
     /// Set what Splice gives pattern bar `bar` for the next render: the
@@ -318,11 +318,13 @@ impl Player {
             stamp = line.keys.iter().chain(&line.lens).fold(stamp.rotate_left(7) ^ line.relation.to_bits() as u64, |h, v| h.rotate_left(3) ^ *v as u64);
         }
         if let Some(f) = follow {
-            stamp = stamp.rotate_left(11) ^ f.bar ^ ((f.form as u64) << 56) ^ ((f.seed as u64) << 24) ^ ((f.relation as u8 as u64) << 48);
+            let seeds = f.spec.seeds.phrases.iter().chain([&f.spec.seeds.fill, &f.spec.seeds.second]).fold(0u64, |h, s| h.rotate_left(9) ^ *s as u64);
+            let bands = (f.spec.variation as u64) | (f.spec.shape as u64) << 8 | (f.spec.drums as u64) << 16;
+            stamp = stamp.rotate_left(11) ^ f.bar ^ seeds.rotate_left(23) ^ (bands << 40) ^ ((f.relation as u8 as u64) << 48);
         }
         self.lane.focus = focus;
         self.lane.host_line = line;
-        self.lane.follow = follow;
+        self.lane.set_follow(follow);
         stamp
     }
 
@@ -380,14 +382,12 @@ impl Player {
             out.flags |= splice::PITCHED;
         }
         // The form position: the pattern bar under the song bar's start.
-        if first >= 0.0 {
+        if let Some(spec) = self.lane.form_spec().filter(|_| first >= 0.0) {
             out.form_bar = first as u32;
             out.form_offset = (start - (gate.origin + first * bar_ticks)).round().clamp(0.0, u16::MAX as f64) as u16;
-            out.form = self.lane.form_index() as u8;
-            out.form_seed = self.lane.pattern_seed;
-            out.form_lane = self.lane.form_lane();
-            out.flags |= splice::FORMED;
+            out.set_form(&spec);
         }
+
         // Keep it in the oldest slot.
         let slot = self.published.iter().enumerate().min_by_key(|(_, p)| if p.0 == u64::MAX { 0 } else { p.0.wrapping_add(1) }).map_or(0, |(i, _)| i);
         self.published[slot] = (want.0, want.1, want.2, out);
@@ -596,7 +596,7 @@ mod tests {
         // Long and short notes both.
         host.lane_mut().set_param("length", 0.8);
         host.lane_mut().set_param("stabs", 0.5);
-        host.lane_mut().select_form(2);
+        host.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(2).spec(false, 0.5, 0.5));
         host.note_on(29, 1.0, 0.0);
         let mut f = bass_player(5);
         f.lane_mut().set_param("density", 0.8);
@@ -675,21 +675,21 @@ mod tests {
     fn splice_blocks_change_with_the_host() {
         let bpm = 175.0;
         let spb = 60.0 / bpm * SR as f64;
-        let letters = |follow: bool| {
+        let letters = |follow: Option<f32>| {
             let mut host = bass_player(3);
-            host.lane_mut().select_form(3);
+            host.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(3).spec(false, 0.5, 0.5));
             host.note_on(29, 1.0, 0.0);
             let mut f = drum_player(9);
-            f.lane_mut().select_form(8);
+            f.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(8).spec(true, 0.5, 0.5));
             f.note_on(29, 1.0, 0.0);
             let mut buf = vec![StereoSample::silence(); 256];
             let (mut pos, mut same, mut bars) = (0usize, 0, 0);
             let mut last = u64::MAX;
             while (pos as f64) < spb * 4.0 * 48.0 {
                 let bar = (pos as f64 / spb / 4.0) as u64;
-                if follow {
+                if let Some(amount) = follow {
                     let occ: Vec<Occupancy> = (0..HOST_BARS as u64).map(|k| host.occupancy_for(bar + k)).collect();
-                    f.set_splice(0.5, &occ);
+                    f.set_splice(amount, &occ);
                 }
                 let t = Transport { playing: true, beat: pos as f64 / spb, bpm };
                 host.process(&mut buf, &t);
@@ -705,10 +705,14 @@ mod tests {
             }
             (same, bars)
         };
-        let (same, bars) = letters(true);
-        assert!(bars > 40 && same == bars, "the follower plays the host's letters: {same} of {bars}");
-        let (own, _) = letters(false);
-        assert!(own < bars, "its own form differs: {own} of {bars}");
+        // Stacked, the follower's form is nearly the host's (D48); in the
+        // middle and alone its own.
+        let (same, bars) = letters(Some(0.0));
+        assert!(bars > 40 && same as f32 > 0.75 * bars as f32, "stacked, the follower plays the host's letters: {same} of {bars}");
+        let (middle, _) = letters(Some(0.5));
+        let (own, _) = letters(None);
+        assert!(middle < same && own < same, "its own form differs: {middle} and {own} of {bars}");
+
     }
 
     /// Hold `key` from song start and render `bars` bars at `bpm` in blocks of `block`.

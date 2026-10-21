@@ -158,7 +158,12 @@ pub enum Message {
     Phase(PhaseMode),
     RollSound,
     RollPattern,
-    RollForm,
+    /// The form (D48): a new phrase seed (pinned phrases stay), pin or
+    /// unpin a phrase (A..D), a new fill plan, a new second pass.
+    RollPhrases,
+    PinPhrase(usize),
+    RollFill,
+    RollSecond,
     LockSound,
     LockPattern,
     SaveFavorite,
@@ -593,16 +598,26 @@ impl Gui {
                     let v = self.roll_seed();
                     let params = self.data.params.clone();
                     self.set_int(&params.pattern_seed, v);
-                    // A new pattern rolls the form too (D25).
-                    let f = 1 + (self.next_rand() % 10) as i32;
-                    self.set_int(&params.form, f);
                 }
             }
-            Message::RollForm => {
+            Message::RollPhrases | Message::RollFill | Message::RollSecond => {
                 self.record();
-                let f = 1 + (self.next_rand() % 10) as i32;
+                let v = self.roll_seed();
                 let params = self.data.params.clone();
-                self.set_int(&params.form, f);
+                let p = match message {
+                    Message::RollPhrases => &params.phrase_seed,
+                    Message::RollFill => &params.fill_seed,
+                    _ => &params.second_seed,
+                };
+                self.set_int(p, v);
+            }
+            Message::PinPhrase(i) => {
+                let letter = mesh_vst_core::form::Letter::ALL[i.min(3)];
+                let seed = self.form_settings().phrase_of(letter);
+                if let Ok(mut u) = self.data.params.ui.lock() {
+                    u.phrase_pins[i.min(3)] = if u.phrase_pins[i.min(3)].is_some() { None } else { Some(seed) };
+                    self.data.shared.load_phrase_pins(&u);
+                }
             }
             Message::LockSound => self.toggle_lock(true),
             Message::LockPattern => self.toggle_lock(false),
@@ -952,6 +967,17 @@ impl Gui {
         });
     }
 
+    /// The form's seeds as the lane plays them.
+    fn form_settings(&self) -> mesh_vst_core::macros::FormSettings {
+        let p = self.params();
+        mesh_vst_core::macros::FormSettings {
+            phrase_seed: p.phrase_seed.value() as u32,
+            fill_seed: p.fill_seed.value() as u32,
+            second_seed: p.second_seed.value() as u32,
+            pins: self.data.shared.phrase_pins(),
+        }
+    }
+
     fn locks(&self) -> UiState {
         self.data.params.ui.lock().map(|u| u.clone()).unwrap_or_default()
     }
@@ -1041,17 +1067,34 @@ impl Gui {
             ]
             .spacing(6)
         ].spacing(6));
+        // The form (D48): its seeds, the phrase pins, what it plays.
+        let form = self.form_settings();
+        let seed_row = |label: &'static str, v: i32, roll: Message| {
+            row![
+                text(label).font(DATA_FONT).size(12).color(DIM).width(64),
+                text(format!("{v:04}")).font(DATA_FONT).size(13).color(INK).width(Length::Fill),
+                button(text("roll").font(DATA_FONT).size(12)).on_press(roll).padding([4, 8]).style(|_, s| btn(false, s)),
+            ]
+            .align_y(Alignment::Center)
+        };
+        let mut pins = row![text("pin").font(DATA_FONT).size(12).color(DIM).width(64)].spacing(4).align_y(Alignment::Center);
+        for (i, l) in ["A", "B", "C", "D"].into_iter().enumerate() {
+            let on = form.pins[i].is_some();
+            pins = pins.push(button(text(l).font(DATA_FONT).size(11)).on_press(Message::PinPhrase(i)).padding([3, 7]).style(move |_, s| btn(on, s)));
+        }
+        let (plan, recipes) = form_summary(&form, drums, p.variation.value(), p.shape.value());
         left = left.push(
             column![
                 small("FORM"),
-                row![
-                    text(if p.form.value() == 0 { "one bar".to_string() } else { format!("form {}", p.form.value()) }).font(DATA_FONT).size(13).color(INK).width(Length::Fill),
-                    button(text("roll").font(DATA_FONT).size(12)).on_press(Message::RollForm).padding([6, 8]).style(|_, s| btn(false, s)),
-                ]
-                .align_y(Alignment::Center)
+                seed_row("phrases", p.phrase_seed.value(), Message::RollPhrases),
+                pins,
+                seed_row("fill", p.fill_seed.value(), Message::RollFill),
+                seed_row("second", p.second_seed.value(), Message::RollSecond),
+                text(format!("{plan} · then {recipes}")).font(DATA_FONT).size(11).color(DIM),
             ]
             .spacing(6),
         );
+
         let left = container(left).width(260);
 
         // Right: the mode's knobs.
@@ -1781,4 +1824,14 @@ impl Gui {
         .spacing(6)
         .into()
     }
+}
+
+/// The plan and the second pass's recipes of the form `form` builds at the
+/// knob positions (the seeds' centres aside), for the form panel.
+fn form_summary(form: &mesh_vst_core::macros::FormSettings, drums: bool, variation: f32, shape: f32) -> (&'static str, String) {
+    let mut b = mesh_vst_core::arrange::FormBuilder::new();
+    let mut f = mesh_vst_core::form::Form::generated();
+    b.build(&form.spec(drums, variation, shape), &mut f);
+    let recipes: Vec<&str> = b.recipe_names().into_iter().flatten().collect();
+    (b.plan_name(), recipes.join(" + "))
 }
