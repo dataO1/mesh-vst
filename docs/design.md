@@ -118,7 +118,7 @@ drive external effects.
   sections. The plugin adds a phrase length (4/8/16 bars, fills at phrase ends counted from song
   position) and the Mesh **form**: letter seeds A/B (main) and C/D (fillers) placed by a form
   string such as `A15 C1`. The form is generated from three seeds (D48: phrases, fill plan,
-  second pass), each rolled on its own; rolling the pattern seed rolls the notes only. Each
+  second pass), each rolled on its own; the PATTERN roll rolls the notes and all three (pinned phrases stay). Each
   letter has its own seed and moves the
   parameters around the knobs, the right-hand knobs (Shape, Morph, Spread, Slide), Permute (when
   on) and Groove most; since D49 Contrast, not Variation, sets how far B moves from A, and C

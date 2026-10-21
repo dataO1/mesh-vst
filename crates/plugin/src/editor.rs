@@ -601,6 +601,12 @@ impl Gui {
                     let v = self.roll_seed();
                     let params = self.data.params.clone();
                     self.set_int(&params.pattern_seed, v);
+                    // And the form: phrases (pinned ones stay), fills and
+                    // the second pass (user, 2026-10-21).
+                    for p in [&params.phrase_seed, &params.fill_seed, &params.second_seed] {
+                        let v = self.roll_seed();
+                        self.set_int(p, v);
+                    }
                 }
             }
             Message::RollPhrases | Message::RollFill | Message::RollSecond => {
