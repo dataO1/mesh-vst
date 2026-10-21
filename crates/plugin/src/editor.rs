@@ -1069,31 +1069,31 @@ impl Gui {
         ].spacing(6));
         // The form (D48): its seeds, the phrase pins, what it plays.
         let form = self.form_settings();
-        let seed_row = |label: &'static str, v: i32, roll: Message| {
+        let seed = |label: &'static str, v: i32, roll: Message| {
             row![
-                text(label).font(DATA_FONT).size(12).color(DIM).width(64),
-                text(format!("{v:04}")).font(DATA_FONT).size(13).color(INK).width(Length::Fill),
-                button(text("roll").font(DATA_FONT).size(12)).on_press(roll).padding([4, 8]).style(|_, s| btn(false, s)),
+                text(label).font(DATA_FONT).size(11).color(DIM).width(34),
+                text(format!("{v:04}")).font(DATA_FONT).size(13).color(INK).width(38),
+                button(text("roll").font(DATA_FONT).size(11)).on_press(roll).padding([3, 6]).style(|_, s| btn(false, s)),
             ]
+            .spacing(4)
             .align_y(Alignment::Center)
         };
-        let mut pins = row![text("pin").font(DATA_FONT).size(12).color(DIM).width(64)].spacing(4).align_y(Alignment::Center);
+        // The phrases with their pins, then the fill plan and the second pass.
+        let mut phrases = row![seed("phr", p.phrase_seed.value(), Message::RollPhrases), Space::new().width(Length::Fill)].spacing(4).align_y(Alignment::Center);
         for (i, l) in ["A", "B", "C", "D"].into_iter().enumerate() {
             let on = form.pins[i].is_some();
-            pins = pins.push(button(text(l).font(DATA_FONT).size(11)).on_press(Message::PinPhrase(i)).padding([3, 7]).style(move |_, s| btn(on, s)));
+            phrases = phrases.push(button(text(l).font(DATA_FONT).size(11)).on_press(Message::PinPhrase(i)).padding([3, 6]).style(move |_, s| btn(on, s)));
         }
         let (plan, recipes) = form_summary(&form, drums, p.variation.value(), p.shape.value());
         left = left.push(
             column![
-                small("FORM"),
-                seed_row("phrases", p.phrase_seed.value(), Message::RollPhrases),
-                pins,
-                seed_row("fill", p.fill_seed.value(), Message::RollFill),
-                seed_row("second", p.second_seed.value(), Message::RollSecond),
-                text(format!("{plan} · then {recipes}")).font(DATA_FONT).size(11).color(DIM),
+                text(format!("FORM · {plan}, then {recipes}")).font(DATA_FONT).size(11).color(DIM),
+                phrases,
+                row![seed("fill", p.fill_seed.value(), Message::RollFill), Space::new().width(Length::Fill), seed("2nd", p.second_seed.value(), Message::RollSecond)].align_y(Alignment::Center),
             ]
             .spacing(6),
         );
+
 
         let left = container(left).width(260);
 
