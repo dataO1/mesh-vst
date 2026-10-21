@@ -446,7 +446,7 @@ impl PatternLane {
         form_seed: u32,
         out: &mut BarEvents,
         scratch: &mut BarEvents,
-        span: &mut SpanCache,
+        span: &mut [SpanCache; SPAN_SLOTS],
         played: Option<&mut BarParams>,
     ) -> u8 {
         // A plugin instance has no drum lane to break with: break-only
@@ -526,7 +526,10 @@ impl PatternLane {
         };
         let voices = self.generator.voice_mask(&bar_ctx);
         let chain = self.resolve_ops(pos, form_seed, c.lane);
-        if chain.is_empty() {
+        // A phrase loops from its own start (D48); the drums' phrase-end
+        // bar plays the letter's fill on the song's bars.
+        let plain = if pos.phrase > 0 { self.role == Role::Drums && phrase_end } else { chain.is_empty() };
+        if plain {
             self.generator.render_bar(&bar_ctx, out);
             out.sort();
             if pos.prime {
@@ -645,12 +648,17 @@ impl PatternLane {
     /// `from`: the letter's first bars (as the letter first plays them),
     /// transformed by `chain` over the whole segment, cached per span.
     #[allow(clippy::too_many_arguments)]
-    fn render_span(&self, c: &PartCtx, pos: &FormPos, base: &BarCtx, chain: &OpChain, from: u16, out: &mut BarEvents, tmp: &mut BarEvents, span: &mut SpanCache) {
+    fn render_span(&self, c: &PartCtx, pos: &FormPos, base: &BarCtx, chain: &OpChain, from: u16, out: &mut BarEvents, tmp: &mut BarEvents, spans: &mut [SpanCache; SPAN_SLOTS]) {
         let bar_ticks = TICKS_PER_BAR as u32;
         let beat_ticks = bar_ticks / crate::form::BEATS_PER_BAR as u32;
-        let ticks = (pos.segment_beats as u32 * beat_ticks).clamp(1, (MAX_SPAN_BARS as u32) * bar_ticks);
+        // A phrase (D48) is its own length wherever it plays; a segment
+        // without one spans itself from its first bar.
+        let phrased = pos.phrase > 0;
+        let span_beats = if phrased { pos.phrase as u32 } else { pos.segment_beats as u32 };
+        let ticks = (span_beats * beat_ticks).clamp(1, (MAX_SPAN_BARS as u32) * bar_ticks);
         let bars = ticks.div_ceil(bar_ticks) as u16;
-        let first_bar = c.bar.saturating_sub(pos.bar_in_segment as u64);
+        let first_bar = if phrased { 0 } else { c.bar.saturating_sub(pos.bar_in_segment as u64) };
+        let segment = if phrased { 0 } else { pos.segment as u64 };
         // The form's second pass goes further (it escalates).
         let amount = (self.op_amount() + if pos.second { SECOND_PASS_OPS } else { 0.0 }).min(1.0);
         let mut key = mix(rng::hash(self.pattern_seed, c.lane, 0, 0, S_SPAN), base.seed as u64);
@@ -660,7 +668,7 @@ impl PatternLane {
             pos.prime as u64,
             ticks as u64,
             first_bar,
-            pos.segment as u64 | (pos.second as u64) << 8 | (pos.letter.index() as u64) << 16,
+            segment | (pos.second as u64) << 8 | (pos.letter.index() as u64) << 16 | (pos.offset as u64) << 24 | (phrased as u64) << 32,
             base.harmony.key.root as u64 | (base.harmony.key.minor as u64) << 8 | (self.mode as u64) << 16,
             self.phrase_bars as u64,
             amount.to_bits() as u64,
@@ -673,6 +681,11 @@ impl PatternLane {
         if base.host.on {
             key = base.host.keys.iter().chain(&base.host.lens).fold(mix(key, base.host.relation.to_bits() as u64), |h, v| mix(h, *v as u64));
         }
+        // The slot holding this span, else the one not used last.
+        let slot = spans.iter().position(|s| s.valid && s.key == key).unwrap_or_else(|| (0..SPAN_SLOTS).min_by_key(|&i| spans[i].used).unwrap_or(0));
+        let stamp = spans.iter().map(|s| s.used).max().unwrap_or(0) + 1;
+        let span = &mut spans[slot];
+        span.used = stamp;
         if !(span.valid && span.key == key) {
             span.notes.clear();
             for j in 0..bars {
@@ -683,7 +696,7 @@ impl PatternLane {
                 if self.role != Role::Drums {
                     harmony.chord_degree = form_chord(self.pattern_seed, c.lane, &reference, base.seed, harmony.key.minor);
                 }
-                let phrase_end = self.phrase_bars > 1 && (first_bar + j as u64 + 1) % self.phrase_bars as u64 == 0;
+                let phrase_end = !phrased && self.phrase_bars > 1 && (first_bar + j as u64 + 1) % self.phrase_bars as u64 == 0;
                 let fill = self.role == Role::Drums && ((base.class == SeedClass::Filler && j + 1 == bars) || phrase_end);
                 let mut ctx = BarCtx {
                     bar_in_phrase: (j as u64 % BARS_PER_PHRASE) as u8,
@@ -712,6 +725,15 @@ impl PatternLane {
                     }
                 }
             }
+            if phrased {
+                // The phrase starts `offset` beats into the letter's notes,
+                // rotated; its notes end with it.
+                let shift = (pos.offset as u32 * beat_ticks) % ticks;
+                for n in span.notes.iter_mut() {
+                    n.at = (n.at + ticks - shift) % ticks;
+                    n.ev.gate = n.ev.gate.min((ticks - n.at).min(u16::MAX as u32) as u16);
+                }
+            }
             ops::sort(&mut span.notes);
             let ctx = OpCtx { ticks, amount, seed: base.seed, lane: c.lane, drums: self.role == Role::Drums, harmony: base.harmony };
             ops::apply(chain, &mut span.notes, &ctx);
@@ -721,9 +743,10 @@ impl PatternLane {
         }
         // This bar's ticks in the span: the part from `from` starts at the
         // segment beat it is at; a segment longer than the span repeats it.
-        let at_from = (pos.beat_in_segment as u32 * beat_ticks) % span.ticks;
+        let at_from = ((pos.beat_in_segment as u32 + if phrased { pos.skip as u32 } else { 0 }) * beat_ticks) % span.ticks;
         out.clear();
-        for lap in [0u32, span.ticks] {
+        let mut lap = 0u32;
+        while lap < at_from + bar_ticks {
             for n in &span.notes {
                 let at = n.at + lap;
                 if at < at_from || at >= at_from + bar_ticks - from as u32 {
@@ -731,9 +754,11 @@ impl PatternLane {
                 }
                 let tick = from as u32 + (at - at_from);
                 if tick < bar_ticks {
-                    out.push(LiveEvent { tick: tick as u16, ..n.ev });
+                    let step = if phrased { (tick / crate::TICKS_PER_STEP as u32) as u8 } else { n.ev.step };
+                    out.push(LiveEvent { tick: tick as u16, step, ..n.ev });
                 }
             }
+            lap += span.ticks;
         }
         out.sort();
     }
@@ -758,8 +783,12 @@ pub struct FormFollow {
 pub struct Scratch {
     part: BarEvents,
     second: BarEvents,
-    span: SpanCache,
+    span: [SpanCache; SPAN_SLOTS],
 }
+
+/// Spans [`Scratch`] keeps: a bar's parts (a question and its answer) each
+/// keep theirs.
+const SPAN_SLOTS: usize = 2;
 
 /// A segment's transformed span (D47), kept while the bars of the segment
 /// render one after the other: worked out once per span and inputs.
@@ -767,9 +796,10 @@ pub struct Scratch {
 pub struct SpanCache {
     key: u64,
     valid: bool,
+    /// When it was last used (the oldest goes first).
+    used: u64,
     ticks: u32,
     notes: Vec<SpanNote>,
-    bar: BarEvents,
     prime: BarEvents,
 }
 
@@ -778,10 +808,12 @@ impl Default for SpanCache {
         Self {
             key: 0,
             valid: false,
+            used: 0,
             ticks: 0,
+
             notes: Vec::with_capacity(MAX_SPAN_BARS * crate::MAX_EVENTS_PER_BAR),
-            bar: BarEvents::default(),
             prime: BarEvents::default(),
+
         }
     }
 }
@@ -1219,7 +1251,12 @@ mod tests {
 
     #[test]
     fn a_bar_is_a_pure_function_of_its_inputs() {
-        for lane in [PatternLane::drums(DrumLayout::standard(), 7, 3), PatternLane::bass(7, 3)] {
+        let phrased = |mut l: PatternLane| {
+            l.set_form(Form::parse("A1.5:8+2 B.5:2 A2:4 C.5:2 B1.5r:16^4 A26.5:8").unwrap());
+            l
+        };
+        for lane in [PatternLane::drums(DrumLayout::standard(), 7, 3), PatternLane::bass(7, 3), phrased(PatternLane::drums(DrumLayout::standard(), 7, 3)), phrased(PatternLane::bass(7, 3))] {
+
             let a = render_all(&lane, 32);
             let key = MusicalKey::new(5, true);
             let mut out = RenderedBar::default();
@@ -1369,13 +1406,76 @@ mod tests {
         }
     }
 
+    /// Onsets of `bars` as (tick in the run, key), from bar 0 of the run.
+    fn onsets(bars: &[Vec<crate::event::LiveEvent>]) -> Vec<(u32, u8)> {
+        let mut v: Vec<(u32, u8)> = bars
+            .iter()
+            .enumerate()
+            .flat_map(|(b, bar)| bar.iter().filter(|e| matches!(e.kind, EventKind::NoteOn | EventKind::Trigger)).map(move |e| (b as u32 * TICKS_PER_BAR as u32 + e.tick as u32, e.key)))
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    #[test]
+    fn a_phrase_loops_from_its_own_start() {
+        for drums in [true, false] {
+            let lane = |form: &str| {
+                let mut l = if drums { PatternLane::drums(DrumLayout::standard(), 7, 3) } else { PatternLane::bass(7, 3) };
+                l.set_form(Form::parse(form).unwrap());
+                l.rate = 1;
+                l.phrase_bars = 64;
+                l
+            };
+            // Two bars of phrase: bars 2 and 3 play bars 0 and 1 again.
+            let two = render_all(&lane("A16:8"), 4);
+            assert_eq!(onsets(&two[2..4]), onsets(&two[0..2]), "drums {drums}: an 8-beat phrase repeats every 2 bars");
+            // Half a bar: each bar plays it twice (the timing drift of the
+            // letter's feel aside).
+            let half = render_all(&lane("A16:2"), 2);
+            let near = |a: &[(u32, u8)], b: &[(u32, u8)]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.1 == y.1 && x.0.abs_diff(y.0) <= 3);
+            let halves = |bar: &[crate::event::LiveEvent], h: u32| {
+                let mid = TICKS_PER_BAR as u32 / 2;
+                onsets(std::slice::from_ref(&bar.to_vec())).into_iter().filter(|o| (o.0 >= mid) == (h == 1)).map(|o| (o.0 % mid, o.1)).collect::<Vec<_>>()
+            };
+            assert!(!halves(&half[0], 0).is_empty());
+            assert!(near(&halves(&half[0], 0), &halves(&half[0], 1)), "drums {drums}: a 2-beat phrase twice per bar");
+            assert!(near(&halves(&half[1], 0), &halves(&half[0], 0)));
+            // An offset rotates where it starts in the letter's notes: the
+            // same notes over the phrase, in another order.
+            let rotated = render_all(&lane("A16:8+2"), 2);
+            let keys = |o: Vec<(u32, u8)>| {
+                let mut k: Vec<u8> = o.into_iter().map(|x| x.1).collect();
+                k.sort_unstable();
+                k
+            };
+            assert_eq!(keys(onsets(&rotated)), keys(onsets(&two[0..2])), "drums {drums}: the same notes");
+            assert_ne!(onsets(&rotated), onsets(&two[0..2]), "drums {drums}: from another beat");
+            // A skip enters the phrase later: one bar in.
+            let skipped = render_all(&lane("A1:8^4 A15:8"), 1);
+            assert_eq!(onsets(&skipped[0..1]), onsets(&two[1..2]), "drums {drums}: skipped one bar in");
+        }
+    }
+
     #[test]
     fn rendering_does_not_allocate() {
         let with_ops = |mut l: PatternLane| {
             l.set_form(Form::parse("A3 Ar2 A2dq B?1 Bix4 C4").unwrap());
             l
         };
-        for lane in [PatternLane::drums(DrumLayout::standard(), 11, 4), PatternLane::bass(11, 4), with_ops(PatternLane::drums(DrumLayout::standard(), 11, 4)), with_ops(PatternLane::bass(11, 4))] {
+        let phrased = |mut l: PatternLane| {
+            l.set_form(Form::parse("C.5:2 A1.5:8^2 B.5:2 A.5r:2+1 B1:4 A12:16+4").unwrap());
+            l
+        };
+        for lane in [
+            PatternLane::drums(DrumLayout::standard(), 11, 4),
+            PatternLane::bass(11, 4),
+            with_ops(PatternLane::drums(DrumLayout::standard(), 11, 4)),
+            with_ops(PatternLane::bass(11, 4)),
+            phrased(PatternLane::drums(DrumLayout::standard(), 11, 4)),
+            phrased(PatternLane::bass(11, 4)),
+        ] {
+
             let key = MusicalKey::new(2, true);
             let mut out = RenderedBar::default();
             let mut scratch = Scratch::default();

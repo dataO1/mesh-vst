@@ -199,9 +199,23 @@ pub struct Segment {
     /// Index of the written segment this one comes from, [`NO_SOURCE`] for a
     /// break the form's structure inserted.
     pub source: u8,
+    /// `A1:8`: the segment loops a phrase of this many beats of its letter
+    /// from its own start (D48); 0 reads the letter on the song's bars.
+    pub phrase: u8,
+    /// `+2`: the phrase starts this many beats into its letter's notes
+    /// (rotated, mod the phrase).
+    pub offset: u8,
+    /// `^2`: the segment enters its phrase this many beats in (a fill took
+    /// its head).
+    pub skip: u8,
 }
 
 impl Segment {
+    /// A plain segment of `letter`, `beats` long, from written segment `source`.
+    pub fn new(letter: Letter, beats: u16, source: u8) -> Self {
+        Self { letter, play: Play::All, prime: false, swap: false, ops: OpChain::default(), beats, source, phrase: 0, offset: 0, skip: 0 }
+    }
+
     /// Bars the segment touches, rounded up.
     pub fn bars(&self) -> u16 {
         self.beats.div_ceil(BEATS_PER_BAR)
@@ -304,7 +318,22 @@ impl Form {
             // length one run of digits.
             let (mut prime, mut swap, mut ops) = (false, false, OpChain::default());
             let (mut count, mut counted) = (String::new(), false);
+            // The phrase (`:8`), its offset (`+2`) and skip (`^2`), in beats
+            // (D48): a mark, then its digits.
+            let mut beat_fields = [None::<u32>; 3];
+            let mut field: Option<usize> = None;
             for ch in chars {
+                if let Some(f) = field {
+                    if let Some(d) = ch.to_digit(10) {
+                        let v = beat_fields[f].get_or_insert(0);
+                        *v = (*v * 10 + d).min(u8::MAX as u32 + 1);
+                        continue;
+                    }
+                    if beat_fields[f].is_none() {
+                        return Err(bad());
+                    }
+                    field = None;
+                }
                 if ch.is_ascii_digit() || ch == '.' {
                     if counted {
                         return Err(bad());
@@ -316,11 +345,25 @@ impl Form {
                 match ch {
                     '\'' | '′' => prime = true,
                     '*' => swap = true,
+                    ':' | '+' | '^' => {
+                        let f = [':', '+', '^'].iter().position(|c| *c == ch).unwrap_or(0);
+                        if beat_fields[f].is_some() {
+                            return Err(bad());
+                        }
+                        field = Some(f);
+                    }
                     c => match Op::from_char(c) {
                         Some(op) if play != Play::Rest && ops.push(op) => {}
                         _ => return Err(bad()),
                     },
                 }
+            }
+            if field.is_some_and(|f| beat_fields[f].is_none()) {
+                return Err(bad());
+            }
+            let [phrase, offset, skip] = beat_fields.map(|v| v.unwrap_or(0));
+            if phrase > u8::MAX as u32 || ((offset > 0 || skip > 0) && (offset >= phrase.max(1) || skip >= phrase.max(1))) {
+                return Err(bad());
             }
             let rest = count.as_str();
             let beats = if rest.is_empty() {
@@ -338,7 +381,7 @@ impl Form {
                 return Err(FormError::TooLong(total.div_ceil(BEATS_PER_BAR as u32)));
             }
             let source = pattern.len().min(NO_SOURCE as usize - 1) as u8;
-            pattern.push(Segment { letter, play, prime, swap, ops, beats: beats as u16, source });
+            pattern.push(Segment { letter, play, prime, swap, ops, beats: beats as u16, source, phrase: phrase as u8, offset: offset as u8, skip: skip as u8 });
         }
         if pattern.is_empty() {
             return Err(FormError::Empty);
@@ -349,7 +392,7 @@ impl Form {
 
     /// One bar of A forever (a style without forms).
     pub fn single() -> Self {
-        let seg = Segment { letter: Letter::A, play: Play::All, prime: false, swap: false, ops: OpChain::default(), beats: BEATS_PER_BAR, source: 0 };
+        let seg = Segment::new(Letter::A, BEATS_PER_BAR, 0);
         Self { pattern: vec![seg], lead: None, segments: vec![seg], beats: BEATS_PER_BAR }
     }
 
@@ -409,6 +452,9 @@ impl Form {
                     prime: seg.prime,
                     swap: seg.swap,
                     ops: seg.ops,
+                    phrase: seg.phrase,
+                    offset: seg.offset,
+                    skip: seg.skip,
                     beat_in_segment: at - start,
                     segment_beats: seg.beats,
                     start_beat: start,
@@ -506,7 +552,7 @@ fn expand(pattern: &[Segment], total: u16) -> Vec<Segment> {
         for (from, to, letter, swap) in STRUCTURE_BREAKS {
             for b in &mut beats[(from * BEATS_PER_BAR) as usize..(to * BEATS_PER_BAR) as usize] {
                 if b.letter.class() == SeedClass::Main && b.play == Play::All {
-                    *b = Segment { letter, play: Play::All, prime: false, swap, ops: OpChain::default(), beats: 1, source: NO_SOURCE };
+                    *b = Segment { swap, ..Segment::new(letter, 1, NO_SOURCE) };
                 }
             }
         }
@@ -627,6 +673,16 @@ impl fmt::Display for Form {
                 Play::Breaks => write!(f, "~{}{prime}{swap}{ops}{}", s.letter.as_char(), fmt_beats(s.beats))?,
                 Play::All => write!(f, "{}{prime}{swap}{ops}{}", s.letter.as_char(), fmt_beats(s.beats))?,
             }
+            if s.phrase > 0 && s.play != Play::Rest {
+                write!(f, ":{}", s.phrase)?;
+                if s.offset > 0 {
+                    write!(f, "+{}", s.offset)?;
+                }
+                if s.skip > 0 {
+                    write!(f, "^{}", s.skip)?;
+                }
+            }
+
         }
         if let Some(lead) = &self.lead {
             write!(f, " | {lead}")?;
@@ -649,6 +705,11 @@ pub struct FormPos {
     pub swap: bool,
     /// The segment's operators (D47).
     pub ops: OpChain,
+    /// The segment's phrase, its offset and skip in beats (D48, see
+    /// [`Segment::phrase`]).
+    pub phrase: u8,
+    pub offset: u8,
+    pub skip: u8,
     /// Beats from the segment's start to here, and the segment's length.
     pub beat_in_segment: u16,
     pub segment_beats: u16,
@@ -682,6 +743,9 @@ impl Default for FormPos {
             prime: false,
             swap: false,
             ops: OpChain::default(),
+            phrase: 0,
+            offset: 0,
+            skip: 0,
             beat_in_segment: 0,
             segment_beats: BEATS_PER_BAR,
             start_beat: 0,
@@ -1002,7 +1066,21 @@ mod tests {
     }
 
     #[test]
+    fn phrases_parse_with_their_length_offset_and_skip() {
+        let f = Form::parse("C.5:2 A1.5:8+2^2 B2:4 A.25:1").unwrap();
+        assert_eq!(f.to_string(), "C.5:2 A1.5:8+2^2 B2:4 A.25:1");
+        let s = f.pattern()[1];
+        assert_eq!((s.beats, s.phrase, s.offset, s.skip), (6, 8, 2, 2));
+        let p = f.pos_at(3);
+        assert_eq!((p.letter, p.phrase, p.offset, p.skip, p.beat_in_segment), (Letter::A, 8, 2, 2, 1));
+        for bad in ["A1:", "A1:8+8", "A1:4^4", "A1:8:8", "A1+2"] {
+            assert!(Form::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn parses_and_prints_forms() {
+
         let f = Form::parse("A7 B1 A'7 C1").unwrap();
         assert_eq!(f.bars(), FORM_BARS, "every form fills 64 bars (128 with its second pass)");
         assert_eq!(f.to_string(), "A7 B1 A'7 C1");
