@@ -114,6 +114,8 @@ pub enum Knob {
     Gain,
     Splice,
     Squash,
+    /// D49: replaces Permute on the panel (Permute stays a parameter).
+    Contrast,
 }
 
 impl Knob {
@@ -132,6 +134,7 @@ impl Knob {
             Knob::Gain => &p.gain,
             Knob::Splice => &p.splice,
             Knob::Squash => &p.squash,
+            Knob::Contrast => &p.contrast,
         }
     }
 }
@@ -1053,7 +1056,7 @@ impl Gui {
 
         // Left: the pattern knobs and settings.
         let mut left = column![small("PATTERN")].spacing(12);
-        for k in [Knob::Density, Knob::Permute, Knob::Variation, Knob::Groove] {
+        for k in [Knob::Density, Knob::Contrast, Knob::Variation, Knob::Groove] {
             left = left.push(knob(p, k, self.hit_marker(k)));
         }
         // The lane's last stage.
@@ -1084,7 +1087,7 @@ impl Gui {
             let on = form.pins[i].is_some();
             phrases = phrases.push(button(text(l).font(DATA_FONT).size(11)).on_press(Message::PinPhrase(i)).padding([3, 6]).style(move |_, s| btn(on, s)));
         }
-        let (plan, recipes) = form_summary(&form, drums, p.variation.value(), p.shape.value());
+        let (plan, recipes) = form_summary(&form, drums, p.variation.value(), p.shape.value(), p.contrast.value());
         left = left.push(
             column![
                 text(format!("FORM · {plan}, then {recipes}")).font(DATA_FONT).size(11).color(DIM),
@@ -1828,10 +1831,10 @@ impl Gui {
 
 /// The plan and the second pass's recipes of the form `form` builds at the
 /// knob positions (the seeds' centres aside), for the form panel.
-fn form_summary(form: &mesh_vst_core::macros::FormSettings, drums: bool, variation: f32, shape: f32) -> (&'static str, String) {
+fn form_summary(form: &mesh_vst_core::macros::FormSettings, drums: bool, variation: f32, shape: f32, contrast: f32) -> (&'static str, String) {
     let mut b = mesh_vst_core::arrange::FormBuilder::new();
     let mut f = mesh_vst_core::form::Form::generated();
-    b.build(&form.spec(drums, variation, shape), &mut f);
+    b.build(&form.spec(drums, variation, shape, contrast), &mut f);
     let recipes: Vec<&str> = b.recipe_names().into_iter().flatten().collect();
     (b.plan_name(), recipes.join(" + "))
 }

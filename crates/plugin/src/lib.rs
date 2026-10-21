@@ -223,6 +223,7 @@ impl MeshVst {
             rate: p.rate.value().exponent(),
             mode,
             style: p.style.value().index(),
+            contrast: p.contrast.value(),
             unison: Unison {
                 voices: p.unison_voices.value().clamp(1, 8) as u8,
                 detune_cents: p.unison_detune.value(),

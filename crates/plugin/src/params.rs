@@ -172,6 +172,9 @@ pub struct MeshParams {
     pub density: FloatParam,
     #[id = "permute"]
     pub permute: FloatParam,
+    /// D49: how far B moves from A, and C and D from them.
+    #[id = "contrast"]
+    pub contrast: FloatParam,
     #[id = "variation"]
     pub variation: FloatParam,
     #[id = "swing"]
@@ -306,6 +309,7 @@ impl Default for MeshParams {
         Self {
             density: knob_at("Density", fresh.knob()),
             permute: knob_at("Permute", 0.0),
+            contrast: knob_at("Contrast", mesh_vst_core::contrast::CONTRAST_DEFAULT),
             variation: knob_at("Variation", fresh.knob()),
             swing: knob_at("Groove", fresh.knob()),
             shape: knob_at("Shape", fresh.knob()),

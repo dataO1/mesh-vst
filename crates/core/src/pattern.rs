@@ -675,9 +675,10 @@ impl PatternLane {
             chain.push(op);
         }
         // Contrast (D49): B's line may answer mirrored, or an octave up.
+        // Against a pitched host the line's direction is Splice's (D46).
         if pos.letter == Letter::B && self.role != Role::Drums {
             let (mirror, lift) = contrast::answer_line(self.pattern_seed, lane, self.contrast);
-            if mirror && !chain.contains(Op::Inversion) {
+            if mirror && !self.host_line.on && !chain.contains(Op::Inversion) {
                 chain.push(Op::Inversion);
             }
             if lift && !chain.contains(Op::OctaveUp) && !chain.contains(Op::OctaveDown) {
@@ -951,6 +952,15 @@ fn fit_to_host(out: &mut BarEvents, host: &crate::splice::HostLine, harmony: &Ha
             };
             for delta in -2i32..=2 {
                 weigh(ops::key_of(d + delta, off, harmony), delta.abs());
+            }
+            // Layered, the same note an octave off may follow the host's way.
+            if host.relation < 0.0 {
+                for o in [-12i32, 12] {
+                    let k = e.key as i32 + o;
+                    if (1..=127).contains(&k) {
+                        weigh(k as u8, 1);
+                    }
+                }
             }
             // The host's move from the previous note, followed or mirrored.
             if let Some((ps, pk)) = prev {
@@ -1329,7 +1339,7 @@ mod tests {
         let mut fills = 0;
         for seed in 0..40 {
             let mut lane = PatternLane::drums(DrumLayout::standard(), 5, 5);
-            lane.set_form_spec(crate::macros::FormSettings::seeded(seed).spec(true, 0.5, 0.5));
+            lane.set_form_spec(crate::macros::FormSettings::seeded(seed).spec(true, 0.5, 0.5, 0.5));
             let f = lane.form();
             fills += [63u64, 127, 191, 255].iter().filter(|&&b| f.pos_at(b).letter.class() == SeedClass::Filler).count();
             // The first 8 bars play the main letters (a pickup aside).

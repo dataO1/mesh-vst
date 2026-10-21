@@ -73,6 +73,8 @@ pub struct FormSpec {
     pub seeds: FormSeeds,
     pub variation: u8,
     pub shape: u8,
+    /// The Contrast band: how often B's phrase is a step off A's (D49).
+    pub contrast: u8,
     pub drums: bool,
 }
 
@@ -102,11 +104,32 @@ pub fn phrase(seed: u32, letter: Letter, section: u8, shape: u8, drums: bool) ->
     let tilt = SHAPE_TILT * (2.0 * share(shape) - 1.0);
     let weights = table.map(|(len, w)| w * 2f32.powf(tilt * (len as f32 / mid).log2()));
     let beats = table[rng::weighted_pick(rng::hash(seed, drums as u8, section, 0, S_LENGTH), &weights).unwrap_or(1)].0;
-    // One offset per letter, whatever the section's length; the drums move
-    // by half bars, so the snare stays on the backbeat.
+    Phrase { beats, offset: phrase_offset(seed, drums) % beats }
+}
+
+/// A letter's offset before its length: one per letter, whatever the
+/// section's length; the drums move by half bars, so the snare stays on
+/// the backbeat.
+fn phrase_offset(seed: u32, drums: bool) -> u8 {
     let raw = rng::below(rng::hash(seed, drums as u8, 0, 0, S_OFFSET), 16) as u8;
-    let raw = if drums { raw & !1 } else { raw };
-    Phrase { beats, offset: raw % beats }
+    if drums { raw & !1 } else { raw }
+}
+
+// MUSICAL: first draft, tune by ear (user, 2026-10-21: Contrast moves B's
+// phrase length too, one power-of-two step). Chance B's phrase is a step
+// off A's at Contrast 1.
+const B_LENGTH_STEP: f32 = 0.7;
+
+/// B's phrase from A's `a` (D49): A's length at Contrast band 0, one step
+/// longer or shorter with a chance rising with Contrast; its own offset.
+pub fn answer_phrase(a: Phrase, b_seed: u32, section: u8, contrast: u8, drums: bool) -> Phrase {
+    let (lo, hi) = (MAIN_LENGTHS[0].0, MAIN_LENGTHS[MAIN_LENGTHS.len() - 1].0);
+    let mut beats = a.beats;
+    if rng::chance(rng::hash(b_seed, drums as u8, section, 0, S_B_STEP), share(contrast) * B_LENGTH_STEP) {
+        let up = rng::chance(rng::hash(b_seed, drums as u8, section, 1, S_B_STEP), 0.5);
+        beats = if (up && a.beats < hi) || a.beats / 2 < lo { (a.beats * 2).min(hi) } else { a.beats / 2 };
+    }
+    Phrase { beats, offset: phrase_offset(b_seed, drums) % beats }
 }
 
 /// One 16-bar section of a plan.
@@ -539,6 +562,10 @@ impl FormBuilder {
                 let section = if by_section { s as u8 } else { 0 };
                 lengths[s][l.index() as usize] = phrase(spec.seeds.phrases[l.index() as usize], l, section, spec.shape, spec.drums);
             }
+            // B answers A's length by Contrast (D49).
+            let b = Letter::B.index() as usize;
+            let section = if by_section { s as u8 } else { 0 };
+            lengths[s][b] = answer_phrase(lengths[s][Letter::A.index() as usize], spec.seeds.phrases[b], section, spec.contrast, spec.drums);
             let n = plan.sections[s].units.len() as u32;
             units[s] = if by_section { 0 } else { rng::below(rng::hash(fill, lane, s as u8, 0, S_UNIT), n) as usize };
         }
@@ -1111,6 +1138,7 @@ const S_SLOT: u32 = 0xF88;
 const S_RECIPE: u32 = 0xF89;
 const S_ATTEMPT: u32 = 0xF8A;
 const S_FOLLOW: u32 = 0xF8B;
+const S_B_STEP: u32 = 0xF8C;
 
 
 
@@ -1131,7 +1159,7 @@ mod tests {
     }
 
     fn spec(seed: u32, variation: u8, shape: u8) -> FormSpec {
-        FormSpec { seeds: FormSeeds::new(seed, seed.wrapping_mul(7).wrapping_add(1), seed ^ 0x55), variation, shape, drums: false }
+        FormSpec { seeds: FormSeeds::new(seed, seed.wrapping_mul(7).wrapping_add(1), seed ^ 0x55), variation, shape, contrast: 2, drums: false }
     }
 
     #[test]
@@ -1147,6 +1175,42 @@ mod tests {
                         assert_eq!(p.offset % 2, 0, "the drums keep the backbeat");
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn b_answers_a_with_its_length_by_contrast() {
+        let mut off = [0u32; BANDS as usize];
+        for seed in 0..500u32 {
+            for shape in 0..BANDS {
+                let a = phrase(seed, Letter::A, 0, shape, false);
+                for c in 0..BANDS {
+                    let b = answer_phrase(a, seed ^ 0x9E37, 0, c, false);
+                    assert!(b.beats.is_power_of_two() && (2..=16).contains(&b.beats) && b.offset < b.beats);
+                    assert!(b.beats == a.beats || b.beats == a.beats * 2 || b.beats * 2 == a.beats, "one step at most");
+                    off[c as usize] += (b.beats != a.beats) as u32;
+                }
+            }
+        }
+        assert_eq!(off[0], 0, "at Contrast 0 B's phrase is as long as A's");
+        assert!(off.windows(2).all(|w| w[1] > w[0]), "{off:?}");
+        // In built forms: at Contrast 0 B's phrases are A's length in each section.
+        for seed in 0..100 {
+            let f = built(&FormSpec { contrast: 0, ..spec(seed, (seed % 5) as u8, (seed / 5 % 5) as u8) });
+            let mut at = 0u16;
+            let mut len = [[0u8; 2]; SECTIONS];
+            for s in f.pattern() {
+                let sec = (at / SECTION_BEATS) as usize;
+                match s.letter {
+                    Letter::A => len[sec][0] = s.phrase,
+                    Letter::B => len[sec][1] = s.phrase,
+                    _ => {}
+                }
+                at += s.beats;
+            }
+            for l in len.iter().filter(|l| l[0] > 0 && l[1] > 0) {
+                assert_eq!(l[0], l[1], "seed {seed}: {f}");
             }
         }
     }

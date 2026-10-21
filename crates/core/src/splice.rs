@@ -51,7 +51,9 @@ pub struct Occupancy {
     pub form_drums: u8,
     /// [`PITCHED`], [`FORMED`].
     pub flags: u8,
-    pub _pad: [u8; 5],
+    /// The form's Contrast band (D49).
+    pub form_contrast: u8,
+    pub _pad: [u8; 4],
 }
 
 /// [`Occupancy::flags`]: the line (keys, lengths) is set.
@@ -73,7 +75,8 @@ impl Default for Occupancy {
             form_bands: 0,
             form_drums: 0,
             flags: 0,
-            _pad: [0; 5],
+            form_contrast: 0,
+            _pad: [0; 4],
         }
     }
 }
@@ -85,6 +88,7 @@ impl Occupancy {
         self.form_seeds = [s.phrases[0], s.phrases[1], s.phrases[2], s.phrases[3], s.fill, s.second];
         self.form_bands = spec.variation & 0xF | (spec.shape & 0xF) << 4;
         self.form_drums = spec.drums as u8;
+        self.form_contrast = spec.contrast;
         self.flags |= FORMED;
     }
 
@@ -95,6 +99,7 @@ impl Occupancy {
             seeds: crate::arrange::FormSeeds { phrases: [f[0], f[1], f[2], f[3]], fill: f[4], second: f[5] },
             variation: self.form_bands & 0xF,
             shape: self.form_bands >> 4,
+            contrast: self.form_contrast,
             drums: self.form_drums != 0,
         }
     }

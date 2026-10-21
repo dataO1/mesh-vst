@@ -17,7 +17,7 @@ fn main() {
     let mut form = Form::generated();
     let (mut reps, mut broken, mut retried) = (Vec::new(), 0, 0);
     for seed in first..first + count {
-        let spec = FormSpec { seeds: FormSeeds::new(seed, seed, seed), variation, shape, drums: false };
+        let spec = FormSpec { seeds: FormSeeds::new(seed, seed, seed), variation, shape, contrast: 2, drums: false };
         builder.build(&spec, &mut form);
         let (b, attempt) = builder.broken();
         reps.push(builder.repetition());
