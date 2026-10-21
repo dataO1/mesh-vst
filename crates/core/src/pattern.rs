@@ -14,9 +14,10 @@ use std::collections::BTreeMap;
 use crate::event::{flags, BarEvents, EventKind, LiveEvent};
 use crate::sampler::MORPH_REGION;
 use crate::arrange::{FormBuilder, FormSpec};
+use crate::contrast;
 use crate::form::{
-    form_chord, letter_offset, letter_seed, prime_from, prime_seed, splice_from, Feel, Form, FormPos, Letter, Play, SeedClass, FILLER_BOOSTS,
-    LETTER_OFFSETS, NOTE_JITTER_SHARE,
+    form_chord, letter_seed, prime_from, prime_seed, splice_from, Feel, Form, FormPos, Letter, Play, SeedClass, LETTER_OFFSETS,
+    NOTE_JITTER_SHARE,
 };
 use crate::generator::bass::{self, BassGenerator, BassRules};
 use crate::generator::blocks::{defaults_from_spec, patterned, NoteShape};
@@ -42,9 +43,6 @@ pub const fn lane_index(role: Role) -> u8 {
 /// for (D48), so a slider move does not build one on every block.
 const RELATION_BANDS: i8 = 4;
 
-/// Lowest value a letter moves a non-zero parameter to.
-
-const LETTER_FLOOR: f32 = 0.05;
 
 // MUSICAL: from Mesh live (user: the seed and the form set the bass speed per
 // block). Speed steps (exponent on the centre speed) and their weights: main
@@ -310,6 +308,8 @@ pub struct PatternLane {
     pub phrase_bars: u32,
     /// Permute 0..1: how many of the bar's chunks swap places (seeded).
     pub permute: f32,
+    /// Contrast 0..1: how far B moves from A, and C and D from them (D49).
+    pub contrast: f32,
     /// Splice: the focus per step the player sets for the next render
     /// ([`crate::splice::focus`]; all 1 = off).
     pub focus: [f32; STEPS_PER_BAR],
@@ -365,6 +365,7 @@ impl PatternLane {
             mode: 0,
             phrase_bars: 8,
             permute: 0.0,
+            contrast: contrast::CONTRAST_DEFAULT,
             focus: [1.0; STEPS_PER_BAR],
             host_line: crate::splice::HostLine::default(),
             follow: None,
@@ -511,22 +512,14 @@ impl PatternLane {
         }
         let seed = letter_seed(self.pattern_seed, c.lane, pos.letter);
         let class = pos.letter.class();
-        let mut params = self.params;
         let names = self.generator.param_names();
-        // Variation widens how far letters and notes move the parameters.
-        let reach = variation_reach(names, &params);
-        let block_reach = letter_reach(names, &params);
-        vary_letter(names, seed, c.lane, pos.letter, pos.second, block_reach, &mut params);
+        // Variation widens how far notes move the parameters; Contrast how
+        // far B moves from A, and C and D from them (D49).
+        let reach = variation_reach(names, &self.params);
+        let mut params = contrast::letter_params(names, &self.params, self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast);
         // The block's own Permute and (bass) Morph. A Permute at 0 stays off.
-        let permute_amount = if self.permute > 0.0 {
-            (self.permute + block_move("permute", seed, c.lane, pos.letter, pos.second, 1.0)).clamp(LETTER_FLOOR.min(self.permute), 1.0)
-        } else {
-            0.0
-        };
-        let block_morph = block_move("morph", seed, c.lane, pos.letter, pos.second, block_reach);
-        if class == SeedClass::Filler {
-            boost_filler(names, &mut params);
-        }
+        let permute_amount = contrast::knob_value("permute", self.permute, self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast);
+        let block_morph = contrast::morph_move(self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast);
         // Drums: the Swing knob swings every off 16th of the bar (breaks,
         // ghosts, percussion and tops too), on top of the letter's feel, so
         // the generator itself plays straight.
@@ -574,7 +567,7 @@ impl PatternLane {
             host: if self.role == Role::Drums {
                 self.host_line
             } else {
-                let block = if self.role == Role::Bass { block_rate(seed, c.lane, class) } else { 0 };
+                let block = if self.role == Role::Bass { self.letter_rate(c.lane, pos.letter) } else { 0 };
                 host_in_render(&self.host_line, self.rate + BASE_RATE + block, c.bar)
             },
         };
@@ -621,7 +614,7 @@ impl PatternLane {
             groove(out, knob_swing);
         }
         if self.role != Role::Drums {
-            let block = if self.role == Role::Bass { block_rate(seed, c.lane, class) } else { 0 };
+            let block = if self.role == Role::Bass { self.letter_rate(c.lane, pos.letter) } else { 0 };
             let rate = self.rate + BASE_RATE;
             apply_speed(out, rate + block, c.bar, scratch);
             limit_speed(out, rate, rate + block);
@@ -681,6 +674,16 @@ impl PatternLane {
             };
             chain.push(op);
         }
+        // Contrast (D49): B's line may answer mirrored, or an octave up.
+        if pos.letter == Letter::B && self.role != Role::Drums {
+            let (mirror, lift) = contrast::answer_line(self.pattern_seed, lane, self.contrast);
+            if mirror && !chain.contains(Op::Inversion) {
+                chain.push(Op::Inversion);
+            }
+            if lift && !chain.contains(Op::OctaveUp) && !chain.contains(Op::OctaveDown) {
+                chain.push(Op::OctaveUp);
+            }
+        }
         // Splice (D47): a follower plays its host's operators; towards the
         // counter end its questions and answers swap roles with the host's.
         if let Some(f) = self.follow {
@@ -690,6 +693,13 @@ impl PatternLane {
             }
         }
         chain
+    }
+
+    /// The bass speed step `letter` plays: A's seeded, the others from it
+    /// by Contrast (D49).
+    fn letter_rate(&self, lane: u8, letter: Letter) -> i8 {
+        let a = block_rate(letter_seed(self.pattern_seed, lane, Letter::A), lane, SeedClass::Main);
+        contrast::letter_rate(a, self.pattern_seed, lane, letter, self.contrast)
     }
 
     /// How far the operators go: Variation 0 still a little (D47).
@@ -1010,23 +1020,6 @@ fn shape_note(names: &[&str], params: &[f32; MAX_GEN_PARAMS], pattern_seed: u32,
     SHAPE_NOTE * (SHAPE_NOTE_REACH.0 + (SHAPE_NOTE_REACH.1 - SHAPE_NOTE_REACH.0) * v) * (SHAPE_NOTE_SEED.0 + (SHAPE_NOTE_SEED.1 - SHAPE_NOTE_SEED.0) * u)
 }
 
-// MUSICAL: tune by ear (user, 2026-10-20: blocks move the right-hand knobs
-// more, notes only a little). Scale of the letters' moves of [`REACHED`] at
-// Variation 0 and 1 (the notes' follow [`VARIATION_REACH`]).
-const LETTER_REACH: (f32, f32) = (0.6, 1.4);
-
-/// How far letters move the right-hand knobs' parameters, from Variation.
-fn letter_reach(names: &[&str], params: &[f32; MAX_GEN_PARAMS]) -> f32 {
-    let v = names.iter().position(|n| *n == "variation").and_then(|i| params.get(i)).copied().unwrap_or(0.5);
-    LETTER_REACH.0 + (LETTER_REACH.1 - LETTER_REACH.0) * v.clamp(0.0, 1.0)
-}
-
-/// A letter's move of a knob the lane applies itself (`"morph"`,
-/// `"permute"`, see [`LETTER_OFFSETS`]), in knob values.
-fn block_move(name: &str, seed: u32, lane: u8, letter: Letter, second: bool, reach: f32) -> f32 {
-    LETTER_OFFSETS.iter().position(|(n, _)| *n == name).map_or(0.0, |k| reach * letter_offset(seed, lane, letter, k, second))
-}
-
 /// The reach of parameter `name`.
 fn reach_of(name: &str, reach: f32) -> f32 {
     if REACHED.contains(&name) { reach } else { 1.0 }
@@ -1036,19 +1029,6 @@ fn reach_of(name: &str, reach: f32) -> f32 {
 fn variation_reach(names: &[&str], params: &[f32; MAX_GEN_PARAMS]) -> f32 {
     let v = names.iter().position(|n| *n == "variation").and_then(|i| params.get(i)).copied().unwrap_or(0.5);
     VARIATION_REACH.0 + (VARIATION_REACH.1 - VARIATION_REACH.0) * v.clamp(0.0, 1.0).powf(VARIATION_REACH_CURVE)
-}
-
-/// Move a letter's parameters around their values ([`LETTER_OFFSETS`]).
-fn vary_letter(names: &[&str], seed: u32, lane: u8, letter: Letter, second: bool, reach: f32, params: &mut [f32; MAX_GEN_PARAMS]) {
-    for (k, (name, _)) in LETTER_OFFSETS.iter().enumerate() {
-        if let Some(i) = names.iter().position(|n| n == name) {
-            if let Some(p) = params.get_mut(i) {
-                // A parameter above 0 stays above it, so a block never falls silent.
-                let floor = if *p > 0.0 { LETTER_FLOOR.min(*p) } else { 0.0 };
-                *p = (*p + reach_of(name, reach) * letter_offset(seed, lane, letter, k, second)).clamp(floor, 1.0);
-            }
-        }
-    }
 }
 
 /// Per-note jitter amplitude per parameter ([`NOTE_JITTER_SHARE`] of the
@@ -1065,17 +1045,6 @@ fn note_jitter(names: &[&str], reach: f32) -> [f32; MAX_GEN_PARAMS] {
         }
     }
     out
-}
-
-/// Push a filler bar's parameters up ([`FILLER_BOOSTS`]).
-fn boost_filler(names: &[&str], params: &mut [f32; MAX_GEN_PARAMS]) {
-    for (name, boost) in FILLER_BOOSTS {
-        if let Some(i) = names.iter().position(|n| *n == name) {
-            if let Some(p) = params.get_mut(i) {
-                *p = (*p + boost).clamp(0.0, 1.0);
-            }
-        }
-    }
 }
 
 /// A note's loop section at `k` times its speed's length (none when it no
@@ -1440,6 +1409,49 @@ mod tests {
                 assert_ne!(a_order, v_order, "in another order");
             }
         }
+    }
+
+    #[test]
+    fn contrast_moves_b_from_a_and_keeps_the_knobs_character() {
+        let key = MusicalKey::new(5, true);
+        let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+        let mut equal = 0;
+        // Per Shape knob end, the notes A and B play at full Contrast.
+        let mut notes = [[0usize; 2]; 2];
+        let mut gates = [[0f32; 2]; 2];
+        for seed in 0..40 {
+            for drums in [false, true] {
+                let mut lane = if drums { PatternLane::drums(DrumLayout::standard(), seed, 3) } else { PatternLane::bass(seed, 3) };
+                lane.set_form(Form::parse("A1 B1 A62").unwrap());
+                lane.contrast = 0.0;
+                lane.render(0, key, &mut out, &mut scratch);
+                let a = out.params.values;
+                lane.render(1, key, &mut out, &mut scratch);
+                assert_eq!(out.params.values, a, "seed {seed}: at Contrast 0 B plays A's settings");
+                lane.contrast = 1.0;
+                lane.render(1, key, &mut out, &mut scratch);
+                equal += (out.params.values == a) as u32;
+                if drums {
+                    continue;
+                }
+                for (end, shape) in [0.0f32, 1.0].into_iter().enumerate() {
+                    lane.set_param("length", shape);
+                    for (l, bar) in [0u64, 1].into_iter().enumerate() {
+                        lane.render(bar, key, &mut out, &mut scratch);
+                        for e in out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn) {
+                            notes[end][l] += 1;
+                            gates[end][l] += e.gate as f32;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(equal, 0, "at Contrast 1 B moves away from A");
+        // B keeps the knob's end: its notes at Shape 0 nearer A's at Shape 0
+        // than at Shape 1, and the other way round.
+        let mean = |end: usize, l: usize| gates[end][l] / notes[end][l].max(1) as f32;
+        assert!((mean(0, 1) - mean(0, 0)).abs() < 0.5 * (mean(0, 1) - mean(1, 0)).abs(), "Shape 0 stays short for B: {gates:?} {notes:?}");
+        assert!((mean(1, 1) - mean(1, 0)).abs() < 0.5 * (mean(1, 1) - mean(0, 0)).abs(), "Shape 1 stays long for B: {gates:?} {notes:?}");
     }
 
     #[test]

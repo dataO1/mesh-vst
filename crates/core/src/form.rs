@@ -980,11 +980,11 @@ pub const FILLER_BOOSTS: [(&str, f32); 7] = [
 ];
 
 // MUSICAL: first draft, tune by ear. Generator parameters a letter other
-// than A moves away from the control value (by name, largest offset). A
-// plays the controls as set; B, C and D sit around them, so each block
-// sounds like a different setting, and the controls still move all of them
-// (user, 2026-10-20: the right-hand knobs, Permute and Groove most). New
-// entries go at the end: an entry's index seeds its offset.
+// than A moves away from the control value (by name, largest move). A
+// plays the controls as set; B moves away from A by Contrast, C and D sit
+// around A and B (D49), and the controls still move all of them (user,
+// 2026-10-20: the right-hand knobs, Permute and Groove most). New entries
+// go at the end: an entry's index seeds its move.
 pub const LETTER_OFFSETS: [(&str, f32); 13] = [
     ("density", 0.25),
     ("complexity", 0.6),
@@ -1014,22 +1014,21 @@ const LETTER_OFFSET_MIN: f32 = 0.4;
 /// top (A too): same seeds, slightly different settings.
 const SECOND_PASS_SHARE: f32 = 0.35;
 
-/// Seeded offset of parameter `param` (index into [`LETTER_OFFSETS`]) for a
-/// letter seed. Zero for A in the first pass. `second`: the form's second
-/// pass adds a smaller seeded move.
-pub fn letter_offset(seed: u32, lane: u8, letter: Letter, param: usize, second: bool) -> f32 {
+/// Seeded move of parameter `param` (index into [`LETTER_OFFSETS`]) for a
+/// letter seed: its direction and size, at least [`LETTER_OFFSET_MIN`] of
+/// the entry's largest (D49: Contrast scales B's, the fills' reach theirs).
+pub fn letter_move(seed: u32, lane: u8, param: usize) -> f32 {
     let max = LETTER_OFFSETS[param].1;
     let p = param as u8;
-    let mut offset = 0.0;
-    if letter != Letter::A {
-        let size = rng::range_f32(rng::hash(seed, lane, p, 0, S_LETTER_PARAM), LETTER_OFFSET_MIN * max, max);
-        offset = if rng::chance(rng::hash(seed, lane, p, 0, S_LETTER_PARAM_SIGN), 0.5) { size } else { -size };
-    }
-    if second {
-        let u = rng::unit_f32(rng::hash(seed, lane, p, 0, S_LETTER_PARAM_SECOND));
-        offset += SECOND_PASS_SHARE * max * (2.0 * u - 1.0);
-    }
-    offset
+    let size = rng::range_f32(rng::hash(seed, lane, p, 0, S_LETTER_PARAM), LETTER_OFFSET_MIN * max, max);
+    if rng::chance(rng::hash(seed, lane, p, 0, S_LETTER_PARAM_SIGN), 0.5) { size } else { -size }
+}
+
+/// The second pass's move of parameter `param`, the same for every letter
+/// (from the pattern seed), so B still plays A's settings at Contrast 0.
+pub fn second_move(pattern_seed: u32, lane: u8, param: usize) -> f32 {
+    let u = rng::unit_f32(rng::hash(pattern_seed, lane, param as u8, 0, S_LETTER_PARAM_SECOND));
+    SECOND_PASS_SHARE * LETTER_OFFSETS[param].1 * (2.0 * u - 1.0)
 }
 
 #[cfg(test)]
@@ -1194,27 +1193,24 @@ mod tests {
         assert_eq!(changed, 50);
         // One-bar forms (no forms) never vary.
         assert!((0..4).all(|b| Form::single().pos_varied(b, 3, 1).letter == Letter::A));
-        // Letter offsets: the second pass moves A too, slightly.
+        // Letter moves: the second pass moves every letter alike, slightly.
         let k = 0;
-        let o = letter_offset(7, 1, Letter::A, k, true);
+        let o = second_move(7, 1, k);
         assert!(o.abs() <= SECOND_PASS_SHARE * LETTER_OFFSETS[k].1 + 1e-6);
     }
 
     #[test]
     fn letters_move_parameters_around_the_controls() {
-        for k in 0..LETTER_OFFSETS.len() {
-            assert_eq!(letter_offset(7, 1, Letter::A, k, false), 0.0, "A plays the controls");
-        }
         let mut signs = [0usize; 2];
         for letter in [Letter::B, Letter::C, Letter::D] {
             for k in 0..LETTER_OFFSETS.len() {
                 let max = LETTER_OFFSETS[k].1;
-                let o = letter_offset(letter_seed(7, 1, letter), 1, letter, k, false);
+                let o = letter_move(letter_seed(7, 1, letter), 1, k);
                 assert!(o.abs() >= LETTER_OFFSET_MIN * max - 1e-6 && o.abs() <= max + 1e-6, "{o}");
                 signs[(o > 0.0) as usize] += 1;
             }
         }
-        assert!(signs[0] > 3 && signs[1] > 3, "offsets go both ways: {signs:?}");
+        assert!(signs[0] > 3 && signs[1] > 3, "moves go both ways: {signs:?}");
     }
 
     #[test]

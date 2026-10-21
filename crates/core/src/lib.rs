@@ -5,6 +5,7 @@
 //! (`mesh-core/src/live`), relicensed under GPL-3.0-or-later by their author.
 
 pub mod calibrate;
+pub mod contrast;
 pub mod error;
 pub mod event;
 pub mod arrange;
