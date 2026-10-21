@@ -170,13 +170,12 @@ pub fn hit_knobs(role: Role, centres: &Centers, knobs: &Knobs, names: &[&str], b
             },
             morph: knob_of(around(knobs.morph, c.morph) + bar.morph + bar.morph_move(ev), c.morph),
             permute: bar.permute,
-            // Shape: the note's Length (step and height), back on the knob's
-            // 0.4 .. 1 range.
+            // Shape: the note's Length (step and height), back on the knob.
             shape: match index("length") {
                 Some(i) => {
                     let shape = crate::generator::blocks::NoteShape { gate: None, ..bar.shape_of(ev) };
                     let length = crate::generator::bass::held_length(bar.values[i], bar.at(i, shape));
-                    knob_of(((length - 0.4) / 0.6 - SHAPE_FLOOR) / (1.0 - SHAPE_FLOOR), c.shape)
+                    knob_of(length_knob(length), c.shape)
                 }
                 None => knobs.shape,
             },
@@ -430,8 +429,25 @@ fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSampl
 // 230 ms).
 const DRUM_CHOKE_OPEN: f32 = 0.05;
 
-// MUSICAL: tune by ear (user, 2026-10-20). Where the bass's Shape starts.
+// MUSICAL: tune by ear (user, 2026-10-20). Where the bass's Shape starts
+// (its envelope, expression and stab share).
 const SHAPE_FLOOR: f32 = 0.3;
+
+// MUSICAL: tune by ear (user, 2026-10-21: at low Shape and high Density the
+// hits still sounded held, not short or subdivided). The bass's note Length
+// at Shape 0, its middle and full: short stabs .. as written .. held.
+const SHAPE_LENGTH: (f32, f32, f32) = (0.15, 0.5, 1.0);
+
+/// The bass's note Length at Shape knob `k`.
+fn shape_length(k: f32) -> f32 {
+    let k = k.clamp(0.0, 1.0);
+    if k < 0.5 { lerp(SHAPE_LENGTH.0, SHAPE_LENGTH.1, 2.0 * k) } else { lerp(SHAPE_LENGTH.1, SHAPE_LENGTH.2, 2.0 * k - 1.0) }
+}
+
+/// The Shape knob a note Length shows at (the inverse of [`shape_length`]).
+fn length_knob(l: f32) -> f32 {
+    if l < SHAPE_LENGTH.1 { 0.5 * (l - SHAPE_LENGTH.0) / (SHAPE_LENGTH.1 - SHAPE_LENGTH.0) } else { 0.5 + 0.5 * (l - SHAPE_LENGTH.1) / (SHAPE_LENGTH.2 - SHAPE_LENGTH.1) }
+}
 
 // MUSICAL: from Mesh live's bass lane (shape, morph, spread, slide), the
 // other knobs first draft.
@@ -448,7 +464,7 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
     // Shape: stabby, accented and moving .. sustained and calm. Its bottom
     // starts where 30 % used to (user: longer stabs, fewer, some held notes).
     let shape = lerp(SHAPE_FLOOR, 1.0, v.shape);
-    lane.set_param("length", lerp(0.4, 1.0, shape));
+    lane.set_param("length", shape_length(v.shape));
     lane.set_param("expression", lerp(1.0, 0.15, shape));
     lane.set_param("stabs", lerp(1.0, 0.0, shape));
     character(p, shape);
@@ -675,6 +691,14 @@ mod style_tests {
         }
         assert!(on_knob > 0 && moved > 0, "A bars sit on the knob ({on_knob}), the other letters move ({moved})");
         assert!(varied_bars > 80, "{varied_bars} of 160 bars vary per note");
+    }
+
+    #[test]
+    fn the_bass_shape_runs_from_stabs_through_as_written_to_held() {
+        assert!((shape_length(0.0) - SHAPE_LENGTH.0).abs() < 1e-6 && (shape_length(0.5) - 0.5).abs() < 1e-6 && (shape_length(1.0) - 1.0).abs() < 1e-6);
+        for k in [0.0, 0.2, 0.5, 0.8, 1.0] {
+            assert!((length_knob(shape_length(k)) - k).abs() < 1e-5, "{k}");
+        }
     }
 
     #[test]

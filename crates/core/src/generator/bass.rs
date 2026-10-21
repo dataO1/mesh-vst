@@ -739,9 +739,12 @@ impl BassGenerator {
             if p <= 0.0 || n >= events.len() || !rng.chance(slot, S_CLIP_FILL, p) {
                 continue;
             }
-            // A rest: nothing sounds there or starts within the grid step.
+            // A rest: nothing sounds there or starts within the grid step (a
+            // note as long as it plays at a short Length).
             let busy = events[..n].iter().any(|e| {
-                let (a, b) = (e.tick as u32, e.tick as u32 + e.gate.max(1) as u32);
+                let l = note_length(ctx, e);
+                let gate = if l < 0.5 && e.flags & flags::FIGURE == 0 { shortened(e.gate, l) } else { e.gate };
+                let (a, b) = (e.tick as u32, e.tick as u32 + gate.max(1) as u32);
                 (a <= t && t < b) || (t < a && a < t + sub)
             });
             let Some(src) = events[..count].iter().filter(|e| (e.tick as u32) < t && e.kind == EventKind::NoteOn).last().copied() else { continue };
@@ -1671,6 +1674,12 @@ pub fn held_length(base: f32, moved: f32) -> f32 {
     base + (moved - base) * (4.0 * (1.0 - base)).clamp(0.0, 1.0)
 }
 
+/// A gate at a Length below the middle: towards a stab.
+fn shortened(gate: u16, length: f32) -> u16 {
+    let stab = gate.min(STAB_TICKS);
+    stab + ((gate - stab) as f32 * length.clamp(0.0, 0.5) * 2.0) as u16
+}
+
 /// `length` and `expression` (0.5 = unchanged). Length below 0.5 shortens
 /// notes towards stabs, above 0.5 holds them towards the next onset, from
 /// [`LEGATO_FROM`] a rising share of held notes ties into it and glides. Expression scales each note's
@@ -1711,8 +1720,7 @@ fn shape_notes(events: &mut [LiveEvent], length_of: impl Fn(&LiveEvent) -> f32, 
             continue;
         }
         if length < 0.5 {
-            let stab = ev.gate.min(STAB_TICKS);
-            ev.gate = stab + ((ev.gate - stab) as f32 * length * 2.0) as u16;
+            ev.gate = shortened(ev.gate, length);
         } else if has_next && ev.flags & flags::STAB == 0 && roll((ev.tick / TICKS_PER_STEP) as u8) < legato_share(length) + liquid {
             ev.gate = gap + TIE_OVERLAP_TICKS;
             let next = &mut events[i + 1];
@@ -2752,6 +2760,30 @@ mod tests {
             }
             assert!(widest[0] < widest[1], "source {source}: Variation widens the dynamics {widest:?}");
         }
+    }
+
+    #[test]
+    fn short_length_and_full_density_play_short_subdivided_hits() {
+        // User, 2026-10-21: at low Shape and high Density most hits still
+        // sounded held. A held clip at a short Length and full Density: most
+        // 16ths sound and most notes are short.
+        let key = crate::generator::test_util::a_minor();
+        let g = generator().with_clips(one_clip(&crate::clips::tables::A[7]));
+        let (mut on, mut short, mut all) = (0, 0, 0);
+        for b in 0..8 {
+            let mut seen = [false; 16];
+            for e in clip_events(&g, &clip_params(|p| {
+                p[P_DENSITY] = 1.0;
+                p[P_LENGTH] = 0.15;
+            }), b, key) {
+                seen[(e.tick / TICKS_PER_STEP) as usize] = true;
+                all += 1;
+                short += (e.gate <= 2 * TICKS_PER_STEP) as u32;
+            }
+            on += seen.iter().filter(|&&x| x).count();
+        }
+        assert!(on as f32 / 128.0 >= 0.6, "most 16ths sound: {on} of 128");
+        assert!(short * 4 >= all * 3, "most hits short: {short} of {all}");
     }
 
     #[test]
