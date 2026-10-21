@@ -107,7 +107,7 @@
       <fade-out type="Linear">0</fade-out>
      </properties>
      <midi-clip>
-      <filename>note.mid</filename>
+      <filename>bass.mid</filename>
       <track-channel>0</track-channel>
       <revision>1</revision>
      </midi-clip>
