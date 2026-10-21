@@ -278,8 +278,9 @@ pub enum Tier {
 pub const VEL_ACCENT: u8 = 120;
 pub const VEL_NORMAL: u8 = 96;
 pub const GHOST_RATIO: f32 = 0.35;
-/// Seeded velocity variation, ± this many steps of velocity.
-pub const VEL_JITTER: f32 = 5.0;
+/// Seeded velocity variation, ± this many steps of velocity (user,
+/// 2026-10-21: the velocity far less random).
+pub const VEL_JITTER: f32 = 2.0;
 /// Importance level from which a hit is an accent / a normal hit.
 pub const TIER_ACCENT_LEVEL: u8 = 200;
 pub const TIER_NORMAL_LEVEL: u8 = 90;

@@ -191,9 +191,24 @@ const CLIP_LIFT_MAX: f32 = 0.45;
 const CLIP_SHORT_TICKS: u16 = 2 * TICKS_PER_STEP;
 /// Density from which long notes split into 16ths (else 8ths).
 const CLIP_SPLIT_16THS: f32 = 0.85;
-/// Ticks between split repeats, and their velocity share.
-const CLIP_SPLIT_GAP: u16 = 4;
-const CLIP_REPEAT_VEL: f32 = 0.85;
+/// Ticks between split repeats (near legato).
+const CLIP_SPLIT_GAP: u16 = 2;
+/// Written velocity from which a clip note is an accent.
+const CLIP_ACCENT_VEL: u8 = 116;
+// MUSICAL: tune by ear (user, 2026-10-21: the Density fill speeds the line
+// up and fills its rests; it follows the Groove feel and Variation sets how
+// varied it is). Density from which the rests fill on the 8th (else from
+// the 16th) grid, the chance at Density 1, how much more Variation skips,
+// the chance at Variation 1 a fill takes the octave or a scale neighbour.
+const CLIP_FILL_8THS: (f32, f32) = (0.55, 0.95);
+const CLIP_FILL_16THS: (f32, f32) = (0.8, 0.8);
+const CLIP_FILL_SKIP: f32 = 0.35;
+const CLIP_FILL_ALT: f32 = 0.4;
+/// A fill plays this share of the velocity window under the note it fills
+/// from: on the 8ths, and on the 16ths between them.
+const CLIP_FILL_VEL: (f32, f32) = (0.25, 0.4);
+const S_CLIP_FILL: u32 = 0x233;
+const S_CLIP_FILL_ALT: u32 = 0x234;
 /// How far Complexity above its default adds to the pushes.
 const CLIP_COMPLEXITY_SYNC: f32 = 0.6;
 const S_CLIP_LIFT: u32 = 0x230;
@@ -208,7 +223,7 @@ const BASS_ROOT_MIN: i32 = 28;
 const BASS_SPAN: f32 = 12.0;
 /// Accent / slide probability at parameter value 1 (the defaults of 0.5 give
 /// the acid-style 30 % accents and 10 % slides).
-const ACCENT_PROB_MAX: f32 = 0.6;
+const ACCENT_PROB_MAX: f32 = 0.5;
 const SLIDE_PROB_MAX: f32 = 0.45;
 // MUSICAL: first draft, tune by ear (user: a seeded, moving lowpass).
 /// Where a note's lowpass sits between the lane's filter range (0 = 700 Hz,
@@ -231,6 +246,45 @@ const SLIDE_SECS: (f32, f32) = (crate::tempo::note(3.0 / 128.0), crate::tempo::n
 /// The glide byte of a slide at Slide `slide`.
 fn slide_glide(slide: f32) -> u8 {
     crate::sampler::glide_value(lerp(SLIDE_SECS.0, SLIDE_SECS.1, slide.clamp(0.0, 1.0)))
+}
+
+// MUSICAL: tune by ear (user, 2026-10-21: the loudness between notes
+// differs far too much; at most about 20 velocity at full Variation).
+/// The velocity window (the most two notes of a bar differ) at Variation 0
+/// and 1, on both sources.
+pub const VEL_WINDOW: (f32, f32) = (8.0, 20.0);
+/// Where the generated line's velocities sit, and how far its accents and
+/// normal notes lie apart before they are fitted into the window.
+const GEN_VEL_CENTER: f32 = (VEL_ACCENT as f32 + super::blocks::VEL_NORMAL as f32) / 2.0;
+const GEN_VEL_SPREAD: f32 = (VEL_ACCENT - super::blocks::VEL_NORMAL) as f32;
+/// The accent parameter's value from which the written dynamics fill the
+/// window (the macros' middle: `lerp(0.2, 0.9, 0.5)`); below it they flatten,
+/// above it they stay (the window is the cap).
+const ACCENT_MID: f32 = 0.55;
+
+/// The velocity window at Variation `variation`.
+pub fn vel_window(variation: f32) -> f32 {
+    lerp(VEL_WINDOW.0, VEL_WINDOW.1, variation.clamp(0.0, 1.0))
+}
+
+/// How far the accent parameter `a` scales the dynamics: 0 flat, 1 from
+/// [`ACCENT_MID`] on.
+fn accent_depth(a: f32) -> f32 {
+    (a / ACCENT_MID).clamp(0.0, 1.0)
+}
+
+/// `vel` from dynamics centred on `center` that reach `half` either way,
+/// fitted into `window` around it at `depth`.
+fn fit_vel(vel: f32, center: f32, half: f32, window: f32, depth: f32) -> u8 {
+    let off = ((vel - center) / half.max(1.0) * window / 2.0 * depth).clamp(-window / 2.0, window / 2.0);
+    (center + off).round().clamp(1.0, 127.0) as u8
+}
+
+/// Keep every note of `events` inside `window` around `center`.
+fn clamp_vels(events: &mut [LiveEvent], center: f32, window: f32) {
+    for e in events.iter_mut().filter(|e| e.vel > 0) {
+        e.vel = (e.vel as f32).clamp(center - window / 2.0, center + window / 2.0).round().clamp(1.0, 127.0) as u8;
+    }
 }
 
 /// The Slide value a slide's glide byte came from ([`slide_glide`] inverted).
@@ -515,6 +569,13 @@ impl BassGenerator {
         let is_kick = |s: usize| ctx.drum_mask[s.min(STEPS_PER_BAR - 1)] >= MASK_KICK_MIN;
         let mode = KickMode::from_param(param(ctx, P_KICK_MODE));
         let attack = density_attack_in(density, BASS_ATTACK_BY_DENSITY);
+        // The written dynamics, fitted into the Variation's window around the
+        // clip's mean; the accent sets how far they reach (no random accents).
+        let window = vel_window(variation);
+        let (lo_vel, hi_vel, sum) = clip.notes.iter().fold((127u8, 0u8, 0u32), |(l, h, s), n| (l.min(n.vel), h.max(n.vel), s + n.vel as u32));
+        let center = sum as f32 / clip.notes.len().max(1) as f32;
+        let half = ((hi_vel - lo_vel.min(hi_vel)) as f32 / 2.0).max(1.0);
+        let depth = accent_depth(param(ctx, P_ACCENT));
         let mut events = [LiveEvent::default(); 2 * STEPS_PER_BAR];
         let mut n = 0usize;
         let mut prev: Option<(u16, i32)> = None;
@@ -556,9 +617,8 @@ impl BassGenerator {
                 let next = clip.notes.get(i + 1).map_or(hi, |x| x.tick.min(hi));
                 gate = (next - cn.tick).min(u16::MAX as u32) as u16;
             }
-            let random_accent = rng.chance(step, S_ACCENT, note_param_for(ctx, P_ACCENT, shape) * ACCENT_PROB_MAX);
-            let accented = random_accent || cn.vel >= MOTIF_ACCENT_VEL;
-            let vel = if random_accent { cn.vel.max(VEL_ACCENT) } else { cn.vel };
+            let accented = cn.vel >= CLIP_ACCENT_VEL;
+            let vel = fit_vel(cn.vel as f32, center, half, window, depth);
             let mut ev = note(tick, key as u8, vel, gate, n as u16 + 1);
             ev.attack = attack;
             ev.start = stream_region(ctx, step);
@@ -622,7 +682,7 @@ impl BassGenerator {
                     x.tick = e.tick + r as u16 * sub;
                     x.step = (x.tick / TICKS_PER_STEP) as u8;
                     x.gate = sub - CLIP_SPLIT_GAP;
-                    x.vel = (e.vel as f32 * CLIP_REPEAT_VEL) as u8;
+                    x.vel = (e.vel as f32 - CLIP_FILL_VEL.0 * window).max(1.0) as u8;
                     x.flags &= !(flags::ACCENT | flags::TIE);
                     x.note_id = e.note_id + 64 + r as u16;
                     events[k + r] = x;
@@ -631,14 +691,86 @@ impl BassGenerator {
                 k += 1 + extra;
             }
         }
+        // Density above its middle also fills the rests after a note, on the
+        // Groove's feel (8ths, then 16ths near the top).
+        if density > CLIP_FILL_8THS.0 {
+            n = self.fill_rests(ctx, &mut events, n, &rng, window, root_pc, scale);
+        }
         let complexity = param(ctx, P_COMPLEXITY);
         let push = (param(ctx, P_SYNCOPATION) + CLIP_COMPLEXITY_SYNC * (complexity - PARAM_DEFAULTS[P_COMPLEXITY]).max(0.0)).clamp(0.0, 1.0);
         syncopate(&mut events[..n], push, &rng);
         shape_notes(&mut events[..n], |e| note_length(ctx, e), param(ctx, P_EXPRESSION), param(ctx, P_SLIDE), |step| rng.unit(step, S_LEGATO));
         loops(&mut events[..n], variation * persona.looping, persona.reverses, &rng);
+        clamp_vels(&mut events[..n], center, window);
         for ev in &events[..n] {
             out.push(*ev);
         }
+    }
+
+    /// Fill the rests of `events[..n]` (sorted) after their notes, on the
+    /// grid of the Groove's feel: the 8ths from [`CLIP_FILL_8THS`], the 16ths
+    /// between them from [`CLIP_FILL_16THS`]. A fill repeats the note before
+    /// it, softer, held to the next grid point (near legato); Variation skips
+    /// some places and turns some fills to the octave or a scale neighbour.
+    /// Returns the new count.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_rests(&self, ctx: &BarCtx, events: &mut [LiveEvent; 2 * STEPS_PER_BAR], mut n: usize, rng: &PhraseRng, window: f32, root_pc: i32, scale: &[u8; 7]) -> usize {
+        let d = param(ctx, P_DENSITY);
+        let variation = param(ctx, P_VARIATION);
+        let ramp = |(from, max): (f32, f32), top: f32| ((d - from) / (top - from)).clamp(0.0, 1.0) * max;
+        let (p8, p16) = (ramp(CLIP_FILL_8THS, 0.9), ramp(CLIP_FILL_16THS, 1.0));
+        // The Groove's feel: triplet, straight or dotted 16ths.
+        let sub = ((TICKS_PER_STEP as f32) * crate::tempo::feel(param(ctx, P_SYNCOPATION))).round() as u32;
+        let neighbour = |key: i32, up: bool| {
+            let rel = key - root_pc;
+            let Some(i) = scale.iter().position(|&s| s as i32 == rel.rem_euclid(12)) else { return key };
+            let j = i as i32 + if up { 1 } else { -1 };
+            root_pc + 12 * (rel.div_euclid(12) + j.div_euclid(7)) + scale[j.rem_euclid(7) as usize] as i32
+        };
+        let bar = TICKS_PER_BAR as u32;
+        let count = n;
+        let mut k = 0u32;
+        while k * sub < bar {
+            let t = k * sub;
+            let on_8th = k % 2 == 0;
+            let p = if on_8th { p8 } else { p16 } * (1.0 - CLIP_FILL_SKIP * variation);
+            let slot = (k as u8).wrapping_add(64);
+            k += 1;
+            if p <= 0.0 || n >= events.len() || !rng.chance(slot, S_CLIP_FILL, p) {
+                continue;
+            }
+            // A rest: nothing sounds there or starts within the grid step.
+            let busy = events[..n].iter().any(|e| {
+                let (a, b) = (e.tick as u32, e.tick as u32 + e.gate.max(1) as u32);
+                (a <= t && t < b) || (t < a && a < t + sub)
+            });
+            let Some(src) = events[..count].iter().filter(|e| (e.tick as u32) < t && e.kind == EventKind::NoteOn).last().copied() else { continue };
+            if busy {
+                continue;
+            }
+            let next = events[..n].iter().map(|e| e.tick as u32).filter(|&a| a > t).min().unwrap_or(bar);
+            let mut x = src;
+            let alt = rng.unit(slot, S_CLIP_FILL_ALT);
+            if alt < CLIP_FILL_ALT * variation {
+                let k = src.key as i32;
+                x.key = match (alt * 3.0 / (CLIP_FILL_ALT * variation).max(1e-6)) as u8 {
+                    0 => k + 12,
+                    1 => neighbour(k, true),
+                    _ => neighbour(k, false),
+                }
+                .clamp(0, 127) as u8;
+            }
+            x.tick = t as u16;
+            x.step = (t / TICKS_PER_STEP as u32).min(STEPS_PER_BAR as u32 - 1) as u8;
+            x.gate = ((t + sub).min(next) - t).saturating_sub(CLIP_SPLIT_GAP as u32).max(GATE_MIN_TICKS as u32) as u16;
+            x.vel = (src.vel as f32 - window * if on_8th { CLIP_FILL_VEL.0 } else { CLIP_FILL_VEL.1 }).max(1.0) as u8;
+            x.flags &= !(flags::ACCENT | flags::TIE | flags::STAB);
+            x.note_id = 200 + n as u16;
+            events[n] = x;
+            n += 1;
+        }
+        events[..n].sort_unstable_by_key(|e| e.tick);
+        n
     }
 
     fn pick_degree(&self, h: u64, spread: f32) -> i32 {
@@ -893,7 +1025,8 @@ impl LaneGenerator for BassGenerator {
             };
 
             let shape = NoteShape::note(su, gate_ticks, key, ctx.harmony.key.root);
-            let accented = rng.chance(su, S_ACCENT, note_param_for(ctx, P_ACCENT, shape) * ACCENT_PROB_MAX);
+            // Accents mostly on the strong steps (user, 2026-10-21: less chance).
+            let accented = rng.chance(su, S_ACCENT, note_param_for(ctx, P_ACCENT, shape) * ACCENT_PROB_MAX * metric_weight(s));
             let tier = if accented { Tier::Accent } else { Tier::Normal };
             let vel = velocity(tier, rng.unit(su, S_VEL), self.rules.tiers);
             let mut ev = note(step_tick(s), key.clamp(0, 127) as u8, vel, gate_ticks, s as u16 + 1);
@@ -947,6 +1080,11 @@ impl LaneGenerator for BassGenerator {
         // Loops last, on the notes as long as density and length left them
         // (Splice thins the bar after this).
         loops(&mut events[..n], variation * persona.looping, persona.reverses, &rng);
+        // The dynamics inside the Variation's window.
+        let window = vel_window(variation);
+        for e in events[..n].iter_mut().filter(|e| e.vel > 0) {
+            e.vel = fit_vel(e.vel as f32, GEN_VEL_CENTER, GEN_VEL_SPREAD / 2.0, window, 1.0);
+        }
         for ev in &events[..n] {
             out.push(*ev);
         }
@@ -2143,7 +2281,9 @@ mod tests {
             }
         }
         let share = accents as f32 / total as f32;
-        assert!((0.2..0.4).contains(&share), "accent share {share}");
+        // Accents mostly on the strong steps, rarer than before (user,
+        // 2026-10-21: the velocity far less random).
+        assert!((0.08..0.3).contains(&share), "accent share {share}");
         // Sparse lines hold their notes longer than dense ones (per note).
         let mean_gate = |d: f32| -> f32 {
             let p = params(|p| {
@@ -2415,8 +2555,8 @@ mod tests {
     }
 
     /// A clip set holding the table clip `c` for every letter.
-    fn one_clip(c: &crate::motif::starter::StarterClip) -> Arc<ClipSet> {
-        let bytes = crate::motif::midi::write(&c.clip(crate::motif::Voice::Lowest), c.name);
+    fn one_clip(c: &crate::clips::tables::ClipTable) -> Arc<ClipSet> {
+        let bytes = crate::motif::midi::write(&c.clip(), c.name);
         let clip = BassClip::from_midi(c.name, &bytes).unwrap();
         Arc::new(ClipSet { letters: std::array::from_fn(|_| vec![clip.clone()]) })
     }
@@ -2530,5 +2670,125 @@ mod tests {
         assert!(gates(clip_params(|p| p[P_STABS] = 0.0)) > mid, "and hold the stabs");
         let ticks = |p: [f32; MAX_GEN_PARAMS]| (0..8).flat_map(|b| clip_events(&g, &p, b, key)).map(|e| e.tick).collect::<Vec<_>>();
         assert_ne!(ticks(clip_params(|p| p[P_SYNCOPATION] = 1.0)), ticks(clip_params(|_| {})), "syncopation pushes notes");
+    }
+
+    fn clip_events_seeded(g: &BassGenerator, p: &[f32; MAX_GEN_PARAMS], seed: u32, material_bar: u16) -> Vec<LiveEvent> {
+        let mask = [0u8; 16];
+        let mut c = ctx(seed, (material_bar % 4) as u8, p, &mask);
+        c.lane = 1;
+        c.role = crate::role::Role::Bass;
+        c.material_bar = material_bar;
+        c.harmony = crate::generator::test_util::a_minor();
+        render(g, &c).as_slice().to_vec()
+    }
+
+    fn vel_range(events: &[LiveEvent]) -> u8 {
+        let v = events.iter().filter(|e| e.vel > 0).map(|e| e.vel);
+        v.clone().max().unwrap_or(0) - v.min().unwrap_or(0)
+    }
+
+    #[test]
+    fn clip_velocities_follow_the_written_dynamics_inside_the_window() {
+        let table = &crate::clips::tables::A[3];
+        let clips = one_clip(table);
+        let g = generator().with_clips(clips.clone());
+        let clip = &clips.letters[0][0];
+        let at = |accent: f32, variation: f32| clip_params(|p| {
+            p[P_ACCENT] = accent;
+            p[P_VARIATION] = variation;
+        });
+        for b in 0..8u16 {
+            let got = clip_events_seeded(&g, &at(ACCENT_MID, 1.0), 5, b);
+            let lo = b as u32 * TICKS_PER_BAR as u32;
+            let written: Vec<u8> = clip.notes.iter().filter(|n| n.tick >= lo && n.tick < lo + TICKS_PER_BAR as u32).map(|n| n.vel).collect();
+            assert_eq!(got.len(), written.len());
+            // The written order of loud and soft, the same for every seed.
+            for i in 0..got.len() {
+                for j in 0..got.len() {
+                    if written[i] > written[j] {
+                        assert!(got[i].vel >= got[j].vel, "bar {b}: {:?} vs {written:?}", got.iter().map(|e| e.vel).collect::<Vec<_>>());
+                    }
+                }
+            }
+            assert_eq!(got.iter().map(|e| e.vel).collect::<Vec<_>>(), clip_events_seeded(&g, &at(ACCENT_MID, 1.0), 77, b).iter().map(|e| e.vel).collect::<Vec<_>>(), "no seed in the dynamics");
+            assert!(vel_range(&got) as f32 <= VEL_WINDOW.1 + 1.0, "bar {b}: within the window");
+            // Accent 0 plays them flat.
+            assert!(vel_range(&clip_events_seeded(&g, &at(0.0, 1.0), 5, b)) <= 1);
+            let wide = clip_events_seeded(&g, &at(1.0, 1.0), 5, b);
+            assert_eq!(wide.iter().map(|e| e.vel).collect::<Vec<_>>(), got.iter().map(|e| e.vel).collect::<Vec<_>>(), "bar {b}: a full accent no wider than the window");
+            // Variation 0 narrows the window.
+            assert!(vel_range(&clip_events_seeded(&g, &at(ACCENT_MID, 0.0), 5, b)) as f32 <= VEL_WINDOW.0 + 1.0);
+        }
+        let range = |v: f32| (0..8).map(|b| vel_range(&clip_events_seeded(&g, &at(ACCENT_MID, v), 5, b))).max().unwrap();
+        assert!(range(0.0) < range(1.0), "Variation widens the dynamics");
+    }
+
+    #[test]
+    fn both_sources_keep_the_velocities_inside_the_window() {
+        let key = crate::generator::test_util::a_minor();
+        let g = generator().with_clips(ClipSet::builtin());
+        for source in [0.0, 1.0] {
+            let mut widest = [0u8; 2];
+            for (k, variation) in [0.0f32, 1.0].into_iter().enumerate() {
+                for seed in 0..40u32 {
+                    let p = params(|p| {
+                        p[P_SOURCE] = source;
+                        p[P_VARIATION] = variation;
+                        p[P_ACCENT] = 1.0;
+                        p[P_DENSITY] = 0.8;
+                    });
+                    for b in 0..4u16 {
+                        let mask = [0u8; 16];
+                        let mut c = ctx(seed, b as u8, &p, &mask);
+                        c.lane = 1;
+                        c.role = crate::role::Role::Bass;
+                        c.material_bar = b;
+                        c.harmony = key;
+                        let r = vel_range(render(&g, &c).as_slice());
+                        assert!(r as f32 <= vel_window(variation) + 1.0, "source {source}, variation {variation}, seed {seed}: {r}");
+                        widest[k] = widest[k].max(r);
+                    }
+                }
+            }
+            assert!(widest[0] < widest[1], "source {source}: Variation widens the dynamics {widest:?}");
+        }
+    }
+
+    #[test]
+    fn full_density_fills_the_clip_and_follows_the_groove() {
+        let key = crate::generator::test_util::a_minor();
+        // A sparse clip: two held notes a bar.
+        let g = generator().with_clips(one_clip(&crate::clips::tables::A[7]));
+        let steps = |d: f32| {
+            let mut on = 0;
+            for b in 0..8 {
+                let mut seen = [false; 16];
+                for e in clip_events(&g, &clip_params(|p| p[P_DENSITY] = d), b, key) {
+                    seen[(e.tick / TICKS_PER_STEP) as usize] = true;
+                }
+                on += seen.iter().filter(|&&x| x).count();
+            }
+            on as f32 / (8.0 * 16.0)
+        };
+        let (mid, full) = (steps(0.5), steps(1.0));
+        assert!(full >= 0.6 && full > 3.0 * mid, "full Density sounds most 16ths: {mid} -> {full}");
+        // Fills (in the rests of a half-empty clip) sit on the Groove's grid:
+        // triplets at Groove 0, and not only there in its middle.
+        let g = generator().with_clips(one_clip(&crate::clips::tables::C[2]));
+        let fills = |groove: f32, variation: f32| -> Vec<LiveEvent> {
+            (0..8).flat_map(|b| clip_events(&g, &clip_params(|p| {
+                p[P_DENSITY] = 0.8;
+                p[P_SYNCOPATION] = groove;
+                p[P_VARIATION] = variation;
+            }), b, key)).filter(|e| e.note_id >= 200).collect()
+        };
+        let triplet = fills(0.0, 0.0);
+        assert!(triplet.len() >= 8, "the rests fill: {}", triplet.len());
+        assert!(triplet.iter().all(|e| e.tick % 32 == 0), "on the triplet grid: {:?}", triplet.iter().map(|e| e.tick).collect::<Vec<_>>());
+        assert!(fills(0.5, 0.0).iter().any(|e| e.tick % 32 != 0), "straight in the Groove's middle");
+        // Low Variation repeats the note it fills from; high varies some.
+        let keys = |variation: f32| fills(0.0, variation).iter().map(|e| e.key).collect::<std::collections::BTreeSet<_>>().len();
+        assert!(keys(1.0) > keys(0.0), "Variation varies the fills: {} vs {}", keys(0.0), keys(1.0));
+        assert_eq!(fills(0.0, 1.0).iter().map(|e| (e.tick, e.key)).collect::<Vec<_>>(), fills(0.0, 1.0).iter().map(|e| (e.tick, e.key)).collect::<Vec<_>>(), "deterministic");
     }
 }

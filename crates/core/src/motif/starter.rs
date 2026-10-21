@@ -112,7 +112,7 @@ const VEL_BEAT: u8 = 108;
 const VEL_OFF: u8 = 92;
 
 /// Semitones of a pitch name such as `b3`, `8` or `,b7`.
-fn semitones(token: &str) -> i32 {
+pub(crate) fn semitones(token: &str) -> i32 {
     let mut octave = 0;
     let mut rest = token;
     while let Some(c) = rest.chars().next() {

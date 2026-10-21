@@ -449,7 +449,9 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
     lane.set_param("expression", lerp(1.0, 0.15, shape));
     lane.set_param("stabs", lerp(1.0, 0.0, shape));
     character(p, shape);
-    // Accent also deepens the filter sweep and the stab punch.
+    // Accent also deepens the filter sweep and the stab punch; its level
+    // stays near the others (the dynamics live in the velocity window).
+    p.accent_gain = BASS_ACCENT_GAIN;
     p.modulation.env.to_cutoff = lerp(2400.0, 6000.0, accent);
     p.punch *= lerp(0.6, 1.4, accent);
     p.morph = v.morph;
@@ -458,6 +460,9 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
 // MUSICAL: Mesh live's Character macro (user, 2026-10-20: the attack of
 // long notes far louder than the rest; about −1 dB sustain, a longer
 // decay, the release up to a quarter at full Shape).
+/// The bass's accent gain (about +0.5 dB; user, 2026-10-21: the loudness
+/// between notes differs far too much).
+const BASS_ACCENT_GAIN: f32 = 1.06;
 /// Sustain level of held notes (−1 dB).
 const HELD_SUSTAIN: f32 = 0.89;
 /// Release at full Shape (from the designed one at the bottom).

@@ -239,7 +239,6 @@ impl ClipSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::motif::starter::StarterClip;
 
     fn raw(start: u32, len: u32, pitch: u8) -> RawNote {
         RawNote { start, len, pitch, vel: 100 }
@@ -251,7 +250,7 @@ mod tests {
         for l in 0..4 {
             assert_eq!(set.letters[l].len(), tables::PER_LETTER);
             for (i, c) in tables::of(l).iter().enumerate() {
-                let written = midi::write(&c.clip(crate::motif::Voice::Lowest), c.name);
+                let written = midi::write(&c.clip(), c.name);
                 assert_eq!(BUILTIN[l][i], &written[..], "{}: run `cargo run --example write_clips`", c.name);
                 let clip = &set.letters[l][i];
                 assert_eq!(clip.beats, 32, "{}", clip.name);
@@ -266,8 +265,8 @@ mod tests {
         let mut wrong = Vec::new();
         for l in 0..4 {
             for c in tables::of(l) {
-                let clip: &StarterClip = c;
-                let notes = clip.clip(crate::motif::Voice::Lowest).notes;
+                let clip = c;
+                let notes = clip.clip().notes;
                 let est = key::detect(&notes).unwrap();
                 // The root is what matters (the mode only breaks snapping ties).
                 if est.tonic != 0 {
@@ -279,6 +278,49 @@ mod tests {
         }
         assert!(wrong.is_empty(), "the root is C: {wrong:?}");
         assert_eq!(shapes.len(), 4 * tables::PER_LETTER, "every clip has its own rhythm");
+    }
+
+    #[test]
+    fn shipped_clips_mix_long_and_short_notes_off_the_beat() {
+        // Before (2026-10-21) 59 % of the onsets sat on a beat.
+        let (mut on, mut all) = (0usize, 0usize);
+        for l in 0..4 {
+            let mut offbeat = 0;
+            for c in tables::of(l) {
+                let notes = c.clip().notes;
+                let beat = |n: &&RawNote| n.start % BEAT_TICKS == 0;
+                let k = notes.iter().filter(beat).count();
+                on += k;
+                all += notes.len();
+                offbeat += ((notes.len() - k) * 10 >= notes.len() * 4) as usize;
+                let eighth = 2 * crate::TICKS_PER_STEP as u32;
+                assert!(notes.iter().any(|n| n.len >= eighth) && notes.iter().any(|n| n.len < eighth), "{}: held and short notes", c.name);
+            }
+            assert!(offbeat >= 3, "letter {l}: clips with 40 % of their onsets off the beat: {offbeat}");
+        }
+        assert!(on * 10 <= all * 4, "at most 40 % of the onsets on a beat: {on} of {all}");
+    }
+
+    #[test]
+    fn shipped_clips_write_their_dynamics() {
+        for l in 0..4 {
+            for c in tables::of(l) {
+                let notes = c.clip().notes;
+                assert!(notes.iter().all(|n| (60..=127).contains(&n.vel)), "{}", c.name);
+                let (lo, hi) = (notes.iter().map(|n| n.vel).min().unwrap(), notes.iter().map(|n| n.vel).max().unwrap());
+                assert!(hi - lo >= 12, "{}: not flat", c.name);
+                // Among the plain notes (accents and ghosts are marked on top).
+                let mean = |f: &dyn Fn(u32) -> bool| {
+                    let v: Vec<u32> = notes.iter().filter(|n| (73..116).contains(&n.vel) && f(n.start % TICKS_PER_BAR as u32)).map(|n| n.vel as u32).collect();
+                    v.iter().sum::<u32>() as f32 / v.len().max(1) as f32
+                };
+                let strong = mean(&|t| t % BEAT_TICKS == 0);
+                let weak = mean(&|t| t % (2 * crate::TICKS_PER_STEP as u32) != 0);
+                if weak > 0.0 && strong > 0.0 {
+                    assert!(strong > weak, "{}: the beats louder than the 16ths ({strong} vs {weak})", c.name);
+                }
+            }
+        }
     }
 
     #[test]
@@ -329,7 +371,7 @@ mod tests {
     fn a_users_folder_adds_clips_per_letter() {
         let dir = std::env::temp_dir().join(format!("mesh-vst-clips-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("b")).unwrap();
-        let clip = tables::A[0].clip(crate::motif::Voice::Lowest);
+        let clip = tables::A[0].clip();
         std::fs::write(dir.join("b").join("mine.mid"), midi::write(&clip, "mine")).unwrap();
         std::fs::write(dir.join("b").join("broken.mid"), b"nope").unwrap();
         let (set, warnings) = ClipSet::with_dir(&dir);

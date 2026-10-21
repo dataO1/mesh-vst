@@ -376,13 +376,19 @@ drive external effects.
     nearest scale note (between two, the one at its own scale step); a key change follows at
     once. The phrase follows the song's chords by scale steps, as generated phrases do.
   - **Shipped.** Ten clips per letter, 32 beats each, written on C minor from the
-    music-theory note (root-heavy, chord tones on the beats, the dark intervals sparingly,
-    bars 4 and 8 their endings, each with its own rhythm): A states and asks (3-3-2 roller,
-    offbeat 8ths, stab and hold, long note and pickup, syncopated stabs, a pedal, a half-bar
-    call, octave quarters, a dotted chain, two-step), B answers home to the root or the 5th,
-    C are milder fills and turnarounds (scale runs, the 7th turning round, neighbours, walks),
-    D the aggressive transitions (octave stabs, the chromatic climb, the b5 and b2, stutters).
-    They are tables (`clips/tables.rs`), written to `crates/core/assets/clips/<letter>/NN.mid`
+    music-theory note (root-heavy, the downbeat mostly on the root, the dark intervals
+    sparingly, bars 4 and 8 their endings, each with its own rhythm). Long and short notes mix
+    in every clip, and the notes sit off the beat too: on the e and the a, offbeat 8ths,
+    anticipations held across the beat, 3-3-2 and dotted groupings (34 % of the onsets on a
+    beat, 59 % in the first set; user, 2026-10-21: the first set was staccato and all on the
+    beat). A states and asks, B answers home to the root or the 5th, C are milder fills and
+    turnarounds, D the aggressive transitions (accents, octaves, the b2 and b5, chromatic
+    pushes). Per bar a table gives the 16-step rhythm (`X` held, `x` a stab of half its span,
+    `A` `a` accented, `g` a ghost, `-` continues, `.` rests) and the onsets' pitches; the
+    velocities follow the metric place (downbeat 112, beats 104, 8ths 96, 16ths 88, held +4,
+    the phrase points of bars 4 and 8 +6, accents +14, ghosts 72; 72 .. 124) and are written
+    into the MIDI. Ties across bar lines are not written: a note ends at its bar line. They
+    are tables (`clips/tables.rs`), written to `crates/core/assets/clips/<letter>/NN.mid`
     by `cargo run -p mesh-vst-core --example write_clips` and embedded; a test keeps the files
     and the tables equal.
   - **Your clips.** `*.mid` files in `~/.config/mesh-vst/clips/a` .. `d` (one folder per
@@ -393,9 +399,26 @@ drive external effects.
     beat at or after that where a note starts (as D48's pitched phrases); a clip shorter than
     the phrase repeats. Variants, operators and pins work on the window as on a generated
     phrase.
+  - **Velocity** comes from the MIDI, with no random accents (user, 2026-10-21: far too
+    random, the loudness between notes differing far too much). The written dynamics are
+    fitted into a **velocity window** around the clip's mean, 8 at Variation 0 to 20 at
+    Variation 1 (the most two notes of a bar differ); the accent parameter flattens them below
+    its middle and fills the window from there, never beyond it; notes written from 116 up
+    are the accents. Every note of the bar, fills included, stays inside the window. The
+    generated line keeps its accents mostly on the strong steps (their chance scaled by the
+    metric weight, at most 0.5 of the accent) and is fitted into the same window; its seeded
+    velocity jitter is ±2 (was ±5, the drums' too); the bass's accent gain is +0.5 dB (was
+    +3), so the window is what the ear hears.
   - **The knobs** shape the clip in the directions they shape the generated line. Density at
     its middle plays it as written; lower drops the weak notes (the bar's first note and the
-    beats stay), higher splits long notes into 8ths, 16ths near the top, of the same pitch.
+    beats stay), higher splits long notes into 8ths, 16ths near the top, of the same pitch,
+    and **fills the rests** after a note: on the 8ths from 0.55 (90 % at Density 1), on the
+    16ths between them from 0.8 (80 % at 1), so full Density sounds most 16ths. Fills follow
+    the Groove's feel (triplet 16ths at low Groove, straight in the middle, dotted at high;
+    the swing reaches them as the rest of the line), repeat the note before them a quarter
+    (8ths) or 0.4 (16ths) of the window softer, held to the next grid point (near legato);
+    Variation skips up to 35 % more places and turns up to 40 % of the fills to the octave or
+    a scale neighbour (low Variation: plain repeats).
     Spread lifts weak notes an octave; Syncopation (and Complexity above its default) pushes
     notes off the 8ths; the bass's stab amount shortens held notes above its middle and holds
     stabs below it; Register moves the octave; accents, slides, Shape's length and legato,
