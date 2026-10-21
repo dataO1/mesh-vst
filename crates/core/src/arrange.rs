@@ -364,8 +364,8 @@ const RECIPES: [(Recipe, f32); 7] = [
     (Recipe::ThinDrop, 0.7),
 ];
 const SECOND_EXTENT: (f32, f32) = (0.35, 1.0);
-const SECOND_SLOT: f32 = 0.15;
-const SECOND_EXTRA: f32 = 0.1;
+const SECOND_SLOT: f32 = 0.25;
+const SECOND_EXTRA: f32 = 0.15;
 /// Re-cuts of a switch-up, new answers, pushes.
 const RECUTS: [Op; 5] = [Op::Retrograde, Op::Inversion, Op::Dotted, Op::Rotation, Op::RhythmRetrograde];
 const ANSWERS: [Op; 4] = [Op::Sequence, Op::Inversion, Op::Counter, Op::Passing];
@@ -446,6 +446,9 @@ pub struct FormBuilder {
     cycles: [[u16; SECTIONS]; 2],
     plan: usize,
     recipes: [Option<Recipe>; 2],
+    attempts: u32,
+    broken: u32,
+    repetition: f32,
 }
 
 impl Default for FormBuilder {
@@ -458,7 +461,16 @@ impl FormBuilder {
     pub fn new() -> Self {
         // Overwrites split a segment at most in two, inserting one more.
         let cap = MAX_PASS_SEGMENTS + 8;
-        Self { first: Vec::with_capacity(cap), second: Vec::with_capacity(cap), cycles: [[CYCLE_BEATS; SECTIONS]; 2], plan: 0, recipes: [None; 2] }
+        Self {
+            first: Vec::with_capacity(cap),
+            second: Vec::with_capacity(cap),
+            cycles: [[CYCLE_BEATS; SECTIONS]; 2],
+            plan: 0,
+            recipes: [None; 2],
+            attempts: 0,
+            broken: 0,
+            repetition: 0.0,
+        }
     }
 
     /// The second pass's recipes of the last form, by name.
@@ -483,8 +495,37 @@ impl FormBuilder {
 
     /// Build the form of `spec` into `out` (a form from [`Form::generated`]).
     pub fn build(&mut self, spec: &FormSpec, out: &mut Form) {
+        // The rules checked (music theory §5, §6.3); a form that breaks one
+        // builds again from the same seeds, its slots, fills and recipe
+        // drawn anew, and the attempt that breaks the fewest plays.
+        let mut best = (u32::MAX, 0u32);
+        for attempt in 0..MAX_ATTEMPTS {
+            self.attempt(spec, attempt);
+            let broken = self.check();
+            if broken.count_ones() < best.0 {
+                best = (broken.count_ones(), attempt);
+            }
+            if broken == 0 {
+                break;
+            }
+        }
+        if self.attempts != best.1 {
+            self.attempt(spec, best.1);
+            self.check();
+        }
+        out.set_passes(&self.first, &self.second);
+    }
+
+    /// The rules the last form broke ([`Rule`] bits) and the attempt it is.
+    pub fn broken(&self) -> (u32, u32) {
+        (self.broken, self.attempts)
+    }
+
+    fn attempt(&mut self, spec: &FormSpec, attempt: u32) {
+        self.attempts = attempt;
         let lane = spec.drums as u8;
         let fill = spec.seeds.fill;
+        let salt = |seed: u32| if attempt == 0 { seed } else { rng::hash(seed, lane, attempt as u8, 0, S_ATTEMPT) as u32 };
         self.plan = rng::below(rng::hash(fill, lane, 0, 0, S_PLAN), PLANS.len() as u32) as usize;
         let plan = &PLANS[self.plan];
 
@@ -503,11 +544,11 @@ impl FormBuilder {
         }
         let v = share(spec.variation);
         let (slot, extra) = (lerp(SLOT_FILL, v), lerp(EXTRA_FILL, v));
-        let first = Mods::plain(true, fill, slot, extra);
+        let first = Mods::plain(true, salt(fill), slot, extra);
         let head = rng::chance(rng::hash(fill, lane, 0, 0, S_HEAD), HEAD_CHANCE).then_some(plan.head).and_then(tok);
         self.cycles[0] = build_pass(&mut self.first, plan, &units, &lengths, head, &first, lane);
         // The second pass: one recipe, a second one further up Variation.
-        let sec = spec.seeds.second;
+        let sec = salt(spec.seeds.second);
         let mut second = Mods::plain(false, sec, slot + SECOND_SLOT, extra + SECOND_EXTRA);
         let e = lerp(SECOND_EXTENT, v);
         let weights = RECIPES.map(|r| r.1);
@@ -520,9 +561,165 @@ impl FormBuilder {
             self.recipes[1] = Some(RECIPES[b].0);
         }
         self.cycles[1] = build_pass(&mut self.second, plan, &units, &lengths, None, &second, lane);
-        out.set_passes(&self.first, &self.second);
+    }
+
+    /// Check the passes last built; returns the [`Rule`] bits broken.
+    fn check(&mut self) -> u32 {
+        let (a, b) = (beats(&self.first), beats(&self.second));
+        let mut broken = 0;
+        let grid = |pass: &[Segment]| {
+            let mut at = 0u16;
+            for s in pass {
+                if s.beats == 0 || at / SECTION_BEATS != (at + s.beats - 1) / SECTION_BEATS {
+                    return false;
+                }
+                at += s.beats;
+            }
+            at == PASS_BEATS
+        };
+        if !grid(&self.first) || !grid(&self.second) {
+            broken |= Rule::GRID;
+        }
+        // The first 8 bars: A (and its answer) unchanged, no fill but the
+        // pickup.
+        let opening = (HEAD_BEATS as usize..2 * CYCLE_BEATS as usize).all(|i| !a[i].filler)
+            && (self.cycles[0][0] != CYCLE_BEATS || (HEAD_BEATS as usize..CYCLE_BEATS as usize).all(|i| a[i] == a[i + CYCLE_BEATS as usize]));
+        if !opening {
+            broken |= Rule::OPENING;
+        }
+        if changes(&a, &self.cycles[0]) > 1 || changes(&b, &self.cycles[1]) > 1 {
+            broken |= Rule::CHANGES;
+        }
+        let rep = repetition(&a);
+
+
+        self.repetition = rep;
+        if !(REPETITION.0..=REPETITION.1).contains(&rep) {
+            broken |= Rule::REPETITION;
+        }
+        if busy(&b) <= busy(&a) {
+            broken |= Rule::BUSIER;
+        }
+        self.broken = broken;
+        broken
+    }
+
+    /// The first pass's repetition ([`repetition`]) of the last form.
+    pub fn repetition(&self) -> f32 {
+        self.repetition
     }
 }
+
+/// The rules a generated form keeps, as bits.
+pub struct Rule;
+
+impl Rule {
+    /// Every pass 64 bars, no segment across a 16-bar seam.
+    pub const GRID: u32 = 1;
+    /// The first pass's first 8 bars repeat unchanged (music theory §5).
+    pub const OPENING: u32 = 2;
+    /// Inside a section a cycle changes at most once against the one before.
+    pub const CHANGES: u32 = 4;
+    /// The 4-bar repetition sits in [`REPETITION`] (music theory §6.3).
+    pub const REPETITION: u32 = 8;
+    /// The second pass is busier than the first.
+    pub const BUSIER: u32 = 16;
+}
+
+// MUSICAL: tune by ear (music theory §6.3: the reference sets repeat their
+// 4-bar blocks 0.33 .. 0.63 in pitch; the structure repeats more than the
+// pitches, which follow the chords). The range of the structural
+// repetition ([`repetition`]) a first pass keeps: it catches the forms that
+// never change and the ones that never repeat. Attempts before the fewest
+// broken rules win.
+const REPETITION: (f32, f32) = (0.1, 0.95);
+const MAX_ATTEMPTS: u32 = 8;
+
+/// One beat of a pass as the checks compare it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Beat {
+    letter: u8,
+    ops: OpChain,
+    marks: u8,
+    phrase: u8,
+    /// Where in its phrase's notes the beat plays.
+    at: u8,
+    filler: bool,
+}
+
+fn beats(pass: &[Segment]) -> [Beat; PASS_BEATS as usize] {
+    let mut out = [Beat::default(); PASS_BEATS as usize];
+    let mut i = 0usize;
+    for s in pass {
+        for k in 0..s.beats {
+            if i < out.len() {
+                let p = s.phrase.max(1) as u16;
+                out[i] = Beat {
+                    letter: s.letter.index(),
+                    ops: s.ops,
+                    marks: s.prime as u8 | (s.swap as u8) << 1,
+                    phrase: s.phrase,
+                    at: ((s.offset as u16 + s.skip as u16 + k) % p) as u8,
+                    filler: s.letter.class() == SeedClass::Filler,
+                };
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The most changes a cycle makes against the one before it inside a
+/// section (outside the fills and the seam cycle): runs of main beats on the
+/// same letter whose marks differ.
+fn changes(pass: &[Beat; PASS_BEATS as usize], cycles: &[u16; SECTIONS]) -> u32 {
+    let mut most = 0;
+    for (s, &cycle) in cycles.iter().enumerate() {
+        let base = s * SECTION_BEATS as usize;
+        for w in 1..WINDOWS - 1 {
+            let from = base + w * CYCLE_BEATS as usize;
+            if from < base + cycle as usize {
+                continue;
+            }
+            let (mut runs, mut inside) = (0, false);
+            for i in from..from + CYCLE_BEATS as usize {
+                let (x, y) = (pass[i], pass[i - cycle as usize]);
+                let differs = !x.filler && !y.filler && x.letter == y.letter && (x.ops, x.marks) != (y.ops, y.marks);
+                if differs && !inside {
+                    runs += 1;
+                }
+                inside = differs;
+            }
+            most = most.max(runs);
+
+
+        }
+    }
+    most
+}
+
+/// Share of beats that play as the beat one hook period before them
+/// (letter, marks, phrase and the place in it), inside each section, at
+/// the section's best lag of 4 or 8 bars (music theory §6.3: the best
+/// repetition lag is the hook period); the mean over the sections.
+fn repetition(pass: &[Beat; PASS_BEATS as usize]) -> f32 {
+    let mut sum = 0.0;
+    for s in 0..SECTIONS {
+        let base = s * SECTION_BEATS as usize;
+        let at_lag = |lag: usize| {
+            let same = (base + lag..base + SECTION_BEATS as usize).filter(|&i| pass[i] == pass[i - lag]).count();
+            same as f32 / (SECTION_BEATS as usize - lag) as f32
+        };
+        sum += at_lag(CYCLE_BEATS as usize).max(at_lag(2 * CYCLE_BEATS as usize));
+    }
+    sum / SECTIONS as f32
+}
+
+/// The operators the beats play, a fill's beat as one.
+fn busy(pass: &[Beat; PASS_BEATS as usize]) -> usize {
+    pass.iter().map(|b| b.filler as usize + b.ops.len()).sum()
+}
+
 
 /// A segment of token `t` from `lengths`, `beats` long, entering its phrase
 /// `skip` beats in.
@@ -763,7 +960,7 @@ fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
         }
         let Some(j) = (0..i).rev().find(|&j| starts[j] + cycle == start) else { continue };
         let prev = out[j];
-        if (prev.letter, prev.beats, prev.skip) != (seg.letter, seg.beats, seg.skip) || (prev.ops, prev.prime, prev.swap) == (seg.ops, seg.prime, seg.swap) {
+        if (prev.letter, prev.skip) != (seg.letter, seg.skip) || (prev.ops, prev.prime, prev.swap) == (seg.ops, seg.prime, seg.swap) {
             continue;
         }
         let k = s * WINDOWS + w;
@@ -786,6 +983,8 @@ const S_EXTRA: u32 = 0xF86;
 const S_HEAD: u32 = 0xF87;
 const S_SLOT: u32 = 0xF88;
 const S_RECIPE: u32 = 0xF89;
+const S_ATTEMPT: u32 = 0xF8A;
+
 
 
 #[cfg(test)]
@@ -939,7 +1138,30 @@ mod tests {
     }
 
     #[test]
+    fn forms_keep_the_rules_and_build_the_same_again() {
+        let mut b = FormBuilder::new();
+        let (mut f, mut g) = (Form::generated(), Form::generated());
+        let (mut broken, mut again, mut reps) = (0, 0, Vec::new());
+        for seed in 0..600 {
+            let s = FormSpec { drums: seed % 3 == 0, ..spec(seed, (seed % 5) as u8, (seed / 5 % 5) as u8) };
+            b.build(&s, &mut f);
+            let (rules, attempt) = b.broken();
+            assert_eq!(rules & (Rule::GRID | Rule::OPENING | Rule::CHANGES), 0, "seed {seed}: by construction: {f}");
+            broken += (rules != 0) as usize;
+            again += (attempt > 0) as usize;
+            reps.push(b.repetition());
+            // The same seeds and knobs, the same form.
+            b.build(&s, &mut g);
+            assert_eq!(f, g, "seed {seed}");
+        }
+        reps.sort_by(f32::total_cmp);
+        assert!(broken <= 6, "{broken} of 600 forms break a rule after {MAX_ATTEMPTS} attempts ({again} built again)");
+        assert!(reps[300] > 0.5 && reps[300] < 0.9, "median repetition {}", reps[300]);
+    }
+
+    #[test]
     fn building_does_not_allocate() {
+
 
         let mut b = FormBuilder::new();
         let mut f = Form::generated();
