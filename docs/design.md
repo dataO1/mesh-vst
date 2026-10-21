@@ -272,8 +272,11 @@ drive external effects.
     seed, as before) looped over a seeded length in **beats, a power of two**: A and B 2, 4, 8
     or 16 beats (weights 15/35/35/15 %, at most 4 bars), C and D 1 to 8. It loops from its own
     start (written `A2:8`: two bars of an 8-beat phrase) and starts a seeded **offset** into
-    its letter's notes (`+2`), one per letter, mod the length, shared by the letter's variants;
-    drum offsets are even (the backbeat stays). A segment entering its phrase later (a fill
+    its letter's notes (`+2`), one per letter, mod the length, shared by the letter's variants.
+    Offsets are even beats (the kick's beats stay the kick's); a pitched phrase starts at the
+    even beat at or after its offset where a note starts (a note a 16th earlier is clipped onto
+    the beat), else at the letter's start, so it never starts late. Generated drum phrases have
+    no offset. A segment entering its phrase later (a fill
     took its head) skips in (`^2`). A pitched phrase is written on the tonic and moves with the
     song's chord where it plays, by scale steps the nearer way (the riff sequenced over the
     progression); against a pitched host it is walked on the bar's chord instead. The **phrase

@@ -108,11 +108,14 @@ pub fn phrase(seed: u32, letter: Letter, section: u8, shape: u8, drums: bool) ->
 }
 
 /// A letter's offset before its length: one per letter, whatever the
-/// section's length; the drums move by half bars, so the snare stays on
-/// the backbeat.
+/// section's length, in even beats (the kick's beats stay the kick's; the
+/// bass then starts on a note there, see `pattern::onset_shift`); the drums
+/// have none (user, 2026-10-21).
 fn phrase_offset(seed: u32, drums: bool) -> u8 {
-    let raw = rng::below(rng::hash(seed, drums as u8, 0, 0, S_OFFSET), 16) as u8;
-    if drums { raw & !1 } else { raw }
+    if drums {
+        return 0;
+    }
+    rng::below(rng::hash(seed, 0, 0, 0, S_OFFSET), 16) as u8 & !1
 }
 
 // MUSICAL: first draft, tune by ear (user, 2026-10-21: Contrast moves B's
@@ -1162,7 +1165,7 @@ fn derive(out: &mut Vec<Segment>, host: &[Segment], own: &[Segment], relation: f
     }
     if drums {
         for s in out.iter_mut() {
-            s.offset &= !1;
+            s.offset = 0;
             s.skip &= !1;
         }
     }
@@ -1217,8 +1220,9 @@ mod tests {
                     let max = if l.class() == SeedClass::Main { 16 } else { 8 };
                     assert!(p.beats.is_power_of_two() && p.beats <= max && p.beats >= 1, "{p:?}");
                     assert!(p.offset < p.beats);
+                    assert_eq!(p.offset % 2, 0, "even beats keep the kick's beats");
                     if drums {
-                        assert_eq!(p.offset % 2, 0, "the drums keep the backbeat");
+                        assert_eq!(p.offset, 0, "the drums have no offset");
                     }
                 }
             }

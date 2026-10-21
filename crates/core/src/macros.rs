@@ -911,7 +911,9 @@ mod style_tests {
             })
             .collect();
         reps.sort_by(f32::total_cmp);
-        // The references repeat 0.33 .. 0.63 in pitch (music theory §6.3).
-        assert!((0.33..=0.7).contains(&reps[15]), "median rep4 {:.2} ({reps:?})", reps[15]);
+        // The references repeat 0.33 .. 0.63 in pitch (music theory §6.3);
+        // phrases that start on a note at an even beat (or the letter's
+        // start) repeat a little more (user, 2026-10-21: less hectic).
+        assert!((0.33..=0.75).contains(&reps[15]), "median rep4 {:.2} ({reps:?})", reps[15]);
     }
 }

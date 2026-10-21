@@ -800,8 +800,13 @@ impl PatternLane {
             }
             if phrased {
                 // The phrase starts `offset` beats into the letter's notes,
-                // rotated; its notes end with it.
-                let shift = (pos.offset as u32 * beat_ticks) % ticks;
+                // rotated; its notes end with it. A pitched phrase starts on
+                // one of its notes at an even beat (user, 2026-10-21).
+                let shift = if self.role == Role::Drums {
+                    (pos.offset as u32 * beat_ticks) % ticks
+                } else {
+                    onset_shift(&mut span.notes, pos.offset as u32, ticks, beat_ticks)
+                };
                 for n in span.notes.iter_mut() {
                     n.at = (n.at + ticks - shift) % ticks;
                     n.ev.gate = n.ev.gate.min((ticks - n.at).min(u16::MAX as u32) as u16);
@@ -1214,6 +1219,34 @@ fn limit_speed(out: &mut BarEvents, rate: i8, exponent: i8) {
     out.truncate(kept);
 }
 
+/// Where a pitched phrase starts in its letter's notes (ticks): the even
+/// beat at or after `want` (beats) where a note starts, or starts at most a
+/// 16th earlier (that note is clipped to start on the beat); the letter's own
+/// start when no beat has one. Even beats keep the kick's beats with the
+/// kick, a note on the beat keeps the phrase from sounding late.
+fn onset_shift(notes: &mut [SpanNote], want: u32, ticks: u32, beat: u32) -> u32 {
+    let points = ticks / (2 * beat);
+    let first = (want / 2) % points.max(1);
+    for k in 0..points {
+        let p = (first + k) % points;
+        if p == 0 {
+            return 0;
+        }
+        let t = p * 2 * beat;
+        let sounds = |n: &SpanNote| {
+            matches!(n.ev.kind, EventKind::NoteOn | EventKind::Trigger) && n.ev.vel > 0 && n.at <= t && t - n.at <= crate::TICKS_PER_STEP as u32 && (n.ev.gate == 0 || n.at + n.ev.gate as u32 > t)
+        };
+        if let Some(n) = notes.iter_mut().find(|n| sounds(n)) {
+            if n.ev.gate > 0 {
+                n.ev.gate -= (t - n.at) as u16;
+            }
+            n.at = t;
+            return t;
+        }
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1551,10 +1584,19 @@ mod tests {
             let rotated = render_all(&lane("A16:8+2"), 2);
             let ticks = |o: Vec<(u32, i32)>| o.into_iter().map(|x| x.0 % (2 * TICKS_PER_BAR as u32)).collect::<Vec<_>>();
             let beat = TICKS_PER_BAR as u32 / 4;
-            let mut moved: Vec<u32> = ticks(onsets(&two[0..2])).into_iter().map(|t| (t + 6 * beat) % (8 * beat)).collect();
-            moved.sort_unstable();
             let got = ticks(onsets(&rotated));
-            assert!(got.len() == moved.len() && got.iter().zip(&moved).all(|(a, b)| a.abs_diff(*b) <= 3), "drums {drums}: the same notes from another beat: {got:?} vs {moved:?}");
+            // Drums by the written 2 beats; a pitched phrase from the even
+            // beat at or after it where a note starts, or the letter's start.
+            let shifts: &[u32] = if drums { &[2] } else { &[2, 4, 6, 0] };
+            let fits = shifts.iter().any(|&sh| {
+                let mut moved: Vec<u32> = ticks(onsets(&two[0..2])).into_iter().map(|t| (t + (8 - sh) * beat) % (8 * beat)).collect();
+                moved.sort_unstable();
+                got.len() == moved.len() && got.iter().zip(&moved).all(|(a, b)| a.abs_diff(*b) <= crate::TICKS_PER_STEP as u32)
+            });
+            assert!(fits, "drums {drums}: the same notes from another beat: {got:?}");
+            if !drums {
+                assert!(got.iter().any(|&t| t <= 3), "a pitched phrase starts on a note: {got:?}");
+            }
             if drums {
                 let ids = |o: Vec<(u32, i32)>| {
                     let mut k: Vec<i32> = o.into_iter().map(|x| x.1).collect();
