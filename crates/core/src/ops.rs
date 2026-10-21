@@ -51,12 +51,15 @@ pub enum Op {
     Passing,
     /// `m`: a few seeded notes change (pitch, length or presence).
     Mutate,
+    /// `k`: one or two hits split into fast repeats (the double feel; on
+    /// the drums a roll), their subdivision by the Groove (D51).
+    Split,
     /// `?`: the seed picks one, by where the segment sits in the form.
     Seeded,
 }
 
 impl Op {
-    pub const ALL: [Op; 21] = [
+    pub const ALL: [Op; 22] = [
         Op::Retrograde,
         Op::Inversion,
         Op::Sequence,
@@ -77,6 +80,7 @@ impl Op {
         Op::Thin,
         Op::Passing,
         Op::Mutate,
+        Op::Split,
         Op::Seeded,
     ];
 
@@ -102,6 +106,7 @@ impl Op {
             Op::Thin => 'n',
             Op::Passing => 'p',
             Op::Mutate => 'm',
+            Op::Split => 'k',
             Op::Seeded => '?',
         }
     }
@@ -113,6 +118,12 @@ impl Op {
     /// Whether it moves pitches of the line (not the endings `q` and `a`).
     pub fn moves_pitch(self) -> bool {
         matches!(self, Op::Retrograde | Op::Inversion | Op::Sequence | Op::Counter | Op::OctaveUp | Op::OctaveDown)
+    }
+
+    /// Whether it moves the rhythm (D51): these come first in a generated
+    /// form's chains, Density and Groove pick them.
+    pub fn is_rhythm(self) -> bool {
+        matches!(self, Op::DoubleTime | Op::HalfTime | Op::Split | Op::Syncopate | Op::Dotted | Op::Triplets | Op::Rotation | Op::RhythmRetrograde)
     }
 
     fn index(self) -> u8 {
@@ -180,6 +191,16 @@ impl OpChain {
         self
     }
 
+    /// The chain with its rhythm operators first, each group in its order
+    /// (D51: the rhythm moves, then the line changes on it).
+    pub fn rhythm_first(self) -> Self {
+        let mut out = OpChain::default();
+        for op in self.iter().filter(|o| o.is_rhythm()).chain(self.iter().filter(|o| !o.is_rhythm())) {
+            out.push(op);
+        }
+        out
+    }
+
     /// A stable fingerprint of the chain.
     pub fn fingerprint(&self) -> u64 {
         self.ops[..self.len as usize].iter().fold(self.len as u64, |h, o| h.wrapping_mul(31).wrapping_add(*o as u64 + 1))
@@ -214,6 +235,72 @@ const SEEDED_ANY: [(Op, f32); 11] = [
     (Op::Dotted, 1.0),
     (Op::Passing, 1.0),
 ];
+
+// MUSICAL: tune by ear (user, 2026-10-21: Density sets how many rhythm
+// operators a generated form's slots get, the Groove biases which: low
+// straight, high funky; Variation keeps the melodic ones). The rhythm
+// operators of the straight and the funky side (`k` on both, its
+// subdivision follows the Groove), the ones of either, and how much more
+// often double and half time come before a section change.
+const RHYTHM_STRAIGHT: [(Op, f32); 3] = [(Op::DoubleTime, 1.0), (Op::HalfTime, 0.6), (Op::Split, 1.0)];
+const RHYTHM_FUNKY: [(Op, f32); 5] = [(Op::Syncopate, 1.0), (Op::Dotted, 1.0), (Op::Triplets, 0.8), (Op::Rotation, 0.8), (Op::Split, 0.6)];
+const RHYTHM_EITHER: [(Op, f32); 1] = [(Op::RhythmRetrograde, 0.3)];
+const DIMINUTION_BEFORE_CHANGE: f32 = 1.5;
+/// The melodic operators of each place (D51: no rhythm operators, those
+/// come from [`seeded_rhythm`]).
+const MELODIC_BEFORE_CHANGE: [(Op, f32); 4] = [(Op::Thin, 1.0), (Op::Question, 1.0), (Op::Sequence, 1.0), (Op::OctaveUp, 1.0)];
+const MELODIC_REPEAT: [(Op, f32); 4] = [(Op::Mutate, 3.0), (Op::Retrograde, 1.0), (Op::Legato, 1.0), (Op::Passing, 1.0)];
+const MELODIC_ANY: [(Op, f32); 7] =
+    [(Op::Retrograde, 1.0), (Op::Inversion, 1.0), (Op::Sequence, 1.0), (Op::Legato, 1.0), (Op::Staccato, 1.0), (Op::Mutate, 2.0), (Op::Passing, 1.0)];
+
+/// A rhythm operator for a generated form's slot (D51): `groove` 0 the
+/// straight ones, 1 the funky ones, a blend between.
+pub fn seeded_rhythm(h: u64, groove: f32, place: Place) -> Op {
+    let g = groove.clamp(0.0, 1.0);
+    let mut table = [(Op::Seeded, 0.0f32); 9];
+    let mut n = 0;
+    let mut add = |op: Op, w: f32| {
+        if let Some(e) = table[..n].iter_mut().find(|e| e.0 == op) {
+            e.1 += w;
+        } else {
+            table[n] = (op, w);
+            n += 1;
+        }
+    };
+    for &(op, w) in &RHYTHM_STRAIGHT {
+        let w = if place.before_change && matches!(op, Op::DoubleTime | Op::HalfTime) { w * DIMINUTION_BEFORE_CHANGE } else { w };
+        add(op, w * (1.0 - g));
+    }
+    for &(op, w) in &RHYTHM_FUNKY {
+        add(op, w * g);
+    }
+    for &(op, w) in &RHYTHM_EITHER {
+        add(op, w);
+    }
+    let mut weights = [0.0f32; 9];
+    for (w, e) in weights.iter_mut().zip(&table[..n]) {
+        *w = e.1;
+    }
+    table[rng::weighted_pick(h, &weights[..n]).unwrap_or(0)].0
+}
+
+/// A melodic operator for a generated form's slot, by its place (D51).
+pub fn seeded_melodic(h: u64, place: Place) -> Op {
+    let table: &[(Op, f32)] = if place.before_change {
+        &MELODIC_BEFORE_CHANGE
+    } else if place.period_end {
+        &SEEDED_PERIOD_END
+    } else if place.repeat {
+        &MELODIC_REPEAT
+    } else {
+        &MELODIC_ANY
+    };
+    let mut weights = [0.0f32; 7];
+    for (w, (_, x)) in weights.iter_mut().zip(table) {
+        *w = *x;
+    }
+    table[rng::weighted_pick(h, &weights[..table.len()]).unwrap_or(0)].0
+}
 
 /// Where a segment sits in its form, for [`seeded`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -267,6 +354,8 @@ pub struct OpCtx {
     /// Drums: the pitch operators do nothing, the others act on the hits.
     pub drums: bool,
     pub harmony: HarmonyCtx,
+    /// The Groove knob, 0..1: the subdivision `k` splits into (D51).
+    pub groove: f32,
 }
 
 /// Apply `chain` to the span `notes` (sorted by tick), left to right.
@@ -321,6 +410,18 @@ const OPEN_END_TICKS: (f32, f32) = (48.0, 192.0);
 const KEY_RANGE: (i32, i32) = (24, 100);
 /// Note ids of the notes an operator adds (a repeat, a passing note).
 const ADDED_ID: u16 = 0x3000;
+// MUSICAL: first draft, tune by ear (user, 2026-10-21: sometimes a single
+// hit split into subdivisions, the double feel). Split: from this Groove the
+// subdivision is a triplet or a dotted 16th, below it straight 16ths (a
+// 32nd roll on the drums); how long a split runs at the least and in full
+// (ticks; on the drums); the repeats' velocity share (a drum roll rises
+// from the first to the second); the gap before a repeat (share of a part).
+const SPLIT_FUNKY_FROM: f32 = 0.65;
+const SPLIT_SPAN: (f32, f32) = (BEAT as f32 / 2.0, BEAT as f32);
+const SPLIT_SPAN_DRUMS: (f32, f32) = (2.0 * STEP as f32, BEAT as f32);
+const SPLIT_VEL: f32 = 0.85;
+const ROLL_VEL: (f32, f32) = (0.55, 0.9);
+const SPLIT_GAP: f32 = 0.25;
 
 fn lerp(a: (f32, f32), t: f32) -> f32 {
     a.0 + (a.1 - a.0) * t.clamp(0.0, 1.0)
@@ -631,6 +732,7 @@ fn apply_one(op: Op, k: u8, notes: &mut Vec<SpanNote>, ctx: &OpCtx) {
             }
         }
         Op::Mutate => mutate(notes, ctx, k),
+        Op::Split => split(notes, ctx, k),
         // Pitch and length operators on the drums.
         _ => {}
     }
@@ -694,6 +796,67 @@ fn drum_ending(notes: &mut Vec<SpanNote>, ctx: &OpCtx, closed: bool) {
         add(notes, hit);
     } else {
         notes.retain(|n| !is_note(n) || n.at < from);
+    }
+}
+
+/// `k`: one hit (two in full) split into fast repeats of itself over an 8th
+/// (a beat in full), or up to its next note; the subdivision straight 16ths
+/// (a 32nd roll on the drums) below [`SPLIT_FUNKY_FROM`] Groove, a triplet
+/// or a dotted 16th above it (seeded).
+fn split(notes: &mut Vec<SpanNote>, ctx: &OpCtx, k: u8) {
+    let a = ctx.amount.clamp(0.0, 1.0);
+    let sub = if ctx.groove >= SPLIT_FUNKY_FROM {
+        if rng::chance(h(ctx, k, 10, 0), 0.5) { BEAT / 6 } else { 3 * STEP / 2 }
+    } else if ctx.drums {
+        STEP / 2
+    } else {
+        STEP
+    };
+    let span = lerp(if ctx.drums { SPLIT_SPAN_DRUMS } else { SPLIT_SPAN }, a).round() as u32;
+    let hits = 1 + (a >= 0.5) as usize;
+    sort(notes);
+    let len = notes.len();
+    let fits = |notes: &[SpanNote], i: usize| is_note(&notes[i]) && notes[i].ev.vel > 0 && room(notes, i, ctx.ticks).min(span) >= 2 * sub;
+    let count = (0..len).filter(|&i| fits(notes, i)).count();
+    if count == 0 {
+        return;
+    }
+    let mut picked = [usize::MAX; 2];
+    for c in 0..hits.min(count) {
+        // A seeded hit; the next free one when taken.
+        let mut nth = rng::below(h(ctx, k, 11, c as u32), count as u32) as usize;
+        loop {
+            let i = (0..len).filter(|&i| fits(notes, i)).nth(nth).unwrap_or(usize::MAX);
+            if i == usize::MAX || !picked[..c].contains(&i) {
+                picked[c] = i;
+                break;
+            }
+            nth = (nth + 1) % count;
+        }
+    }
+    for &i in picked.iter().filter(|&&i| i != usize::MAX) {
+        let r = room(notes, i, ctx.ticks).min(span);
+        let parts = r / sub;
+        let gate = (sub as f32 * (1.0 - SPLIT_GAP)).round().max(1.0) as u16;
+        let base = notes[i];
+        if base.ev.gate > 0 {
+            notes[i].ev.gate = gate;
+        }
+        notes[i].ev.loop_len = 0;
+        for p in 1..parts {
+            let mut n = base;
+            n.at = base.at + p * sub;
+            n.seq = base.seq + (1 << 20) + p;
+            let share = if ctx.drums { lerp(ROLL_VEL, p as f32 / (parts - 1).max(1) as f32) } else { SPLIT_VEL };
+            n.ev.vel = ((base.ev.vel as f32 * share).round() as u8).max(1);
+            if base.ev.gate > 0 {
+                n.ev.gate = gate;
+            }
+            n.ev.flags &= !(flags::ACCENT | flags::TIE);
+            n.ev.loop_len = 0;
+            n.ev.note_id = base.ev.note_id.wrapping_add(ADDED_ID + p as u16);
+            add(notes, n);
+        }
     }
 }
 
@@ -773,7 +936,7 @@ mod tests {
 
     fn ctx(amount: f32) -> OpCtx {
         let harmony = HarmonyCtx { key: MusicalKey::new(0, true), chord_degree: 0, progression: 0, mode: 0 };
-        OpCtx { ticks: 2 * BAR, amount, seed: 7, lane: 1, drums: false, harmony }
+        OpCtx { ticks: 2 * BAR, amount, seed: 7, lane: 1, drums: false, harmony, groove: 0.5 }
     }
 
     fn run(op: Op, amount: f32, notes: &[SpanNote]) -> Vec<SpanNote> {
@@ -970,6 +1133,85 @@ mod tests {
         assert_eq!(most(Place { period_end: true, ..Place::default() }), 'a', "answers end periods");
         assert_eq!(most(Place { repeat: true, ..Place::default() }), 'm', "repeats mutate");
         assert_eq!(most(Place { before_change: true, period_end: true, ..Place::default() }), 'x', "double time before a change");
+    }
+
+    fn run_at(op: Op, amount: f32, groove: f32, notes: &[SpanNote], drums: bool) -> Vec<SpanNote> {
+        let mut v = Vec::with_capacity(256);
+        v.extend_from_slice(notes);
+        let mut chain = OpChain::default();
+        chain.push(op);
+        apply(&chain, &mut v, &OpCtx { groove, drums, ..ctx(amount) });
+        v
+    }
+
+    #[test]
+    fn split_repeats_hits_by_the_groove_and_the_amount() {
+        let src = line();
+        // A little: one hit in 16ths over an 8th; in full: two over a beat.
+        let little = run_at(Op::Split, 0.0, 0.0, &src, false);
+        let full = run_at(Op::Split, 1.0, 0.0, &src, false);
+        assert_eq!(little.len(), src.len() + 1, "{:?}", ats(&little));
+        assert_eq!(full.len(), src.len() + 6, "{:?}", ats(&full));
+        assert!(full.iter().all(|n| n.at % STEP == 0), "straight 16ths at low Groove");
+        // The repeats keep the hit's key, shorter, softer.
+        let added: Vec<&SpanNote> = full.iter().filter(|n| n.ev.note_id >= ADDED_ID).collect();
+        assert!(added.iter().all(|n| n.ev.vel < 100 && n.ev.gate < STEP as u16));
+        for n in &added {
+            let hit = full.iter().filter(|m| m.ev.note_id < ADDED_ID && m.at < n.at).last().unwrap();
+            assert_eq!(n.ev.key, hit.ev.key);
+        }
+        // High Groove: triplets or dotted 16ths, not straight.
+        let mut funky = 0;
+        for seed in 0..20u32 {
+            let mut v = Vec::with_capacity(256);
+            v.extend_from_slice(&src);
+            let mut chain = OpChain::default();
+            chain.push(Op::Split);
+            apply(&chain, &mut v, &OpCtx { groove: 1.0, seed, ..ctx(1.0) });
+            funky += v.iter().any(|n| n.at % STEP != 0) as u32;
+        }
+        assert!(funky >= 15, "{funky} of 20 seeds split off the 16ths at full Groove");
+        // Drums: a 32nd roll that rises.
+        let roll = run_at(Op::Split, 1.0, 0.0, &kit(), true);
+        assert!(roll.len() > kit().len());
+        let added: Vec<&SpanNote> = roll.iter().filter(|n| n.ev.note_id >= ADDED_ID).collect();
+        assert!(added.iter().any(|n| n.at % STEP == STEP / 2), "32nds");
+        assert!(added.windows(2).any(|w| w[1].at > w[0].at && w[1].ev.vel > w[0].ev.vel), "the roll rises");
+    }
+
+    #[test]
+    fn the_groove_biases_the_rhythm_operators_and_melodic_picks_stay_melodic() {
+        let count = |groove: f32| {
+            let (mut straight, mut funky) = (0, 0);
+            for i in 0..2000u64 {
+                match seeded_rhythm(rng::derive(i, 9), groove, Place::default()) {
+                    Op::DoubleTime | Op::HalfTime => straight += 1,
+                    Op::Syncopate | Op::Dotted | Op::Triplets | Op::Rotation => funky += 1,
+                    op => assert!(op.is_rhythm(), "{op:?}"),
+                }
+            }
+            (straight, funky)
+        };
+        let (low, high) = (count(0.0), count(1.0));
+        assert!(low.0 > 5 * low.1.max(1) && high.1 > 5 * high.0.max(1), "low {low:?}, high {high:?}");
+        let mid = count(0.5);
+        assert!(mid.0 > 0 && mid.1 > 0, "a blend in the middle: {mid:?}");
+        for place in [Place::default(), Place { repeat: true, ..Place::default() }, Place { period_end: true, ..Place::default() }, Place { before_change: true, ..Place::default() }] {
+            for i in 0..400u64 {
+                let op = seeded_melodic(rng::derive(i, 4), place);
+                assert!(!op.is_rhythm() && op != Op::Seeded, "{op:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rhythm_operators_go_first() {
+        let mut c = OpChain::default();
+        for op in [Op::Retrograde, Op::Dotted, Op::Question, Op::Split] {
+            c.push(op);
+        }
+        assert_eq!(c.rhythm_first().to_string(), "dkrq");
+        assert_eq!(Op::from_char('k'), Some(Op::Split));
     }
 
     #[test]

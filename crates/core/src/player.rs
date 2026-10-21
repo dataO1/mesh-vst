@@ -319,7 +319,7 @@ impl Player {
         }
         if let Some(f) = follow {
             let seeds = f.spec.seeds.phrases.iter().chain([&f.spec.seeds.fill, &f.spec.seeds.second]).fold(0u64, |h, s| h.rotate_left(9) ^ *s as u64);
-            let bands = (f.spec.variation as u64) | (f.spec.shape as u64) << 8 | (f.spec.drums as u64) << 16;
+            let bands = (f.spec.variation as u64) | (f.spec.shape as u64) << 4 | (f.spec.contrast as u64) << 8 | (f.spec.density as u64) << 12 | (f.spec.groove as u64) << 16 | (f.spec.drums as u64) << 20;
             stamp = stamp.rotate_left(11) ^ f.bar ^ seeds.rotate_left(23) ^ (bands << 40) ^ ((f.relation as u8 as u64) << 48);
         }
         self.lane.focus = focus;
@@ -596,7 +596,7 @@ mod tests {
         // Long and short notes both.
         host.lane_mut().set_param("length", 0.8);
         host.lane_mut().set_param("stabs", 0.5);
-        host.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(2).spec(false, 0.5, 0.5, 0.5));
+        host.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(2).spec(false, 0.5, 0.5, 0.5, 0.5, 0.5));
         host.note_on(29, 1.0, 0.0);
         let mut f = bass_player(5);
         f.lane_mut().set_param("density", 0.8);
@@ -677,10 +677,10 @@ mod tests {
         let spb = 60.0 / bpm * SR as f64;
         let letters = |follow: Option<f32>| {
             let mut host = bass_player(3);
-            host.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(3).spec(false, 0.5, 0.5, 0.5));
+            host.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(3).spec(false, 0.5, 0.5, 0.5, 0.5, 0.5));
             host.note_on(29, 1.0, 0.0);
             let mut f = drum_player(9);
-            f.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(8).spec(true, 0.5, 0.5, 0.5));
+            f.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(8).spec(true, 0.5, 0.5, 0.5, 0.5, 0.5));
             f.note_on(29, 1.0, 0.0);
             let mut buf = vec![StereoSample::silence(); 256];
             let (mut pos, mut same, mut bars) = (0usize, 0, 0);

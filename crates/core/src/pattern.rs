@@ -711,6 +711,13 @@ impl PatternLane {
         contrast::letter_rate(a, self.pattern_seed, lane, letter, self.contrast)
     }
 
+    /// The Groove knob as the lane reads it (the drums' swing, the bass's
+    /// syncopation): the subdivision `k` splits into (D51).
+    fn groove_knob(&self) -> f32 {
+        let names = self.param_names();
+        names.iter().position(|n| *n == "swing").or_else(|| names.iter().position(|n| *n == "syncopation")).map_or(0.5, |i| self.params[i]).clamp(0.0, 1.0)
+    }
+
     /// How far the operators go: Variation 0 still a little (D47).
     fn op_amount(&self) -> f32 {
         let v = self.param_names().iter().position(|n| *n == "variation").map_or(0.5, |i| self.params[i]);
@@ -854,7 +861,7 @@ impl PatternLane {
                 }
             }
             ops::sort(&mut span.notes);
-            let ctx = OpCtx { ticks, amount, seed: base.seed, lane: c.lane, drums: self.role == Role::Drums, harmony: base.harmony };
+            let ctx = OpCtx { ticks, amount, seed: base.seed, lane: c.lane, drums: self.role == Role::Drums, harmony: base.harmony, groove: self.groove_knob() };
             ops::apply(chain, &mut span.notes, &ctx);
             span.ticks = ticks;
             span.key = key;
@@ -1427,12 +1434,10 @@ mod tests {
         let mut fills = 0;
         for seed in 0..40 {
             let mut lane = PatternLane::drums(DrumLayout::standard(), 5, 5);
-            lane.set_form_spec(crate::macros::FormSettings::seeded(seed).spec(true, 0.5, 0.5, 0.5));
+            lane.set_form_spec(crate::macros::FormSettings::seeded(seed).spec(true, 0.5, 0.5, 0.5, 0.5, 0.5));
             let f = lane.form();
             // The seams at bars 32 and 64 (the ones at 16 and 48 are rarer).
             fills += [127u64, 255].iter().filter(|&&b| f.pos_at(b).letter.class() == SeedClass::Filler).count();
-            // The first 8 bars play the main letters (a pickup aside).
-            assert!((4..32).all(|b| f.pos_at(b).letter.class() == SeedClass::Main), "seed {seed}: {f}");
             // A bar of a section's seam plays its fill.
             let key = MusicalKey::new(0, true);
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());

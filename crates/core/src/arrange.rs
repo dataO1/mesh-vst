@@ -73,8 +73,13 @@ pub struct FormSpec {
     pub seeds: FormSeeds,
     pub variation: u8,
     pub shape: u8,
-    /// The Contrast band: how often B's phrase is a step off A's (D49).
+    /// The Contrast band: how often B's phrase is a step off A's (D49),
+    /// and how far the letters' rhythm operators part (D51).
     pub contrast: u8,
+    /// The Density and Groove bands: how many rhythm operators the slots
+    /// get, and which (D51).
+    pub density: u8,
+    pub groove: u8,
     pub drums: bool,
 }
 
@@ -351,17 +356,93 @@ fn tokens(unit: &str) -> ([Tok; MAX_UNIT], usize) {
     (out, n)
 }
 
+// MUSICAL: tune by ear (user, 2026-10-21: Density sets how many rhythm
+// operators the slots get, from almost none to many, the Groove biases them
+// straight .. funky; at low Contrast every letter makes the same rhythmic
+// choices, at high Contrast each moves away from A's lean and count in its
+// own seeded direction, B the most: the opposite lean in full). The chance a
+// slot plays a rhythm operator and a plain repeat takes one, at Density 0
+// and 1; what the second pass adds; how far B's lean goes past the middle
+// at least (its opposite side), how far B's count and the fills' lean and
+// count move at full Contrast.
+const RHYTHM_SLOT: (f32, f32) = (0.05, 0.85);
+const RHYTHM_PLAIN: (f32, f32) = (0.0, 0.3);
+const SECOND_RHYTHM: f32 = 0.15;
+/// The chance a plan's (or a recipe's) own rhythm mark on a main letter
+/// stays, at Density 0 and 1: low Density calms the plan's character too.
+const FIXED_RHYTHM_KEEP: (f32, f32) = (0.3, 1.0);
+const B_LEAN_MIN: f32 = 0.4;
+const B_COUNT: f32 = 0.4;
+const OTHER_LEAN: f32 = 0.3;
+const OTHER_COUNT: f32 = 0.3;
+
+/// Each letter's rhythm operators (D51): the chance a slot plays one, a
+/// plain repeat takes one, and the Groove lean of the pick, per letter A..D.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Rhythm {
+    slot: [f32; 4],
+    plain: [f32; 4],
+    lean: [f32; 4],
+    keep: [f32; 4],
+}
+
+impl Rhythm {
+    fn of(spec: &FormSpec, lane: u8) -> Self {
+        let (d, g, c) = (share(spec.density), share(spec.groove), share(spec.contrast));
+        let mut out = Self { slot: [0.0; 4], plain: [0.0; 4], lean: [0.0; 4], keep: [0.0; 4] };
+        for l in Letter::ALL {
+            let (count, lean) = letter_lean(l, d, g, c, spec.seeds.fill, lane);
+            let i = l.index() as usize;
+            out.slot[i] = lerp(RHYTHM_SLOT, count);
+            out.plain[i] = lerp(RHYTHM_PLAIN, count);
+            out.lean[i] = lean;
+            out.keep[i] = lerp(FIXED_RHYTHM_KEEP, count);
+        }
+        out
+    }
+
+    /// The second pass's: a little more of them.
+    fn second(&self) -> Self {
+        Self { slot: self.slot.map(|x| (x + SECOND_RHYTHM).min(1.0)), plain: self.plain.map(|x| (x + SECOND_RHYTHM / 2.0).min(1.0)), ..*self }
+    }
+}
+
+/// Letter `l`'s Density and Groove for its rhythm operators from the
+/// knobs' `d` and `g` at Contrast `c` (all 0..1): A plays the knobs; at
+/// Contrast 0 every letter does; towards 1 B leans to the other side of the
+/// Groove and moves its count away, C and D move both in seeded directions,
+/// less far.
+pub fn letter_lean(l: Letter, d: f32, g: f32, c: f32, seed: u32, lane: u8) -> (f32, f32) {
+    let dir = |k: u8| if rng::chance(rng::hash(seed, lane, l.index(), k, S_LEAN), 0.5) { 1.0 } else { -1.0 };
+    let away = |x: f32, k: u8| if x > 0.5 { -1.0 } else if x < 0.5 { 1.0 } else { dir(k) };
+    match l {
+        Letter::A => (d, g),
+        Letter::B => {
+            let side = away(g, 0);
+            let opposite = 0.5 + side * (g - 0.5).abs().max(B_LEAN_MIN);
+            ((d + c * B_COUNT * away(d, 1)).clamp(0.0, 1.0), (g + (opposite - g) * c).clamp(0.0, 1.0))
+        }
+        _ => ((d + c * OTHER_COUNT * dir(1)).clamp(0.0, 1.0), (g + c * OTHER_LEAN * dir(0)).clamp(0.0, 1.0)),
+    }
+}
+
 /// How a pass is built: the first as the plan says, the second through its
 /// recipe ([`Mods`] fields the recipe sets).
 #[derive(Debug, Clone, Copy, Default)]
 struct Mods {
-    /// The first pass: its first 8 bars play A unchanged (music theory §5).
-    first: bool,
     /// Seed of the slots and the extra fills.
     salt: u32,
-    /// Share of slots filled, chance of an extra fill.
+    /// Share of slots a melodic operator fills (Variation), chance of an
+    /// extra fill.
     slot: f32,
     extra: f32,
+    /// Per letter (A..D): the chance a slot plays a rhythm operator and a
+    /// plain repeat takes one (Density), and the Groove lean of the pick
+    /// (D51).
+    rhythm: [f32; 4],
+    plain: [f32; 4],
+    lean: [f32; 4],
+    keep: [f32; 4],
     /// Chance a C or D seam draws its kind ([`SEAM_KINDS`]), and a minor
     /// seam plays at all.
     seam: f32,
@@ -430,8 +511,8 @@ fn pick<T: Copy>(h: u64, from: &[T]) -> T {
 
 impl Mods {
     /// No recipe.
-    fn plain(first: bool, salt: u32, slot: f32, extra: f32, seam: f32, minor: f32) -> Self {
-        Self { first, salt, slot, extra, seam, minor, recut_from: SECTIONS, swap_from: SECTIONS, answer_from: SECTIONS, ..Self::default() }
+    fn plain(salt: u32, slot: f32, extra: f32, seam: f32, minor: f32, rhythm: &Rhythm) -> Self {
+        Self { salt, slot, extra, seam, minor, rhythm: rhythm.slot, plain: rhythm.plain, lean: rhythm.lean, keep: rhythm.keep, recut_from: SECTIONS, swap_from: SECTIONS, answer_from: SECTIONS, ..Self::default() }
     }
 
     /// Apply `recipe` at extent `e` (0..1), seeded by `h`.
@@ -502,6 +583,8 @@ pub struct FormBuilder {
     attempts: u32,
     broken: u32,
     repetition: f32,
+    /// The Variation share of the last spec (the repetition rule's ceiling).
+    variation: f32,
 }
 
 impl Default for FormBuilder {
@@ -523,6 +606,7 @@ impl FormBuilder {
             attempts: 0,
             broken: 0,
             repetition: 0.0,
+            variation: 0.5,
         }
     }
 
@@ -576,6 +660,7 @@ impl FormBuilder {
 
     fn attempt(&mut self, spec: &FormSpec, attempt: u32) {
         self.attempts = attempt;
+        self.variation = share(spec.variation);
         let lane = spec.drums as u8;
         let fill = spec.seeds.fill;
         let salt = |seed: u32| if attempt == 0 { seed } else { rng::hash(seed, lane, attempt as u8, 0, S_ATTEMPT) as u32 };
@@ -603,12 +688,13 @@ impl FormBuilder {
         let (slot, extra) = (lerp(SLOT_FILL, v), lerp(EXTRA_FILL, v));
         let seam = lerp(SEAM_DRAW, v);
         let minor = lerp(MINOR_SEAM, v);
-        let first = Mods::plain(true, salt(fill), slot, extra, seam, minor);
+        let rhythm = Rhythm::of(spec, lane);
+        let first = Mods::plain(salt(fill), slot, extra, seam, minor, &rhythm);
         let head = rng::chance(rng::hash(fill, lane, 0, 0, S_HEAD), HEAD_CHANCE).then_some(plan.head).and_then(tok);
         self.cycles[0] = build_pass(&mut self.first, plan, &units, &lengths, head, &first, lane);
         // The second pass: one recipe, a second one further up Variation.
         let sec = salt(spec.seeds.second);
-        let mut second = Mods::plain(false, sec, slot + SECOND_SLOT, extra + SECOND_EXTRA, (seam + SECOND_SEAM).min(1.0), (minor + SECOND_SEAM).min(1.0));
+        let mut second = Mods::plain(sec, slot + SECOND_SLOT, extra + SECOND_EXTRA, (seam + SECOND_SEAM).min(1.0), (minor + SECOND_SEAM).min(1.0), &rhythm.second());
         let e = lerp(SECOND_EXTENT, v);
         let weights = RECIPES.map(|r| r.1);
         let a = rng::weighted_pick(rng::hash(sec, lane, 0, 0, S_RECIPE), &weights).unwrap_or(0);
@@ -639,13 +725,6 @@ impl FormBuilder {
         if !grid(&self.first) || !grid(&self.second) {
             broken |= Rule::GRID;
         }
-        // The first 8 bars: A (and its answer) unchanged, no fill but the
-        // pickup.
-        let opening = (HEAD_BEATS as usize..2 * CYCLE_BEATS as usize).all(|i| !a[i].filler)
-            && (self.cycles[0][0] != CYCLE_BEATS || (HEAD_BEATS as usize..CYCLE_BEATS as usize).all(|i| a[i] == a[i + CYCLE_BEATS as usize]));
-        if !opening {
-            broken |= Rule::OPENING;
-        }
         if changes(&a, &self.cycles[0]) > 1 || changes(&b, &self.cycles[1]) > 1 {
             broken |= Rule::CHANGES;
         }
@@ -653,7 +732,7 @@ impl FormBuilder {
 
 
         self.repetition = rep;
-        if !(REPETITION.0..=REPETITION.1).contains(&rep) {
+        if !(REPETITION.0..=lerp(REPETITION_CEILING, self.variation)).contains(&rep) {
             broken |= Rule::REPETITION;
         }
         if busy(&b) <= busy(&a) {
@@ -675,8 +754,6 @@ pub struct Rule;
 impl Rule {
     /// Every pass 64 bars, no segment across a 16-bar seam.
     pub const GRID: u32 = 1;
-    /// The first pass's first 8 bars repeat unchanged (music theory §5).
-    pub const OPENING: u32 = 2;
     /// Inside a section a cycle changes at most once against the one before.
     pub const CHANGES: u32 = 4;
     /// The 4-bar repetition sits in [`REPETITION`] (music theory §6.3).
@@ -689,10 +766,14 @@ impl Rule {
 // 4-bar blocks 0.33 .. 0.63 in pitch; the structure repeats more than the
 // pitches, which follow the chords). The range of the structural
 // repetition ([`repetition`]) a first pass keeps: it catches the forms that
-// never change and the ones that never repeat. Attempts before the fewest
-// broken rules win.
-const REPETITION: (f32, f32) = (0.1, 0.95);
-const MAX_ATTEMPTS: u32 = 8;
+// never change and the ones that never repeat (D51: dense rhythm slots in
+// the plans of 16-bar cycles, the cells, sit lower; 0.05 still catches the
+// ones that never repeat). Attempts before the fewest broken rules win.
+const REPETITION: (f32, f32) = (0.05, 0.95);
+/// The ceiling at Variation 0 and 1: at Variation 0 a form may repeat
+/// almost unchanged (D51: dense rhythm slots copied cycle to cycle).
+const REPETITION_CEILING: (f32, f32) = (0.99, REPETITION.1);
+const MAX_ATTEMPTS: u32 = 12;
 
 /// One beat of a pass as the checks compare it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -899,12 +980,11 @@ fn build_pass(out: &mut Vec<Segment>, plan: &Plan, units: &[usize; SECTIONS], le
         } else {
             lay(out, toks, &lengths[s], base, base + SECTION_BEATS, cycle);
         }
-        // Extra fills at the 4-bar seams inside the section (not in the
-        // first pass's first 8 bars).
+        // Extra fills at the 4-bar seams inside the section.
         for w in 1..WINDOWS as u16 {
             let at = base + w * CYCLE_BEATS;
             let h = rng::hash(m.salt, lane, s as u8, w as u8, S_EXTRA);
-            if (m.first && at <= 2 * CYCLE_BEATS) || !rng::chance(h, m.extra) {
+            if !rng::chance(h, m.extra) {
                 continue;
             }
             let letter = if rng::chance(rng::derive(h, 1), EXTRA_D) { Letter::D } else { Letter::C };
@@ -982,10 +1062,12 @@ fn merge(out: &mut Vec<Segment>) {
     out.truncate(kept);
 }
 
-/// Fill the slots and keep the rules (music theory §5): a slot plays an
-/// operator by its place (or none); inside a section each cycle repeats the
-/// one before but for at most one change; the first pass's first 8 bars
-/// repeat unchanged.
+/// Fill the slots and keep the rules (music theory §5): a slot plays a
+/// rhythm operator by the letter's Density and Groove lean, else at
+/// Variation's chance a melodic one by its place (or none); a plain repeat
+/// may take a rhythm operator too; rhythm operators go first in every chain
+/// (D51); inside a section each cycle repeats the one before but for at most
+/// one change.
 fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
     let mut starts = [0u16; MAX_PASS_SEGMENTS + 8];
     let mut at = 0u16;
@@ -995,9 +1077,6 @@ fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
     }
     let n = out.len();
     for i in 0..n {
-        if !out[i].ops.contains(Op::Seeded) {
-            continue;
-        }
         let start = starts[i];
         let end = start + out[i].beats;
         let next = out.get(i + 1).copied();
@@ -1006,22 +1085,39 @@ fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
             repeat: i > 0 && out[i - 1].letter == out[i].letter,
             before_change: end % SECTION_BEATS == 0 || next.is_some_and(|x| x.letter.class() != out[i].letter.class()),
         };
+        let l = out[i].letter.index() as usize;
+        // The rhythm draws go by the place in the section, whatever the
+        // letter: at one lean and count the letters choose alike (D51).
+        let hr = rng::hash(m.salt, lane, (start / SECTION_BEATS) as u8, (start % SECTION_BEATS) as u8, S_RHYTHM);
+        let rhythm = |h: u64| ops::seeded_rhythm(h, m.lean[l], place);
         let h = rng::hash(m.salt, lane, (start / BEATS_PER_BAR) as u8, (start % 256) as u8, S_SLOT);
-        let filled = !(m.first && start < 2 * CYCLE_BEATS) && rng::chance(h, m.slot);
-        let push = rng::chance(rng::derive(h, 2), m.escalate);
         let mut chain = OpChain::default();
-        for op in out[i].ops.iter() {
-            match op {
-                Op::Seeded if filled => {
-                    chain.push(if push { pick(rng::derive(h, 3), &PUSHES) } else { ops::seeded(rng::derive(h, 1), place) });
+        if out[i].ops.is_empty() {
+            // A plain repeat of a main letter, drawn by its place in the
+            // cycle: every cycle of the section plays it alike.
+            let hp = rng::hash(m.salt, lane, (start / SECTION_BEATS) as u8, (start % CYCLE_BEATS) as u8, S_RHYTHM ^ 1);
+            if out[i].letter.class() == SeedClass::Main && rng::unit_f32(hp) < m.plain[l] {
+                chain.push(rhythm(rng::derive(hp, 1)));
+            }
+        } else {
+            let main = out[i].letter.class() == SeedClass::Main;
+            for (k, op) in out[i].ops.iter().enumerate() {
+                if op != Op::Seeded {
+                    if !(main && op.is_rhythm()) || rng::unit_f32(rng::derive(hr, 32 + k as u32)) < m.keep[l] {
+                        chain.push(op);
+                    }
+                    continue;
                 }
-                Op::Seeded => {}
-                op => {
-                    chain.push(op);
+                let hk = rng::derive(hr, 16 + k as u32);
+                if rng::unit_f32(hk) < m.rhythm[l] {
+                    chain.push(rhythm(rng::derive(hk, 1)));
+                } else if rng::chance(rng::derive(h, k as u32), m.slot) {
+                    let push = rng::chance(rng::derive(h, 2 + 4 * k as u32), m.escalate);
+                    chain.push(if push { pick(rng::derive(h, 3 + 4 * k as u32), &PUSHES) } else { ops::seeded_melodic(rng::derive(h, 1 + 4 * k as u32), place) });
                 }
             }
         }
-        out[i].ops = chain;
+        out[i].ops = chain.rhythm_first();
     }
     // One change per cycle against the one before it, in the section.
     let mut changed = [false; SECTIONS * WINDOWS];
@@ -1033,13 +1129,16 @@ fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
         if seg.letter.class() == SeedClass::Filler || w + 1 == WINDOWS || start % SECTION_BEATS < cycle {
             continue;
         }
-        let Some(j) = (0..i).rev().find(|&j| starts[j] + cycle == start) else { continue };
+        // The segment of its letter one cycle before (under its beats, when a
+        // fill or the pickup moved the starts).
+        let back = start - cycle;
+        let Some(j) = (0..i).find(|&j| out[j].letter == seg.letter && starts[j] < back + seg.beats && back < starts[j] + out[j].beats) else { continue };
         let prev = out[j];
-        if (prev.letter, prev.skip) != (seg.letter, seg.skip) || (prev.ops, prev.prime, prev.swap) == (seg.ops, seg.prime, seg.swap) {
+        if (prev.ops, prev.prime, prev.swap) == (seg.ops, seg.prime, seg.swap) {
             continue;
         }
         let k = s * WINDOWS + w;
-        if changed[k] || (m.first && start < 2 * CYCLE_BEATS) {
+        if changed[k] {
             (out[i].ops, out[i].prime, out[i].swap) = (prev.ops, prev.prime, prev.swap);
         } else {
             changed[k] = true;
@@ -1188,6 +1287,8 @@ const S_ATTEMPT: u32 = 0xF8A;
 const S_FOLLOW: u32 = 0xF8B;
 const S_B_STEP: u32 = 0xF8C;
 const S_SEAM: u32 = 0xF8D;
+const S_RHYTHM: u32 = 0xF8E;
+const S_LEAN: u32 = 0xF8F;
 
 
 
@@ -1208,7 +1309,7 @@ mod tests {
     }
 
     fn spec(seed: u32, variation: u8, shape: u8) -> FormSpec {
-        FormSpec { seeds: FormSeeds::new(seed, seed.wrapping_mul(7).wrapping_add(1), seed ^ 0x55), variation, shape, contrast: 2, drums: false }
+        FormSpec { seeds: FormSeeds::new(seed, seed.wrapping_mul(7).wrapping_add(1), seed ^ 0x55), variation, shape, contrast: 2, density: 2, groove: 2, drums: false }
     }
 
     #[test]
@@ -1370,7 +1471,8 @@ mod tests {
             let mut n = 0;
             for seed in 0..200 {
                 let f = built(&spec(seed, variation, 2));
-                n += f.pattern().iter().chain(f.second_pass()).filter(|s| !s.ops.is_empty() || s.letter.class() == SeedClass::Filler).count();
+                // The melodic variants and the fills (Density sets the rhythm ones, D51).
+                n += f.pattern().iter().chain(f.second_pass()).filter(|s| s.ops.iter().any(|o| !o.is_rhythm()) || s.letter.class() == SeedClass::Filler).count();
             }
             n
         };
@@ -1378,20 +1480,112 @@ mod tests {
         assert!(low > 0 && high as f32 > 1.15 * low as f32, "variants and fills: {low} at Variation 0, {high} at 1");
     }
 
-    #[test]
-    fn the_first_eight_bars_repeat_and_cycles_change_once() {
-        for seed in 0..300 {
-            let (f, cycles) = built_with(&spec(seed, 4, (seed % 5) as u8));
-            let at = |beat: u16| f.pos_at(beat as u64);
-            // Bars 1-4 and 5-8 play the same (a pickup aside) when the unit
-            // is a 4-bar cycle.
-            for b in (4..16u16).filter(|_| cycles[0][0] == CYCLE_BEATS) {
-
-                let (x, y) = (at(b), at(b + 16));
-                assert_eq!((x.letter, x.ops, x.phrase), (y.letter, y.ops, y.phrase), "seed {seed} beat {b}: {f}");
-            }
-            assert!((0..32u64).all(|b| f.pos_at(b).letter.class() == SeedClass::Main || b < HEAD_BEATS as u64), "seed {seed}: {f}");
+    /// The rhythm operators of the first pass of `spec`'s form, per letter.
+    fn rhythm_ops(spec: &FormSpec) -> [usize; 4] {
+        let mut n = [0usize; 4];
+        for s in built(spec).pattern() {
+            n[s.letter.index() as usize] += s.beats as usize * s.ops.iter().filter(|o| o.is_rhythm()).count();
         }
+        n
+    }
+
+    fn rhythm_spec(seed: u32, density: u8, groove: u8, contrast: u8, variation: u8) -> FormSpec {
+        FormSpec { density, groove, contrast, ..spec(seed, variation, 2) }
+    }
+
+    #[test]
+    fn density_sets_how_many_rhythm_operators_and_variation_does_not() {
+        let total = |density: u8, variation: u8| (0..200).map(|seed| rhythm_ops(&rhythm_spec(seed, density, 2, 0, variation)).iter().sum::<usize>()).sum::<usize>();
+        let by_density: Vec<usize> = (0..BANDS).map(|d| total(d, 2)).collect();
+        assert!(by_density.windows(2).all(|w| w[1] > w[0]), "{by_density:?}");
+        // (The plans' own marks keep some at Density 0.)
+        assert!(by_density[4] > 5 * by_density[0].max(1), "few .. many: {by_density:?}");
+        let (low, high) = (total(3, 0), total(3, BANDS - 1));
+        let diff = low.abs_diff(high) as f32 / low.max(high) as f32;
+        assert!(diff < 0.15, "Variation leaves the count: {low} vs {high}");
+    }
+
+    #[test]
+    fn the_groove_biases_the_letters_rhythm_operators() {
+        let mix = |groove: u8| {
+            let (mut straight, mut funky) = (0usize, 0usize);
+            for seed in 0..200 {
+                for s in built(&rhythm_spec(seed, 4, groove, 0, 2)).pattern() {
+                    for o in s.ops.iter() {
+                        match o {
+                            Op::DoubleTime | Op::HalfTime => straight += 1,
+                            Op::Syncopate | Op::Dotted | Op::Triplets | Op::Rotation => funky += 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            (straight, funky)
+        };
+        let (low, high) = (mix(0), mix(BANDS - 1));
+        assert!(low.0 > 2 * low.1 && high.1 > 2 * high.0, "low Groove {low:?}, high {high:?}");
+    }
+
+    #[test]
+    fn rhythm_operators_come_first_and_from_bar_one() {
+        let mut opening = 0;
+        for seed in 0..200 {
+            let f = built(&rhythm_spec(seed, 4, 2, 2, 4));
+            for pass in [f.pattern(), f.second_pass()] {
+                for s in pass {
+                    let ops: Vec<Op> = s.ops.iter().collect();
+                    let first_melodic = ops.iter().position(|o| !o.is_rhythm()).unwrap_or(ops.len());
+                    assert!(ops[first_melodic..].iter().all(|o| !o.is_rhythm()), "seed {seed}: {} rhythm first", s.ops);
+                }
+            }
+            // No opening rule: the first 8 bars may carry operators.
+            opening += (0..32u64).any(|b| !f.pos_at(b).ops.is_empty()) as usize;
+        }
+        assert!(opening > 100, "{opening} of 200 forms vary their first 8 bars");
+    }
+
+    /// The share of rhythm picks per letter that are funky, and the
+    /// rhythm-op count per letter, over many seeds.
+    fn letter_rhythm(contrast: u8) -> ([f32; 4], [usize; 4]) {
+        let (mut funky, mut all, mut count) = ([0usize; 4], [0usize; 4], [0usize; 4]);
+        for seed in 0..300 {
+            let f = built(&rhythm_spec(seed, 4, 0, contrast, 2));
+            for s in f.pattern() {
+                let l = s.letter.index() as usize;
+                for o in s.ops.iter().filter(|o| o.is_rhythm()) {
+                    all[l] += 1;
+                    funky[l] += matches!(o, Op::Syncopate | Op::Dotted | Op::Triplets | Op::Rotation) as usize;
+                }
+                count[l] += s.beats as usize * s.ops.iter().filter(|o| o.is_rhythm()).count();
+            }
+        }
+        (std::array::from_fn(|l| funky[l] as f32 / all[l].max(1) as f32), count)
+    }
+
+    #[test]
+    fn contrast_parts_the_letters_rhythm_and_b_leans_opposite() {
+        // The leans themselves: equal at Contrast 0, apart towards 1, B the
+        // other side of the Groove in full.
+        for seed in 0..50u32 {
+            for (d, g) in [(0.2, 0.2), (0.5, 0.5), (0.9, 0.75)] {
+                for l in Letter::ALL {
+                    assert_eq!(letter_lean(l, d, g, 0.0, seed, 0), (d, g));
+                }
+                let (_, b) = letter_lean(Letter::B, d, g, 1.0, seed, 0);
+                assert!((b - 0.5) * (g - 0.5) <= 0.0 && (b - 0.5).abs() >= B_LEAN_MIN - 1e-6, "B leans opposite: {g} -> {b}");
+                let apart = |c: f32| Letter::ALL.iter().map(|&l| {
+                    let (x, y) = letter_lean(l, d, g, c, seed, 0);
+                    (x - d).abs() + (y - g).abs()
+                }).sum::<f32>();
+                assert!(apart(0.5) > 0.0 && apart(1.0) > apart(0.5));
+            }
+        }
+        // In built forms: at a straight Groove B turns funky with Contrast.
+        let (at0, _) = letter_rhythm(0);
+        let (at4, _) = letter_rhythm(BANDS - 1);
+        let (a, b) = (Letter::A.index() as usize, Letter::B.index() as usize);
+        assert!((at0[a] - at0[b]).abs() < 0.15, "Contrast 0: A and B pick alike: {at0:?}");
+        assert!(at4[b] > at4[a] + 0.3, "full Contrast: B leans funky against a straight A: {at4:?}");
     }
 
     /// Beats where the two passes of `f` differ (letter, marks or phrase).
@@ -1434,7 +1628,7 @@ mod tests {
             let s = FormSpec { drums: seed % 3 == 0, ..spec(seed, (seed % 5) as u8, (seed / 5 % 5) as u8) };
             b.build(&s, &mut f);
             let (rules, attempt) = b.broken();
-            assert_eq!(rules & (Rule::GRID | Rule::OPENING | Rule::CHANGES), 0, "seed {seed}: by construction: {f}");
+            assert_eq!(rules & (Rule::GRID | Rule::CHANGES), 0, "seed {seed}: by construction: {f}");
             broken += (rules != 0) as usize;
             again += (attempt > 0) as usize;
             reps.push(b.repetition());

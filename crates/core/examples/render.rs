@@ -84,7 +84,7 @@ fn main() {
         match s.parse::<u32>() {
             Ok(seed) => {
                 let drums = player.lane().role() == mesh_vst_core::role::Role::Drums;
-                player.lane_mut().set_form_spec(FormSettings::seeded(seed).spec(drums, 0.5, 0.5, 0.5));
+                player.lane_mut().set_form_spec(FormSettings::seeded(seed).spec(drums, 0.5, 0.5, 0.5, 0.5, 0.5));
             }
             Err(_) => player.lane_mut().set_form(Form::parse(&s).unwrap_or_else(|e| fail(&format!("form: {e:?}")))),
         }

@@ -237,9 +237,9 @@ impl FormSettings {
         self.pins[l.index() as usize].unwrap_or_else(|| crate::arrange::phrase_seed(self.phrase_seed, l))
     }
 
-    /// The form spec for a lane at knob values `variation`, `shape` and
-    /// `contrast`.
-    pub fn spec(&self, drums: bool, variation: f32, shape: f32, contrast: f32) -> crate::arrange::FormSpec {
+    /// The form spec for a lane at knob values `variation`, `shape`,
+    /// `contrast`, `density` and `groove`.
+    pub fn spec(&self, drums: bool, variation: f32, shape: f32, contrast: f32, density: f32, groove: f32) -> crate::arrange::FormSpec {
         use crate::arrange::{band, FormSeeds, FormSpec};
         let phrases = crate::form::Letter::ALL.map(|l| self.phrase_of(l));
         FormSpec {
@@ -247,6 +247,8 @@ impl FormSettings {
             variation: band(variation),
             shape: band(shape),
             contrast: band(contrast),
+            density: band(density),
+            groove: band(groove),
             drums,
         }
     }
@@ -262,9 +264,10 @@ pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettin
     lane.sound_seed = s.sound_seed;
     lane.rate = s.rate;
     lane.mode = s.mode;
-    // The form, built for the Variation and Shape bands (D48).
+    // The form, built for the Variation, Shape, Contrast, Density and
+    // Groove bands (D48, D51).
     match s.form {
-        Some(f) => lane.set_form_spec(f.spec(role == Role::Drums, resolved.variation, resolved.shape, s.contrast)),
+        Some(f) => lane.set_form_spec(f.spec(role == Role::Drums, resolved.variation, resolved.shape, s.contrast, resolved.density, resolved.swing)),
         None => lane.clear_form(),
     }
     // Accent strength: the sound seed's, scaled by Variation.
