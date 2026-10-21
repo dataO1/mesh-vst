@@ -1341,7 +1341,8 @@ mod tests {
             let mut lane = PatternLane::drums(DrumLayout::standard(), 5, 5);
             lane.set_form_spec(crate::macros::FormSettings::seeded(seed).spec(true, 0.5, 0.5, 0.5));
             let f = lane.form();
-            fills += [63u64, 127, 191, 255].iter().filter(|&&b| f.pos_at(b).letter.class() == SeedClass::Filler).count();
+            // The seams at bars 32 and 64 (the ones at 16 and 48 are rarer).
+            fills += [127u64, 255].iter().filter(|&&b| f.pos_at(b).letter.class() == SeedClass::Filler).count();
             // The first 8 bars play the main letters (a pickup aside).
             assert!((4..32).all(|b| f.pos_at(b).letter.class() == SeedClass::Main), "seed {seed}: {f}");
             // A bar of a section's seam plays its fill.
@@ -1350,7 +1351,7 @@ mod tests {
             lane.render(15, key, &mut out, &mut scratch);
             assert!(!out.events.is_empty());
         }
-        assert!(fills > 120, "{fills} of 160 seams end on a fill");
+        assert!(fills > 60, "{fills} of 80 seams at bars 32 and 64 end on a fill");
     }
 
 

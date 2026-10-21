@@ -289,6 +289,8 @@ drive external effects.
     `Aq Ba`) and its seam fill. A C or D seam may draw its kind from its place's pool instead
     (`C* Cx Ce Cd ...` at bars 16 to 48, `D* Dx D*x ...` at 64), at 35 % .. 80 % over Variation
     and more often in the second pass; A and B seams and empty ones keep the plan's character.
+    The seams at bars 16 and 48 are minor: a fill plays there at 20 % .. 50 % over Variation and
+    lasts at most 2 beats; at 32 up to 4 beats, at 64 up to 8, both always.
     A unit repeats over **16-beat cycles** (a unit longer than 16
     beats takes a cycle of 32 or 64), each cycle starting it again, the last phrase clipped, so
     unequal A and B lengths still fill a cycle; a seam fill pads what a short unit leaves of a

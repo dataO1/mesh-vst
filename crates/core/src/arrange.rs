@@ -269,9 +269,18 @@ const EXTRA_FILL: (f32, f32) = (0.04, 0.3);
 /// Chance the form opens with its plan's pickup, and its longest length.
 const HEAD_CHANCE: f32 = 0.6;
 const HEAD_BEATS: u8 = 4;
-/// Longest extra fill, and a seam's (beats).
+/// Longest extra fill (beats).
 const EXTRA_BEATS: u8 = 4;
-const SEAM_BEATS: u8 = 8;
+// MUSICAL: tune by ear (user, 2026-10-21: the fills at bars 16 and 48 much
+// rarer and shorter than at 32 and 64).
+/// Longest seam fill per section end (bars 16, 32, 48, 64; beats).
+const SEAM_BEATS: [u8; SECTIONS] = [2, 4, 2, 8];
+/// Chance the minor seams (bars 16 and 48) play their fill, at Variation 0
+/// and 1; the seams at 32 and 64 always do.
+const MINOR_SEAM: (f32, f32) = (0.2, 0.5);
+const fn minor_seam(s: usize) -> bool {
+    s % 2 == 0
+}
 /// Chance an extra fill is D (else C).
 const EXTRA_D: f32 = 0.3;
 
@@ -350,8 +359,10 @@ struct Mods {
     /// Share of slots filled, chance of an extra fill.
     slot: f32,
     extra: f32,
-    /// Chance a C or D seam draws its kind ([`SEAM_KINDS`]).
+    /// Chance a C or D seam draws its kind ([`SEAM_KINDS`]), and a minor
+    /// seam plays at all.
     seam: f32,
+    minor: f32,
     /// The second pass's recipe ([`Recipe`]): from section `recut_from` on
     /// A and B play these re-cuts on top; from `swap_from` A and B trade
     /// places; from `answer_from` B plays `answer` on top; a filled slot
@@ -416,8 +427,8 @@ fn pick<T: Copy>(h: u64, from: &[T]) -> T {
 
 impl Mods {
     /// No recipe.
-    fn plain(first: bool, salt: u32, slot: f32, extra: f32, seam: f32) -> Self {
-        Self { first, salt, slot, extra, seam, recut_from: SECTIONS, swap_from: SECTIONS, answer_from: SECTIONS, ..Self::default() }
+    fn plain(first: bool, salt: u32, slot: f32, extra: f32, seam: f32, minor: f32) -> Self {
+        Self { first, salt, slot, extra, seam, minor, recut_from: SECTIONS, swap_from: SECTIONS, answer_from: SECTIONS, ..Self::default() }
     }
 
     /// Apply `recipe` at extent `e` (0..1), seeded by `h`.
@@ -588,12 +599,13 @@ impl FormBuilder {
         let v = share(spec.variation);
         let (slot, extra) = (lerp(SLOT_FILL, v), lerp(EXTRA_FILL, v));
         let seam = lerp(SEAM_DRAW, v);
-        let first = Mods::plain(true, salt(fill), slot, extra, seam);
+        let minor = lerp(MINOR_SEAM, v);
+        let first = Mods::plain(true, salt(fill), slot, extra, seam, minor);
         let head = rng::chance(rng::hash(fill, lane, 0, 0, S_HEAD), HEAD_CHANCE).then_some(plan.head).and_then(tok);
         self.cycles[0] = build_pass(&mut self.first, plan, &units, &lengths, head, &first, lane);
         // The second pass: one recipe, a second one further up Variation.
         let sec = salt(spec.seeds.second);
-        let mut second = Mods::plain(false, sec, slot + SECOND_SLOT, extra + SECOND_EXTRA, (seam + SECOND_SEAM).min(1.0));
+        let mut second = Mods::plain(false, sec, slot + SECOND_SLOT, extra + SECOND_EXTRA, (seam + SECOND_SEAM).min(1.0), (minor + SECOND_SEAM).min(1.0));
         let e = lerp(SECOND_EXTENT, v);
         let weights = RECIPES.map(|r| r.1);
         let a = rng::weighted_pick(rng::hash(sec, lane, 0, 0, S_RECIPE), &weights).unwrap_or(0);
@@ -901,8 +913,9 @@ fn build_pass(out: &mut Vec<Segment>, plan: &Plan, units: &[usize; SECTIONS], le
         // short, else it takes the section's last beats.
         if let Some(t) = seam_tok(sect.seam, s, m, lane) {
             let left = if sum < cycle { cycle % sum } else { 0 };
-            let own = lengths[s][t.letter.index() as usize].beats.min(SEAM_BEATS) as u16;
-            let beats = if (1..=SEAM_BEATS as u16).contains(&left) { left } else { own };
+            let most = SEAM_BEATS[s] as u16;
+            let own = (lengths[s][t.letter.index() as usize].beats as u16).min(most);
+            let beats = if (1..=most).contains(&left) { left } else { own };
             overwrite(out, base + SECTION_BEATS - beats, segment(&t, &lengths[s], beats, 0));
         }
     }
@@ -932,6 +945,9 @@ fn build_pass(out: &mut Vec<Segment>, plan: &Plan, units: &[usize; SECTIONS], le
 fn seam_tok(plan_seam: &str, s: usize, m: &Mods, lane: u8) -> Option<Tok> {
     let t = tok(plan_seam)?;
     let h = rng::hash(m.salt, lane, s as u8, 0, S_SEAM);
+    if t.letter.class() == SeedClass::Filler && minor_seam(s) && !rng::chance(rng::derive(h, 2), m.minor) {
+        return None;
+    }
     if t.letter.class() != SeedClass::Filler || !rng::chance(h, m.seam) {
         return Some(t);
     }
@@ -1319,8 +1335,29 @@ mod tests {
                 }
             }
         }
-        assert!(kinds.len() >= 5, "the first seam takes several kinds: {kinds:?}");
+        assert!(kinds.len() >= 4, "the first seam takes several kinds: {kinds:?}");
         assert!(last_d.0 * 10 >= last_d.1 * 9, "the bigger change at 64 stays D: {last_d:?}");
+    }
+
+    #[test]
+    fn seams_at_16_and_48_are_rarer_and_shorter_than_at_32_and_64() {
+        // Section-end fills and their beats, minor (16, 48) and major (32, 64).
+        let (mut minor, mut major) = ((0u32, 0u32), (0u32, 0u32));
+        for seed in 0..200 {
+            let f = built(&spec(seed, 2, 2));
+            let mut at = 0u16;
+            for s in f.pattern() {
+                at += s.beats;
+                if s.letter.class() != SeedClass::Filler || at % SECTION_BEATS != 0 {
+                    continue;
+                }
+                let k = if minor_seam((at / SECTION_BEATS - 1) as usize) { &mut minor } else { &mut major };
+                k.0 += 1;
+                k.1 += s.beats as u32;
+            }
+        }
+        assert!(minor.0 * 2 < major.0, "minor seams are much rarer: {minor:?} vs {major:?}");
+        assert!(minor.1 * major.0 < major.1 * minor.0, "and shorter: {minor:?} vs {major:?}");
     }
 
     #[test]
