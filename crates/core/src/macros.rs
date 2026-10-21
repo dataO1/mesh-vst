@@ -675,24 +675,31 @@ mod style_tests {
     }
 
     #[test]
-    fn shape_moves_much_per_note_at_low_variation_too() {
+    fn shape_moves_little_per_note_at_low_variation_and_much_at_full() {
         use crate::event::EventKind;
-        let knobs = Knobs { variation: 0.0, ..Knobs::CENTERED };
-        let mut widest = 0.0f32;
-        for seed in 1..=10 {
-            let mut lane = PatternLane::bass(seed, seed);
-            let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
-            configure(&mut lane, mudpie_params(), &s);
-            let centres = Centers::of(Role::Bass, seed, seed);
-            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
-            for b in 0..8 {
-                lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
-                let shapes: Vec<f32> = out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn).map(|e| hit_knobs(Role::Bass, &centres, &knobs, lane.param_names(), &out.params, e).shape).collect();
-                let (lo, hi) = shapes.iter().fold((1.0f32, 0.0f32), |(a, b), v| (a.min(*v), b.max(*v)));
-                widest = widest.max(hi - lo);
+        let widest = |variation: f32| {
+            let knobs = Knobs { variation, ..Knobs::CENTERED };
+            let mut widest = 0.0f32;
+            for seed in 1..=10 {
+                let mut lane = PatternLane::bass(seed, seed);
+                let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+                configure(&mut lane, mudpie_params(), &s);
+                let centres = Centers::of(Role::Bass, seed, seed);
+                let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+                for b in 0..8 {
+                    lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
+                    let shapes: Vec<f32> = out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn).map(|e| hit_knobs(Role::Bass, &centres, &knobs, lane.param_names(), &out.params, e).shape).collect();
+                    let (lo, hi) = shapes.iter().fold((1.0f32, 0.0f32), |(a, b), v| (a.min(*v), b.max(*v)));
+                    widest = widest.max(hi - lo);
+                }
             }
-        }
-        assert!(widest > 0.3, "Shape spans {widest} of the knob within a bar at Variation 0");
+            widest
+        };
+        // User, 2026-10-21: at low Variation Shape still moved far too much.
+        let (low, half, full) = (widest(0.0), widest(0.5), widest(1.0));
+        assert!(low < 0.12, "Shape spans {low} of the knob within a bar at Variation 0");
+        assert!(half < full * 0.6, "small up to about half Variation: {half} vs {full}");
+        assert!(full > 0.3, "Shape spans {full} of the knob within a bar at Variation 1");
     }
 
     #[test]

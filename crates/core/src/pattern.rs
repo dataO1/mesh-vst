@@ -1062,10 +1062,13 @@ const REACHED: [&str; 4] = ["length", "chop", "spread", "slide"];
 /// Per-note moves of parameters the letters leave alone, at reach 1.
 const NOTE_ONLY_MOVES: [(&str, f32); 1] = [("length", 0.12)];
 // MUSICAL: tune by ear (user, 2026-10-20: Shape per hit the one parameter
-// that moves much, at low Variation too, by the seed). The per-note Length
-// move, its scale at Variation 0 and 1 and the pattern seed's scale.
+// that moves much, by the seed; 2026-10-21: but at low Variation it still
+// moved far too much). The per-note Length move, its scale at Variation 0
+// and 1 (on a curve, so it stays small up to about half Variation) and the
+// pattern seed's scale.
 const SHAPE_NOTE: f32 = 0.3;
-const SHAPE_NOTE_REACH: (f32, f32) = (0.6, 1.3);
+const SHAPE_NOTE_REACH: (f32, f32) = (0.1, 1.3);
+const SHAPE_NOTE_CURVE: f32 = 2.5;
 const SHAPE_NOTE_SEED: (f32, f32) = (0.6, 1.4);
 const S_SHAPE_NOTE: u32 = 0xF54;
 
@@ -1073,7 +1076,7 @@ const S_SHAPE_NOTE: u32 = 0xF54;
 fn shape_note(names: &[&str], params: &[f32; MAX_GEN_PARAMS], pattern_seed: u32, lane: u8) -> f32 {
     let v = names.iter().position(|n| *n == "variation").and_then(|i| params.get(i)).copied().unwrap_or(0.5).clamp(0.0, 1.0);
     let u = rng::unit_f32(rng::hash(pattern_seed, lane, 0, 0, S_SHAPE_NOTE));
-    SHAPE_NOTE * (SHAPE_NOTE_REACH.0 + (SHAPE_NOTE_REACH.1 - SHAPE_NOTE_REACH.0) * v) * (SHAPE_NOTE_SEED.0 + (SHAPE_NOTE_SEED.1 - SHAPE_NOTE_SEED.0) * u)
+    SHAPE_NOTE * (SHAPE_NOTE_REACH.0 + (SHAPE_NOTE_REACH.1 - SHAPE_NOTE_REACH.0) * v.powf(SHAPE_NOTE_CURVE)) * (SHAPE_NOTE_SEED.0 + (SHAPE_NOTE_SEED.1 - SHAPE_NOTE_SEED.0) * u)
 }
 
 /// The reach of parameter `name`.

@@ -123,8 +123,10 @@ drive external effects.
   parameters around the knobs, the right-hand knobs (Shape, Morph, Spread, Slide), Permute (when
   on) and Groove most; since D49 Contrast, not Variation, sets how far B moves from A, and C
   and D from them; the knobs show each hit's values
-  (2026-10-20). Per note only the right-hand knobs move, Shape much (a seeded share, at low
-  Variation too), the others a little (2026-10-20).
+  (2026-10-20). Per note only the right-hand knobs move, Shape much (a seeded share), the
+  others a little (2026-10-20). Shape's per-note move is small at low Variation and grows on a
+  curve to its full reach at Variation 1 (user, 2026-10-21, reversing the earlier "much at low
+  Variation too").
 - **D26** History: sample loads, mode switches and parameter changes made in the plugin UI
   (recorded on mouse release, not every tick) go on an undo/redo stack, stepped from the top bar.
   The stack lasts for the session and is not saved in the project.
