@@ -286,7 +286,10 @@ drive external effects.
   - **Fill plans** (the **fill seed**): ten characters from the old forms (steady roller,
     question and answer, slow build, two-step cells, breakdown, B-led, stabs and cells, space,
     switch-up, bounce). A plan gives each 16-bar section one or more **units** (`A A A? B?a`,
-    `Aq Ba`) and its seam fill. A unit repeats over **16-beat cycles** (a unit longer than 16
+    `Aq Ba`) and its seam fill. A C or D seam may draw its kind from its place's pool instead
+    (`C* Cx Ce Cd ...` at bars 16 to 48, `D* Dx D*x ...` at 64), at 35 % .. 80 % over Variation
+    and more often in the second pass; A and B seams and empty ones keep the plan's character.
+    A unit repeats over **16-beat cycles** (a unit longer than 16
     beats takes a cycle of 32 or 64), each cycle starting it again, the last phrase clipped, so
     unequal A and B lengths still fill a cycle; a seam fill pads what a short unit leaves of a
     cycle, else it overwrites the section's last beats; a pickup may open the form; rare breaks
