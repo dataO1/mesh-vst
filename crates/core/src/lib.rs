@@ -7,6 +7,7 @@
 pub mod calibrate;
 pub mod error;
 pub mod event;
+pub mod arrange;
 pub mod form;
 pub mod ops;
 pub mod gc;

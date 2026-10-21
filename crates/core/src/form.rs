@@ -240,9 +240,15 @@ pub struct Form {
     lead: Option<Box<Form>>,
     /// Expanded to [`FORM_BARS`].
     segments: Vec<Segment>,
+    /// The second pass as built (D48), written after a `//`; empty: the
+    /// first pass varied ([`Form::pos_varied`]).
+    second: Vec<Segment>,
     /// Beats of one pass.
     beats: u16,
 }
+
+/// Segments a generated pass holds at most (one per beat).
+pub const MAX_PASS_SEGMENTS: usize = (FORM_BARS * BEATS_PER_BAR) as usize;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FormError {
@@ -252,6 +258,8 @@ pub enum FormError {
     Segment(String),
     #[error("form is {0} bars, at most {MAX_FORM_BARS} allowed")]
     TooLong(u32),
+    #[error("a form with its second pass written (`//`) fills {FORM_BARS} bars in each")]
+    PassLength,
 }
 
 /// Bars one pass of a form fills (the cycle is twice this).
@@ -291,6 +299,15 @@ impl Form {
         if let Some((main, lead)) = text.split_once('|') {
             let mut form = Self::parse(main)?;
             form.lead = Some(Box::new(Self::parse(lead)?));
+            return Ok(form);
+        }
+        if let Some((first, second)) = text.split_once("//") {
+            let (mut form, second) = (Self::parse(first)?, Self::parse(second)?);
+            let full = |f: &Form| f.pattern.iter().map(|s| s.beats as u32).sum::<u32>() == (FORM_BARS * BEATS_PER_BAR) as u32;
+            if !full(&form) || !full(&second) {
+                return Err(FormError::PassLength);
+            }
+            form.second = second.segments;
             return Ok(form);
         }
         let mut pattern = Vec::new();
@@ -387,13 +404,42 @@ impl Form {
             return Err(FormError::Empty);
         }
         let segments = expand(&pattern, total as u16);
-        Ok(Self { pattern, lead: None, segments, beats: FORM_BARS * BEATS_PER_BAR })
+        Ok(Self { pattern, lead: None, segments, second: Vec::new(), beats: FORM_BARS * BEATS_PER_BAR })
+    }
+
+    /// An empty generated form (one bar of A) with room for two passes, to
+    /// build into without allocating ([`crate::arrange`]).
+    pub fn generated() -> Self {
+        let mut f = Self::single();
+        f.pattern.reserve(MAX_PASS_SEGMENTS);
+        f.segments.reserve(MAX_PASS_SEGMENTS);
+        f.second.reserve(MAX_PASS_SEGMENTS);
+        f
+    }
+
+    /// Play `first` and then `second`, each a full pass. RT-safe on a form
+    /// from [`Self::generated`].
+    pub fn set_passes(&mut self, first: &[Segment], second: &[Segment]) {
+        let n = MAX_PASS_SEGMENTS;
+        self.pattern.clear();
+        self.pattern.extend_from_slice(&first[..first.len().min(n)]);
+        self.segments.clear();
+        self.segments.extend_from_slice(&first[..first.len().min(n)]);
+        self.second.clear();
+        self.second.extend_from_slice(&second[..second.len().min(n)]);
+        self.lead = None;
+        self.beats = FORM_BARS * BEATS_PER_BAR;
+    }
+
+    /// The second pass as built (empty: the first varied).
+    pub fn second_pass(&self) -> &[Segment] {
+        &self.second
     }
 
     /// One bar of A forever (a style without forms).
     pub fn single() -> Self {
         let seg = Segment::new(Letter::A, BEATS_PER_BAR, 0);
-        Self { pattern: vec![seg], lead: None, segments: vec![seg], beats: BEATS_PER_BAR }
+        Self { pattern: vec![seg], lead: None, segments: vec![seg], second: Vec::new(), beats: BEATS_PER_BAR }
     }
 
     /// The form a lane plays: synth lanes (lead, extra) play the `|` part when
@@ -432,16 +478,24 @@ impl Form {
 
     /// Where global beat `beat` falls in the form's first pass.
     pub fn pos_at(&self, beat: u64) -> FormPos {
-        let at = (beat % self.beats as u64) as u16;
+        pos_in(&self.segments, self.beats, beat)
+    }
+}
+
+/// Where global beat `beat` falls in a pass of `segments` (`beats` long).
+fn pos_in(segments: &[Segment], beats: u16, beat: u64) -> FormPos {
+    {
+        let at = (beat % beats as u64) as u16;
         let mut start = 0u16;
         let mut main_start = 0u16;
-        for (i, seg) in self.segments.iter().enumerate() {
+        for (i, seg) in segments.iter().enumerate() {
+
             if seg.letter.class() == SeedClass::Main {
                 main_start = start;
             }
             if at < start + seg.beats {
-                let next = self.segments[(i + 1) % self.segments.len()];
-                let prev = self.segments[(i + self.segments.len() - 1) % self.segments.len()];
+                let next = segments[(i + 1) % segments.len()];
+                let prev = segments[(i + segments.len() - 1) % segments.len()];
                 let in_segment = (at - start) / BEATS_PER_BAR;
                 let end = start + seg.beats;
                 return FormPos {
@@ -459,7 +513,7 @@ impl Form {
                     segment_beats: seg.beats,
                     start_beat: start,
                     period_end: end.is_multiple_of(PERIOD_BARS * BEATS_PER_BAR),
-                    repeat: prev.letter == seg.letter && self.segments.len() > 1,
+                    repeat: prev.letter == seg.letter && segments.len() > 1,
                     before_change: end.is_multiple_of(SECTION_BARS * BEATS_PER_BAR) || next.letter.class() != seg.letter.class(),
                     bar_in_segment: in_segment,
                     segment_bars: seg.bars(),
@@ -484,6 +538,9 @@ impl Form {
         // Unreachable for a parsed form (at < beats).
         FormPos::default()
     }
+}
+
+impl Form {
 
     /// Where global bar `bar` falls in the lane's form cycle: the form as
     /// written, then once more as a seeded variation of the same length
@@ -501,6 +558,10 @@ impl Form {
         let mut pos = self.pos_at(beat);
         if len <= BEATS_PER_BAR as u64 || (beat % (2 * len)) < len {
             return pos;
+        }
+        // A built second pass (D48) plays as it is.
+        if !self.second.is_empty() {
+            return FormPos { second: true, ..pos_in(&self.second, self.beats, beat) };
         }
         pos.second = true;
         let forced = !(0..self.segments.len()).any(|i| vary_pattern(seed, lane, i, self.segments[i], false) != Vary::Keep);
@@ -667,7 +728,21 @@ fn fmt_beats(beats: u16) -> String {
 
 impl fmt::Display for Form {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, s) in self.pattern.iter().enumerate() {
+        fmt_segments(&self.pattern, f)?;
+        if !self.second.is_empty() {
+            f.write_str(" // ")?;
+            fmt_segments(&self.second, f)?;
+        }
+        if let Some(lead) = &self.lead {
+            write!(f, " | {lead}")?;
+        }
+        Ok(())
+    }
+}
+
+fn fmt_segments(segments: &[Segment], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    {
+        for (i, s) in segments.iter().enumerate() {
             if i > 0 {
                 f.write_str(" ")?;
             }
@@ -686,14 +761,11 @@ impl fmt::Display for Form {
                     write!(f, "^{}", s.skip)?;
                 }
             }
-
-        }
-        if let Some(lead) = &self.lead {
-            write!(f, " | {lead}")?;
         }
         Ok(())
     }
 }
+
 
 /// A bar's position inside a form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
