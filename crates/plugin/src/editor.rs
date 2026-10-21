@@ -23,7 +23,7 @@ use nice_plug_iced::iced::{
 use nice_plug_iced::{application, create_iced_editor, IcedEditor, IcedEditorState, IcedNiceContext, IcedNiceSettings, PersistentState};
 use serde::{Deserialize, Serialize};
 
-use crate::params::{DrumStyle, MeshParams, Mode, NewRootMode, Phrase, PhaseMode, Rate, Scale, Tail, UnisonSpread, BEND_RANGES};
+use crate::params::{BassSource, DrumStyle, MeshParams, Mode, NewRootMode, Phrase, PhaseMode, Rate, Scale, Tail, UnisonSpread, BEND_RANGES};
 use mesh_vst_core::modout::{Source, CHANNELS as MOD_CHANNELS};
 use crate::ui::{UiShared, UiState, ROWS};
 use crate::worker::{self, FileRef, KitState};
@@ -157,6 +157,8 @@ pub enum Message {
     Style(DrumStyle),
     Scale(Scale),
     Rate(Rate),
+    /// Where the bass line comes from (D50).
+    BassSource(BassSource),
     Tail(Tail),
     Phase(PhaseMode),
     RollSound,
@@ -539,6 +541,11 @@ impl Gui {
                 self.record();
                 let params = self.data.params.clone();
                 self.set_enum(&params.rate, r);
+            }
+            Message::BassSource(s) => {
+                self.record();
+                let params = self.data.params.clone();
+                self.set_enum(&params.bass_source, s);
             }
             Message::Tail(t) => {
                 self.record();
@@ -1128,7 +1135,22 @@ impl Gui {
             for k in [Knob::Shape, Knob::Morph, Knob::Spread, Knob::Slide, Knob::Heat] {
                 right = right.push(knob(p, k, self.hit_marker(k)));
             }
-            right = right.push(column![small("RATE"), pick(Rate::variants_list(), p.rate.value(), Message::Rate)].spacing(6));
+            let source = p.bass_source.value();
+            right = right.push(
+                row![
+                    column![small("RATE"), pick(Rate::variants_list(), p.rate.value(), Message::Rate)].spacing(6),
+                    column![
+                        small("SOURCE"),
+                        row![
+                            toggle("CLIPS", source == BassSource::Clips, Message::BassSource(BassSource::Clips)),
+                            toggle("GEN", source == BassSource::Generated, Message::BassSource(BassSource::Generated)),
+                        ]
+                        .spacing(6),
+                    ]
+                    .spacing(6),
+                ]
+                .spacing(16),
+            );
         }
         right = right.push(Space::new().height(Length::Fill));
         right = right.push(self.splice_view(p));
