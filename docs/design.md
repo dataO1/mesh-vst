@@ -244,8 +244,9 @@ drive external effects.
     | `l` / `s` | held into the next note, or short (×0.7 .. ×0.3) | a little | in full |
     | `n` / `p` | weak notes dropped (15 % .. 60 %), or passing notes in wider steps (20 % .. all) | | |
     | `m` | mutation: seeded notes change (a neighbour, an octave, half or twice as long, gone) | one note | a third of them |
+    | `k` | split (D51): a hit repeats fast over itself (the double feel), straight 16ths at low and middle Groove, a triplet or a dotted 16th at high Groove; on the drums a rising 32nd roll | one hit over an 8th | two hits over a beat |
     | `'` | another seed from this beat on | the last beat | the second half |
-    | `?` | the seed picks one by the segment's place: double time (or `h d e n`) before a change, an answer (or `i q m r`) at a period's end, a mutation (or `r o y l`) on a repeat, else any | | |
+    | `?` | the seed picks one by the segment's place: double time (or `h d e n`) before a change, an answer (or `i q m r`) at a period's end, a mutation (or `r o y l`) on a repeat, else any (in a written form; a generated form picks by D51) | | |
 
     Variation sets how far every operator goes, from a little (0 %, never nothing) to the full
     variant; the form's second pass goes 15 % further (it escalates). Standalone, no rule
@@ -285,7 +286,8 @@ drive external effects.
     seed** draws each letter's phrase; a **pin** per phrase keeps its seed through phrase rolls.
   - **Shape** tilts the lengths (low Shape short phrases and cells, high Shape long ones: a
     bias on the seeded pick, the mean length rises with it), **Variation** scales the form's
-    variation: the share of the plan's `?` slots filled (25 % .. 85 %), extra fills inside a
+    variation: the share of the plan's `?` slots a melodic operator fills (25 % .. 85 %; the
+    rhythm operators are Density's and the Groove's, D51), extra fills inside a
     section (4 % .. 30 % per 4-bar seam) and how far the second pass reaches. Both are read in
     five bands, so a small knob move keeps the form.
   - **Fill plans** (the **fill seed**): ten characters from the old forms (steady roller,
@@ -304,7 +306,8 @@ drive external effects.
     on its own and fills overwrite, so the **16-bar grid holds by construction**. Per form the
     seed either varies the unit shapes per section (the letters keep their lengths) or the
     letters' lengths per section (the shapes stay), never both. Operators live in the plan
-    only: fixed marks and `?` slots, resolved by the fill seed by their place (D47's tables).
+    only: fixed marks and `?` slots, resolved by the fill seed (D51: rhythm operators by the
+    letter's Density and Groove lean, melodic ones by their place).
   - **Second pass** (the **second-pass seed**): bars 65..128 are the plan built again by one
     seeded recipe, a second one higher up Variation: switch-up (A and B re-cut by `r i d o R`
     from a section on), escalate (more slots and fills, pushes `x y p`), order swap (A and B
@@ -312,17 +315,19 @@ drive external effects.
     opening's unit back halfway), double end (the last 4 bars doubled up), thin drop (the pass
     opens thinned). Variation sets how many sections a recipe reaches. It replaces D47's
     letter swaps. A written form may give its second pass after `//`.
-  - **Rules** (music theory §5, §6.3), checked in code: the grid; the first pass's first 8
-    bars repeat unchanged (no slot, no fill but the pickup); inside a section each cycle
-    changes at most once against the one before (enforced while the slots resolve); the
-    structural repetition at the hook period (4 or 8 bars) between 0.1 and 0.95; a busier
-    second pass. A form that breaks one builds again from the same seeds with its slots, fills
-    and recipe drawn anew (up to 8 attempts, the fewest broken rules win; 0 of 10 000 forms
-    break one at the defaults). Measured on the rendered bass, consecutive 4-bar blocks agree
+  - **Rules** (music theory §5, §6.3), checked in code: the grid; inside a section each cycle
+    changes at most once against the one before (enforced while the slots resolve, against
+    the same letter under its beats when a fill or the pickup moved the starts); the
+    structural repetition at the hook period (4 or 8 bars) between 0.05 and 0.95 (0.99 at
+    Variation 0); a busier second pass. (D51 dropped the rule that the first 8 bars repeat
+    unchanged: A is the question and may carry operators from bar 1.) A form that breaks one
+    builds again from the same seeds with its slots, fills and recipe drawn anew (up to 12
+    attempts, the fewest broken rules win; 0 of 10 000 forms break one at the defaults, at
+    most 1 at the knobs' extremes). Measured on the rendered bass, consecutive 4-bar blocks agree
     in pitch at a median of about 0.6 (the references: 0.33 .. 0.63).
   - **Parameters.** Phrase, fill and second-pass seed are automatable parameters (all others
     are too now, user 2026-10-21); the rolls only write seed values. A seed or band change
-    builds the form on the audio thread without allocating (about 10 µs, at most 9 attempts)
+    builds the form on the audio thread without allocating (about 10 µs, at most 13 attempts)
     and plays from the next bar rendered (the old Form parameter switched the same way; the
     4-bar boundary of `FORM_CHANGE_BARS` is not enforced). The pins are project state.
   - **Splice.** The link (v3, `mesh-vst-link-v3`; v2 instances do not see it) carries the
@@ -432,6 +437,32 @@ drive external effects.
     quieter than it should be; the Squash knob recalibrates in 5 % steps.
   - **A mono note whose gate ends at a new note** no longer glides into it (it played on from
     where the held note got to, past the sample's end: a silent bar). The new note strikes.
+
+- **D51** **Rhythm operators by Density and Groove** (2026-10-21). The seeded `?` slots of a
+  generated form (D48) split in two kinds. `arrange.rs`, `ops.rs`.
+  - **Rhythm operators** (`x h k y d e o R`): **Density** sets how many: the chance a slot
+    plays one (5 % at Density 0 .. 85 % at 1), and a plain repeat of A or B may take one too
+    (0 .. 30 %); the plan's own rhythm marks stay at 30 % .. 100 % over Density, so low
+    Density calms the plan's character. The **Groove** biases which: low Groove the straight
+    ones (double time, half time, `k` in 16ths), high Groove the funky ones (syncopation,
+    dotted, triplets, rotation, `k` in triplets or dotted 16ths), a blend in the middle;
+    double and half time 1.5× as likely before a section change; `R` at either. The draws go
+    by the place in the section, whatever the letter. Density and Groove are read in five
+    bands like Variation, Shape and Contrast; the link shares them (a padding byte).
+  - **Melodic operators** take a slot no rhythm operator took, at Variation's share (25 % ..
+    85 %), by the place (D47 without the rhythm ones: before a change `n q t u`, at a period's
+    end an answer or `i q m r`, on a repeat a mutation or `r l p`, else `r i t l s m p`).
+    Variation sets how far every operator goes, as before, but no longer how many rhythm ones.
+  - **Rhythm first:** in every generated chain, every letter, the rhythm operators come before
+    the melodic ones (the rhythm moves, then the line changes on it).
+  - **Contrast** parts the letters' rhythm (continuous): at 0 every letter takes A's lean and
+    count (the knobs'); towards 1 B moves to the other side of the Groove (at least 0.4 off
+    the middle in full) and its count away from A's (up to 0.4), C and D each move in their
+    own seeded direction (up to 0.3 on both).
+  - **`k`** (split) is a new operator (see D47's table).
+  - **No opening rule** (user: A is already the question): the first 8 bars may carry slots,
+    extra fills and their changes.
+  - The second pass adds 15 % to the rhythm chance (and its recipes' own marks).
 
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
@@ -610,11 +641,11 @@ suggested settings. Turning a knob or automating it moves away from that center.
 
 | Knob | Bass | Drums |
 |---|---|---|
-| **Density** | notes, note length; clips (D50): as written at the middle, weak notes thinned below, long notes split into 8ths or 16ths above | hits, voices coming in (tops included), loop gating |
-| **Contrast** | how far B moves from A (A plays the knobs): 0 the same settings, 1 the other side of the question and answer on every axis, in seeded directions; C and D around A and B (D49) | the same, with the drum axes |
+| **Density** | notes, note length; clips (D50): as written at the middle, weak notes thinned below, long notes split into 8ths or 16ths above; how many rhythm operators the form's slots get (D51) | hits, voices coming in (tops included), loop gating; how many rhythm operators (D51) |
+| **Contrast** | how far B moves from A (A plays the knobs): 0 the same settings, 1 the other side of the question and answer on every axis, in seeded directions; C and D around A and B (D49); how far the letters' rhythm operators part, B to the other side of the Groove (D51) | the same, with the drum axes |
 | *Permute* (parameter, no knob since D49) | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
-| **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell, how many long notes loop (D43); scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
-| **Groove** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays); the lane's own times in triplets, straight or dotted (D45) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts; the lane's own times in triplets, straight or dotted (D45) |
+| **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell, how many long notes loop (D43); scales the seeded accents, stab drive and filter sweep; how far the operators go and how many melodic ones (not the rhythm ones, D51) | rewrites, fills, ghost notes; scales the seeded accents and velocity range; the operators as on the bass |
+| **Groove** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays); the lane's own times in triplets, straight or dotted (D45); which rhythm operators the form picks, straight to funky, and `k`'s subdivision (D51) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts; the lane's own times in triplets, straight or dotted (D45); the rhythm operators and `k`'s roll as on the bass (D51) |
 | **Shape** | stabby to sustained: length, expression, filter bite, the release (the designed one up to a quarter; held notes sustain at −1 dB, 2026-10-20); at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke (at full Shape a retrigger fades over about 400 ms), loop hold, decay (it shortens every voice, the kick too, and lengthens none); the attack stays instant at every setting; a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to a dotted 8th, the hats and cymbals half as long and a little weaker, the kick a faint dotted 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style; a ring modulator above 400 Hz (the lows stay clean) fades in from a fifth to at most 30 %, its seeded carrier rising an octave and turning from sine to square |
 | **Spread** | width: octave lifts, jump size, notes above the home root spread in stereo (the sub stays centred), deeper filter LFO and envelope | — |
