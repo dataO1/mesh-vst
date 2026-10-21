@@ -92,7 +92,7 @@ drive external effects.
 - **D20** Two seeds. The **sound seed** picks samples from the pools (or the mudpie in Bass mode),
   and in Bass mode also the mudpie voice: cutoff, resonance, filter and pitch envelopes, LFO,
   amp decay and release, drawn around the designed voice (2026-10-19; the release only ±0.3 octave and at most a half note, 2026-10-20). The knobs act on top. A
-  sound roll in Bass mode keeps the mudpie (it gets pinned) and moves every knob but Permute to
+  sound roll in Bass mode keeps the mudpie (it gets pinned) and moves every knob but Contrast to
   new values (2026-10-20), and rolls the Rate: Normal half the time, Half or Double a quarter
   each (2026-10-20). Accent strength comes from the sound seed, scaled by Variation. A new
   instance without a saved state starts with random seeds and knobs (Permute off).
@@ -114,14 +114,15 @@ drive external effects.
   (filter depth, drive, density together). Channel pressure and MPE per-note pressure drive the
   drive amount; MPE per-note pitch acts as pitch bend. Other CCs go through the DAW's own MIDI
   learn.
-- **D25** Energy over time comes from the DAW: automate Permute, Variation and Density, place notes for
+- **D25** Energy over time comes from the DAW: automate Contrast, Variation and Density (Permute too), place notes for
   sections. The plugin adds a phrase length (4/8/16 bars, fills at phrase ends counted from song
   position) and the Mesh **form**: letter seeds A/B (main) and C/D (fillers) placed by a form
   string such as `A15 C1`. The form is generated from three seeds (D48: phrases, fill plan,
   second pass), each rolled on its own; rolling the pattern seed rolls the notes only. Each
   letter has its own seed and moves the
   parameters around the knobs, the right-hand knobs (Shape, Morph, Spread, Slide), Permute (when
-  on) and Groove most, scaled 0.6 to 1.4 by Variation; the knobs show each hit's values
+  on) and Groove most; since D49 Contrast, not Variation, sets how far B moves from A, and C
+  and D from them; the knobs show each hit's values
   (2026-10-20). Per note only the right-hand knobs move, Shape much (a seeded share, at low
   Variation too), the others a little (2026-10-20).
 - **D26** History: sample loads, mode switches and parameter changes made in the plugin UI
@@ -322,6 +323,37 @@ drive external effects.
     holds and stop where the host changes. The relation is read in nine bands. A follower
     without a form of its own plays the host's. D46's note relation and D47's question and
     answer swap stay.
+  - **Contrast** (D49) is read in five bands too: it sets how often B's phrase is a step off
+    A's, and the link shares its band.
+- **D49** **Contrast** (2026-10-21): one knob for the question and answer, in Permute's place
+  on the panel (Permute stays an automatable parameter, at 0, and the mod wheel still drives
+  it). `contrast.rs`.
+  - **A plays the knobs.** B's notes always come from its own seed. At Contrast 0 B plays A's
+    settings exactly; towards 1 it moves away on every letter axis (density, complexity,
+    variation, slide, Spread's register and jumps, accents, Groove's swing and syncopation,
+    chop, mutation, Shape's length, Morph, Permute), each in a direction its seed picks, so the
+    seed decides which letter is the long, the busy or the high one. Near a knob's end B moves
+    inward and less (half its move at the very end, all of it from a quarter in), so the
+    knob's character stays: at Shape 0 both letters stay short, at full both stay long.
+    Morph is the exception: B's start in the sample moves by Contrast alone, whatever the
+    Morph knob, wrapping around the sample (up to half of it).
+  - **Steps.** B's bass speed is one step off A's with a chance up to 60 %; its phrase one
+    power-of-two step off A's length with a chance up to 70 % (the D48 grid stays); its line
+    may answer mirrored (`i`, up to 50 %, not against a pitched host, where Splice sets the
+    direction) or an octave up (`u`, up to 35 %). All are seeded per letter, so all of B
+    answers alike.
+  - **Fills.** C is the mild fill and derives from A: a seeded move of 0.25 .. 0.6 of the
+    largest by Contrast, half the filler boosts. D is the aggressive one and derives from B:
+    0.5 .. 1 of the largest on top of B's settings, 1.3 times the boosts, and more often a
+    speed step up. At Contrast 0 both still vary, less than before; at 1 about as before.
+  - **Variation** no longer moves letters apart (the 0.6 .. 1.4 letter reach is gone). It sets
+    what changes inside a pattern and a form: per-note moves, loops and reversals, operator
+    slots and amounts, extra fills, the second pass's reach. The second pass's small move is
+    now the same for every letter (from the pattern seed), so B still plays A's settings at
+    Contrast 0 there.
+  - **Splice** stays the relation between instances. Layered on a pitched host, the fit after
+    the operators may also take the same note an octave off to follow the host's way
+    (contrary motion on the layer side fell from about 0.46 to 0.14 in the relation test).
 
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
@@ -501,7 +533,8 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | Knob | Bass | Drums |
 |---|---|---|
 | **Density** | notes, note length | hits, voices coming in (tops included), loop gating |
-| **Permute** | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
+| **Contrast** | how far B moves from A (A plays the knobs): 0 the same settings, 1 the other side of the question and answer on every axis, in seeded directions; C and D around A and B (D49) | the same, with the drum axes |
+| *Permute* (parameter, no knob since D49) | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
 | **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell, how many long notes loop (D43); scales the seeded accents, stab drive and filter sweep | rewrites, fills, ghost notes; scales the seeded accents and velocity range |
 | **Groove** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays); the lane's own times in triplets, straight or dotted (D45) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts; the lane's own times in triplets, straight or dotted (D45) |
 | **Shape** | stabby to sustained: length, expression, filter bite, the release (the designed one up to a quarter; held notes sustain at −1 dB, 2026-10-20); at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke (at full Shape a retrigger fades over about 400 ms), loop hold, decay (it shortens every voice, the kick too, and lengthens none); the attack stays instant at every setting; a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to a dotted 8th, the hats and cymbals half as long and a little weaker, the kick a faint dotted 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
