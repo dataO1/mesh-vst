@@ -214,6 +214,7 @@ drive external effects.
   answer each other (`A1q B1a`); C and D are the stark changes, mostly at the transitions (the
   16-bar seams, the end of 64). Related material comes only from **operators**: marks after a
   letter that play its motif changed, often and in short steps, between focused repetitions.
+  (D57 replaced the timing marks: the set below is as it was; see D57 for the current one.)
   - **Grammar.** A segment is a letter, its marks and a length in any order, the length one run
     of digits: `A2r`, `Ar2`, `A'7`, `A2'r`, `A3rd`, `Bq.5`. Marks chain left to right (`rd`:
     reversed, then dotted); a later mark wins where two set the same thing. `'` (another seed's
@@ -438,7 +439,8 @@ drive external effects.
   - **A mono note whose gate ends at a new note** no longer glides into it (it played on from
     where the held note got to, past the sample's end: a silent bar). The new note strikes.
 
-- **D51** **Rhythm operators by Density and Groove** (2026-10-21). The seeded `?` slots of a
+- **D51** **Rhythm operators by Density and Groove** (2026-10-21; superseded by D57: the form
+  places no rhythm operators, the chain's Groove and recursion do the rhythm). The seeded `?` slots of a
   generated form (D48) split in two kinds. `arrange.rs`, `ops.rs`.
   - **Rhythm operators** (`x h k y d e o R`): **Density** sets how many: the chance a slot
     plays one (5 % at Density 0 .. 85 % at 1), and a plain repeat of A or B may take one too
@@ -463,6 +465,315 @@ drive external effects.
   - **No opening rule** (user: A is already the question): the first 8 bars may carry slots,
     extra fills and their changes.
   - The second pass adds 15 % to the rhythm chance (and its recipes' own marks).
+- **D52** **Full Density fills, Variation as set, Shape's half time, Splice answers**
+  (2026-10-21). `pattern.rs`, `bass.rs`, `arrange.rs`, `ops.rs`, `loader.rs`, `engine.rs`.
+  - **Density** near the top fills the bass line's rests after its operators too (8ths from
+    0.55, 16ths from 0.8, at 1 nearly all): a fill repeats the note before it (the bar's last
+    before its first) at its length, softer. The speed limit (Normal and Half at 8ths) keeps a
+    note pushed up to a quarter of the gap early; it merged every other pushed 8th before.
+    Split repeats and fills end where the next note starts (they ended 2 ticks early, every
+    note restruck after a gap). Variation skips fewer fills from Density 0.9, none at 1.
+    A Splice follower towards the counter end keeps its rests; where Splice drops a note at
+    high Density the note before holds over it (not a stab, up to the next note).
+  - **Variation** plays as set: no letter, fill, second-pass or Splice move. Variation now
+    moves **Morph** per letter: B, C and D each a seeded way off A's, up to 0.6 knob values
+    at Variation 1 (curve 1.5).
+  - **Bass attack** follows Shape, not Density: 5 ms at 0, log-spaced, about 22 ms at the
+    middle, 100 ms at 1. The stab pitch blip plays on `STAB` notes only (every 8th had it).
+  - **Shape's operator:** above Shape's middle half time joins the rhythm pool (weight 2.5 at
+    full Shape). B and D lean to the other side of the Shape by Contrast (in full at 1): a
+    stabby A answers with a held, half-time B.
+  - **Splice answers** (counter side): a 4-bar window plays the other main letter where the
+    host plays one (B against A, A against B), each with its own phrase, at a chance of 0.7 ×
+    the relation. Two instances on the same seeds now differ in pattern, not only in thinning.
+  - **Streams** (mudpies) end where they stay 12 dB under their overall level to the end, so
+    the level map (±18 dB) evens out every start position. A one-shot chord as a mudpie
+    played its decayed tail 20 .. 40 dB down.
+  - **Short at Shape 0** (follow-up, user: almost only held notes): a note up to a stab long
+    shortens too (to 35 % at Length 0), the release follows Shape below its middle (1/64 at 0,
+    the designed one at the middle; it was ≥ 3/32 and rang over every 16th), legato `l` holds
+    less below the middle and half time keeps the notes' length at Shape 0. A mono note
+    ending within half a tick of the next one strikes it (no glide). The Density refill runs
+    after the speed, on the grid it allows (8ths at Normal and Half, 16ths at Double), so a
+    letter one speed step slower fills too. A bar's later part (a letter change mid-bar)
+    brings its note held over the boundary in on the boundary; the earlier part's note ends
+    there (it was lost, a silence up to half a bar).
+  - **Snapshotted operators (see below).**
+- **D53** **Neuro** (2026-10-22, fourth draft). One automatable slider on the bass's right
+  column, 0 % no processing (bit-exact) .. 100 % a heavy resampling-style chain. `neuro.rs`,
+  first on the bass lane's output; the bass then runs mono lows, Squash and **Heat last**
+  (the drums keep Heat before Squash; the bass calibration follows the new order). The
+  unison detune is in the sampler, before all of it.
+  - **Split:** below 130 Hz the sub passes clean; the band above runs the chain and is
+    level-matched back to its own loudness (K-weighted, 0.1 .. 3×), so the slider changes the
+    character, not the level.
+  - **Chain** (`ORDER`, one `Stage` each, reorderable in one place): emphasis (broad boosts,
+    +8 dB Q 0.5 at half and +7 dB Q 0.6 at 2.4× the cut, around a narrower, deeper cut,
+    −18 dB Q 1.6, resting on the note's 6th .. 16th harmonic within 300 .. 1500 Hz) → stereo
+    chorus (before the drive) → symmetric drive (tanh into a sine fold, up to 24 dB) →
+    deemphasis (the boosts cut back by 80 %, the cut restored by 35 % and broader, its bands
+    moving their own ways) → two notches moving against each other (broad −18 dB Q 1.2 in
+    250 .. 500 Hz, narrower −20 dB Q 4 in 1 .. 5 kHz) → a subtle asymmetric drive (diode-like,
+    even harmonics, offset blocked) → damped comb (feedback 0.55, a 2.5 kHz lowpass in its
+    loop, mixed at half, on the note's 2nd .. 6th harmonic) → air (peaks +6 / +5 dB and a
+    null −12 dB in 2 .. 8 kHz, none at a note's onset) → phaser → a slight Chebyshev waveshaper (3rd and 5th) →
+    post lowpass → a slight multiband compressor (the Squash at its mild end, mixed in up to
+    60 %).
+  - **Motion** comes from the sound only, no LFO (user, 2026-10-22). Each note gets an ADSR
+    whose shape the seed picks (snap, swell with a long release, slow, pluck, ±30 %) and
+    whose times are shares of the note's length, known at its onset: the release ends with
+    the note, stabs move fast, held notes slowly. An accent opens it fully; a slide carries
+    the note on to the slid-to note's end. Every filter band (emphasis, deemphasis, notches,
+    air, the phaser's two sides) has its own seeded mover: a resting offset, how far and
+    which way the ADSR moves it, the note's draw (Variation), Morph. How a stage's bands move
+    against each other is a relation the seed picks per stage: together (all one way), apart
+    (the lower down, the upper up) or over each other (a peak and a null travel 65 % of their
+    gap each way, so they pass at the ADSR's ends; the notches, in fixed ranges, move apart
+    instead). Boosts stay at least an octave apart (an upper one too near moves up). The chorus delays move with the ADSR too (the detune bends with the
+    note). The air grows over 60 % of a note. An envelope follower on the input (6 ms against
+    0.3 s) sets how hard every stage works: louder parts of a note more, quieter less (a
+    seeded 50 .. 100 % of that), and the movers' gains with it.
+  - **Neuro** raises the depth of everything (peaks, nulls, wet, drive, detune) and the speed
+    only a little (1 .. 1.5×); Variation scales the depth (0.4 .. 1.2×) and the speed
+    (0.8 .. 1.3×).
+  - **Contrast** parts the letters (D49's shape): at 0 all play A's movement; towards 1 B
+    turns its bands' directions, places them up to an octave off, takes the most different
+    ADSR shape (two along), another emphasis harmonic, the comb's other sign, other band
+    relations (each stage's changes at a chance of Contrast, every one at 1), and moves its
+    attack and decay at another speed (0.4× or 2.5×, seeded); C moves 40 % of the way off
+    A (relations too); D takes B's and goes half as far again in its own direction and speed.
+  - **Source and register** (user, 2026-10-22: a lead in mudpie mode sits above the bass
+    ranges; 1 kHz and up turns harsh when driven). The library's scan keeps per file its
+    centroid above 130 Hz, the sub's share of all (below 130 Hz) and the share above 1 kHz
+    (of the band above the sub); older caches scan again. Playing, the followers hear the
+    same shares at the note's actual pitch and take over from the scan once they have heard
+    enough (a file played far from its root has another sub). The sub's share sets how
+    bass-like (−3 dB or more) or lead-like (−15 dB or less) the source is; the share above
+    1 kHz how harsh (8 % .. 45 %). The register (the scanned centroid moved to the note,
+    from 700 Hz; else the note from 65 Hz) moves the moving ranges up by 0.8 of each octave,
+    a bass-like source up to 3 octaves, a lead-like one up to 1 (its air does not move: a
+    first draft moved a bright lead's ranges up and made it harsher, 6 kHz+ from −12.7 to
+    −5.1 dB). A harsh source gets up to half less drive gain; a lead-like one half the heavy
+    drive and half again of the subtle ones.
+  - **Clean and balanced:** before the drive a high shelf at 1.2 kHz (moved with the
+    register) cuts 6 .. 12 dB by harshness, half of it given back after the deemphasis, so
+    the drive bites on the mids. The three drives run at 2× oversampling (a fourth-order
+    Butterworth up and down, dry and wet mixed at the high rate). The processed band is
+    highpassed at 130 Hz again (the drives' difference tones stay out of the sub). A balance
+    guard (fourth-order measurement, 50 ms): the share above 1 kHz may grow 6× over the
+    input's (2× for a lead-like source, never held under 8 %), the share above 3 kHz 10×
+    (never under 6 %) and never over 25 % (15 % lead-like); high shelves take back the rest.
+    At full: a chord as a mudpie 6 kHz+ −34 → −12 dB, a lead −12.7 → −10.5, the bass mudpie
+    −66 → −42. Coefficients update every 8 frames.
+  - **Per seed:** the sound seed blends two of four racks (talker, metal, tear, reese: how
+    much of each stage the slider brings in) and sets the movers, the ADSR shape, the
+    emphasis and comb harmonics, the comb's sign, the fold share and the follower's share.
+  - The slider's curve comes in early (`amount^0.8`, a rack weight of 1 in full at about
+    80 %). MUSICAL: every depth is a draft. User, 2026-10-22: the first draft's peaky bells,
+    its comb, the formants and the ring modulator sounded bad (formants and ring are gone).
+  - Open: tonalize (partials snapped to the key) and cross-synthesis with a sidechain or a
+    Splice host as further spectral stages; drums get their own chain later.
+- **D54** **Multiband distortion** (2026-10-22). `mbdist.rs` (shared blocks in `dsp.rs`): a
+  processor like the other stages, configured per use (`MbConfig`: two Linkwitz-Riley
+  crossovers, per band a curve, drive, wet, containment and oversampling). User: subtle
+  multi-stage distortion beats one stage, so it replaces the heavy stages where a band split
+  helps and the subtle ones stay; never all wet (at most 85 %), stronger drives mixed in under
+  the dry instead.
+  - **Per band:** the band's level is followed and its input normalised to a working level
+    before the curve (the makeup, from the RMS of a driven sine, undoes it), so a quiet band
+    distorts like a loud one; a band with under 8 % of the signal gets less wet (nothing there
+    to grow but noise). Curves: tanh, an asymmetric tube (its offset blocked), a sine fold, a
+    hard clip. A containment lowpass on the wet at a multiple of the band's top keeps its
+    harmonics out of the top octaves. 1×, 2× or 4× oversampling (4× = two 2× stages). The low
+    band passes the upper split's allpass, so the bands sum flat when nothing distorts.
+    Distorting the bands apart also keeps the mids and the highs from intermodulating.
+  - **Neuro (D53)**: the heavy drive is multiband: crossovers 600 Hz and 2.5 kHz (moved with
+    the register), a tube on the low mids (20 dB, 65 % wet, contained at 6× its top), the
+    growl on the mids (a fold or a hard clip by the voice, 28 dB, 75 %, 4×), a soft tanh on the
+    highs (8 dB, 35 %, less on a harsh source). The subtle asymmetric drive stays (16 dB, at
+    most 70 % wet), the shaper too. At full: the chord as a mudpie 6 kHz+ −34 → −15 dB, the
+    lead −12.7 → −10.2, its 3 .. 6 kHz down (−11.9 → −20.5).
+  - **Heat**, both lanes: clip, then the tilt pre-emphasis, the multiband, the tilt undone,
+    the crush last (its steps stay sharp), the level match. Bass: 150 Hz / 1.5 kHz, a gentle
+    tanh on the low band (8 dB, 30 %: the sub stays solid), a tube on the mids (30 dB, 80 %),
+    a soft top (18 dB, 50 %). Drums: 200 Hz / 3 kHz, a tube on the kick's band, a hard clip
+    on the snare's (24 dB, contained), a soft top, all at 25 .. 35 % wet under the clean hits
+    (the transients stay). Tone moves drive between the low and the high band (±9 dB) on top
+    of the tilt.
+  - Open: a config per drum slot (kick, snare, hats on their own buses) instead of the
+    lane's mix.
+- **D55** **Neuro and Heat revised** (2026-10-23). User: the filter movement was not heard at
+  full Neuro, the bands' curves and crossovers were wrong, the pre-emphasis was not heard.
+  - **Bands in passes:** a band runs one or two curves in series (`Pass`: curve, drive, wet),
+    new curves tape (a biased cubic knee) and drive (pedal diodes, an exponential knee, its
+    kink grows upper partials). The containment filters only what the curves added.
+  - **Neuro drive:** 150 Hz / 1 kHz (moved with the register): tape 4 dB at 35 % below, the
+    drive 24 dB (±4 by the voice's fold share) at 70 % then a slight tanh (8 dB, 40 %) on the
+    mids, a slight tube (5 dB, 20 %) on the highs. Below 130 Hz Neuro passes clean, so the tape
+    band only holds 130 .. 150 Hz there.
+  - **Heat:** bass 150 Hz / 1 kHz: tape, a tube (24 dB) then a slight tanh, a slight tanh on
+    top. Drums 150 Hz / 1.2 kHz: tape, the drive (18 dB) then a slight hard clip, a slight
+    tube on top, all at 20 .. 35 % wet.
+  - **Notches are gaps:** two crossovers take the band between them out (`dsp::Gap`, summing
+    to an allpass when kept). The low one 1.5 octaves wide at 24 dB/octave (Linkwitz-Riley)
+    with a −12 dB bell in its middle (about −25 dB there), centred in 250 .. 500 Hz; the upper
+    one 1.25 octaves at 18 dB/octave (third-order Butterworth, −23 dB on its own) in 1 .. 5 kHz.
+  - **Emphasis:** bass-like ±12/−24 dB, lead-like +7/−16/+5 (blended by the source); the
+    deemphasis gives back under half (45 % of the boosts, 20 % of the cut), so it stays heard.
+  - **Movement:** the ADSR's sustain slopes over the held part (seeded sign), the ADSR reaches
+    0.7 .. 1.6 octaves, the note's draw 0.7. Measured at the output (after every later stage,
+    the compressor too), 10 ms frames over four seeds: the low gap's centre spreads 0.3 .. 0.5
+    octaves, the upper one 0.7 .. 0.9 (before: 0.13, sitting at 1.35 kHz).
+  - **Second pass (user, same day):** the movement was still too short, one move per hit, and
+    the sound nasal with too much around 2 .. 5 kHz, the low cut too hard.
+    - **Sweeps:** a sweep lasts at least one or two beats (seeded, B the other at high
+      Contrast); notes starting inside one do not restart it, so stabs move through it
+      together. The ADSR shapes' attacks are 8 .. 60 % of the sweep, so an attack sweeps
+      audibly too.
+    - **Emphasis in the middle:** the cut sits in 250 .. 600 Hz, every band at most 1 kHz for a
+      bass-like source (2.5 kHz lead-like, up to an octave more with the register); the upper
+      boost +6 dB, three quarters of it given back after the drive.
+    - **Less nasal:** the phaser's feedback 0.6 → 0.3, the drive's harmonics contained at 3 kHz
+      on the mids, the subtle asymmetric drive 16 → 9 dB at 45 %, the air's boosts +3 / +1 dB.
+    - **The low gap** takes out at most 75 % with a −4 dB bell (about −12 dB in its middle),
+      its shoulders just outside the edges boosted +4 dB, moving with it.
+    - **Follower lowpass, first in the chain** (user): a 24 dB/octave lowpass (Q 0.54 and 1.9:
+      a little resonance) on bass sources only (none on a lead-like one), opening fully (20 kHz); its
+      closed point is the seed's, 800 Hz .. 8 kHz (B its own at high Contrast), rising
+      towards the top at less amount. On the envelope follower alone it stood still on
+      a held mudpie (user: static, muffled), so the sweep's ADSR sets three quarters of the
+      opening and the follower the rest. At full, the brightness (share above 2 kHz) now
+      spans 28 dB between quiet and loud frames on one seed (was 11 dry).
+  - **Drums' Heat keeps the top:** its crush holds no samples (bits only) and the oversampler's
+    cutoff is 0.46 of the rate (was 0.42): noise hits above 10 kHz lose at most 0.5 dB at full
+    Heat (was 3.1).
+  - **Squash (D44) stronger:** a version with thresholds around each band's own mean muffled
+    the sound and brought out the low mids (user); reverted to the absolute thresholds and
+    band gains, made more aggressive mostly by lifting more: mudpie strong down thresholds
+    1 dB lower at higher ratios (5 .. 8:1), up thresholds 2 .. 4 dB higher at 3.5 .. 8:1, up to
+    20 dB; drums strong 1 dB lower down, 3 dB higher up at 2.2:1, up to 11 dB.
+- **D56** **Density fills in clusters** (2026-10-23). User: Density filled random places, a
+  lone hit every two bars that made no rhythmic sense. `cluster.rs`: a bar's rests on the
+  fill grid group into gaps between its notes; Density picks whole gaps (from 0.55, the
+  share rising as the square root to all at 1) and fills a run in each, at least two points
+  where the gap has them (40 % of the gap at the lowest, all at full): a lead-in ending on the
+  next note (65 %, its velocity growing) or a trail after the note before (fading), as hits
+  or one held note (clip fills: up to 50 % at Stabs 0 and Shape 1; the refill after the
+  operators: 25 % at Shape 1; none at Shape 0). The 8ths fill from 0.55, the Groove feel's
+  16ths above 0.8. The draws are per gap: the clip path's follow the phrase rule, the
+  refill's repeat every two bars.
+- **D57** **The render chain** (2026-10-23, user; supersedes the bar renderer's ad-hoc order,
+  the rhythmic operators and the phrase rule). A lane's bar is made by one fixed chain of
+  phases, each in its own module (`chain/`), each changing one thing, reading only what the
+  phases before it settled. The chain's result is the MIDI the sampler plays. Every draw is
+  snapshotted: keyed by the pattern seed, the letter and the note's place in the skeleton,
+  never by the bar number, so a letter plays the same way every time (the hard-coded phrase
+  rule, three bars repeated and a fourth partly re-drawn, is gone: variation over a phrase
+  comes from the form alone).
+  - **R0 Resolve:** every letter's own knob values (Contrast moves B, C and D off A, D49), its
+    speed step, its Morph move, its seeds. Contrast is decided here, once, as values every
+    later phase reads, so nothing after it undoes it.
+  - **R1 Skeleton:** the rhythm only: onsets on the 16th grid, accents, a base length (to the
+    next onset), the base note (the root; a clip's written pitch, marked fixed). Density
+    reveals and thins the skeleton's notes here (the generated figures' levels; a clip's
+    weak notes). The kick mode acts here.
+  - **R2 Structure:** A′ (a different second half), Permute (chunks swapped).
+  - **R3 Speed:** the Rate setting and the letter's speed step on the skeleton, the speed
+    limit (double speed keeps 16ths, half speed 8ths). Normal is the generator's own pace
+    (no stretch): the pace the user asked half of (2026-10-20) comes from the generator
+    writing fewer, longer notes at the centre of Density and Length.
+  - **R4 Recursion** (depth 1; Groove sets how often, about 1 in 10 notes at Groove 0.5 and 1
+    in 3 at 1; subdivision three times as often as doubling; subdivision prefers held notes,
+    doubling short ones):
+    - *Subdivision:* the note's span is replaced by a pattern of its own: the letter's
+      skeleton made again with a seed of this note (R1 to R3), a window of it (two or four
+      times the span, placed by the seed and the note, moved by Variation) squeezed into the
+      span, on a grid of 32nds at most. Its notes are a group (`origin` recursion, a group
+      id) that is never subdivided again.
+    - *Doubling:* the note takes twice its length and the notes it now overlaps are deleted;
+      the pattern after it stays where it was.
+  - **R5 Density fill:** the rests left after the recursion fill in clusters (D56).
+  - **R6 Length** (Shape, Length, Stabs): every note's length. Stab or held by a chain over
+    the notes (a stab after a stab likely, about 75 %, a lone stab rarer), the share by
+    Shape, Length and Stabs; a held note's start or end may turn into one or two stabs with
+    the rest held; legato and staccato as the Shape says. After the recursion and the fill,
+    so the knob sets the lengths of every note directly.
+  - **R7 Groove:** onsets pushed, pulled and moved off the grid, lengths nudged a little
+    (about ±10 %, never over the next note), on every note including the recursion's. Groove
+    sets how often and how far (the middle rare and mild, the top often and far); the seed
+    and Variation which notes and which way. The drums keep their swing and push here.
+  - **R8 Melody** (Spread, the seed, the harmony): the pitches for the finished rhythm, a walk
+    (D-walk rules: steps, consonant leaps, gravity to the root, the register's floor and
+    ceiling, odd blocks, Splice's counterpoint against a pitched host). A recursion group
+    plays its own short line from its parent note's pitch. A clip keeps its written pitches,
+    fitted to the key and the chord; its fills and recursion notes take pitches from the
+    walk around the clip notes before them.
+  - **R9 Operators** on the full notes of the span (D47's span cache): placed by the form
+    (Variation's chance, the seed's kind per place, snapshotted) or written in it. Kept:
+    `r` the pitch order reversed, `i` the contour mirrored, `t` sequence, `c` counter line,
+    `u`/`w` octave, `q`/`a` question and answer, `p` passing notes, `m` mutate, `h`/`x`
+    augmentation and diminution (half and double time over the span). New: `b` the span
+    backwards in time (pitches, rhythm and lengths), `v` backwards and mirrored, `z`
+    displacement (by an 8th), `j` hemiola (three against four), `g` truncation (cut short,
+    a rest), `N` neighbour tones, `P` pedal point (alternating with the root), `Y`
+    arpeggiation over the chord, `F` fragmentation (a fragment repeated), `K` call and
+    response (the span's second half answers its first). Gone, their marks no longer
+    parse: `d` dotted, `e` triplets, `o` rotation, `R` reversed rhythm, `y` syncopation (now
+    Groove), `l`/`s` legato and staccato (now Length), `n` thin (now Density), `k` split
+    (now the recursion). Contrast's B answers (mirrored or lifted) join the chain here.
+  - **R10 Splice:** a follower's fit to its host's line (D46), the lengths alike or against
+    it, the thinning by the focus, the parts of the bar.
+  - **R11 Expression:** velocities inside the Variation's window, accents, slides (ties and
+    glide, after the melody so they know the pitches), the note filter, attack, the start
+    region and Morph and pan per note, the mudpie loops.
+  - **R12 Cleanup:** sorted, no note over the next of its voice past a tie, the event cap.
+  - **Drums** run R0, R1 (their generator), R2, R5 (their own fills), R6 (choke lengths only),
+    R7 (swing, push, accents), R4 as rolls and flams (subdivision, no doubling), R9 with the
+    time operators only, R10, R11; no speed and no melody.
+  - Every note carries where it came from (`LiveEvent::origin`: skeleton, fill, recursion,
+    length split, operator; and whether its pitch is fixed) and its recursion group.
+  - **As built (2026-10-23):** `crate::chain` (speed, recursion, fill, groove, cleanup), the
+    bass generator split into its phases (`render_bar` the skeleton, `fill`, `lengths`,
+    `melody`, `expression` on `LaneGenerator`), the operators in `ops.rs`, the form builder
+    without rhythm operators (`FormSpec` lost its Density and Groove bands; the shared host
+    form's byte for them is reserved). Gone with it: the bass's rhythm cells, ratchets, half
+    beats, phrase-end turnaround, clip splits and syncopation, motif mode (no caller), the
+    letter's triplet reflow on the bass, the half-speed centre (Normal is Rate 0).
+    - Measured (10 seeds × 32 bars of generated forms, the bass at Density 0.5): Groove 0 puts
+      18 % of the notes on the 1, 29 % on the other beats, 16 % on off 8ths, 28 % on off 16ths
+      (half speed had 29 % and 29 % on the 1 and the beats, 7 % and 5 % off them); Groove 0.5
+      moves 22 % off the 16ths and recurses 14 % of the notes; Groove 1 moves 42 % and recurses
+      42 % (clips 35 %), the beats down to 14 %.
+    - A held fill run is a figure (`flags::FIGURE`): the Length phase keeps it held. A clip
+      plays as written at the middle of Stabs (its stab or held notes flip only off the middle).
+    - The partial stabs, the fill and the speed share the finest grid the speed allows.
+    - Splice's counter end: 6 % of the moving pairs land in parallel perfect intervals (2.7 %
+      at half speed's 8ths); the downbeat's root, an anchor, keeps its place across a barline.
+- **D58** **Neuro: the split sums flat, the chorus last** (2026-10-23, user). Research into why
+  Neuro sounded degraded found the sub and the processed band meeting in antiphase at the
+  130 Hz split (the band was highpassed a second time, the sub was not): with every stage off
+  a sine came out −79 dB at 130 Hz, −8 at 110 and −9 at 150 Hz, at any amount. Now the dry
+  band's part under that second highpass is added back and the sub takes the same split's
+  allpass, plus the crossovers the band passes near it as allpasses (the drive's low one,
+  moving with the register, and the low gap's two edges, moving with the note): from 60 to
+  250 Hz a sine comes out within ±2 dB at a touch of Neuro and in full. The chorus (detune)
+  moved from before the drive to the end of the chain, wide stereo (each side its own copy),
+  at most 30 % wet: before the drive its copies distorted against each other, the most
+  off-harmonic energy of any stage (a saw +8 dB). Open from the research: a mudpie's chords
+  intermodulate in the drive (+13 dB off-harmonic on a three-note chord), the moving bells
+  are direct-form biquads (TPT filters would modulate cleaner), the comb and phaser tune to
+  the played key, which a mudpie's pitch may not be.
+- **Cost** (2026-10-23, clap-validator's parameter fuzz ran 48 s against its 45 s limit):
+  the multiband distortion measures a pass's makeup again only when its drive moves 0.1 dB,
+  the Squash makes its band settings only when the amount or the tempo changes, and the
+  oversampling is 1× on the tape low bands, 2× on the mids and the slight tops (the drums'
+  hard-clipped mids keep 4×). Neuro 10.5× → 15.4× realtime, Heat 27× → 61× (one core,
+  optimised); the fuzz 43 s.
+- **Snapshotted operators (D52, cont.):** which operator a slot plays is fixed by the fill seed per
+    letter and kind of place (before a change, period end, repeat, other; the rhythm ones the
+    same for every letter at one lean), the same in both passes and every rule attempt.
+    Variation (melodic) and Density (rhythm) decide only how many of the slots play it, by
+    the slot's place, so turning them up adds occurrences of the same operators.
 
 - **D30** Pool fixes: unsure files sit in an unsorted bin, any file moves to another pool in one
   click, and these overrides are saved per machine by path. An audition browser lists each pool.
@@ -641,12 +952,12 @@ suggested settings. Turning a knob or automating it moves away from that center.
 
 | Knob | Bass | Drums |
 |---|---|---|
-| **Density** | notes, note length; clips (D50): as written at the middle, weak notes thinned below, long notes split into 8ths or 16ths above; how many rhythm operators the form's slots get (D51) | hits, voices coming in (tops included), loop gating; how many rhythm operators (D51) |
-| **Contrast** | how far B moves from A (A plays the knobs): 0 the same settings, 1 the other side of the question and answer on every axis, in seeded directions; C and D around A and B (D49); how far the letters' rhythm operators part, B to the other side of the Groove (D51) | the same, with the drum axes |
+| **Density** | the skeleton's notes (about 2.5 a bar at the middle, D57), note length; clips (D50): as written at the middle, weak notes thinned below; from 0.55 the rests fill in clusters (D56), taking more of a held note's time the higher | hits, voices coming in (tops included), loop gating |
+| **Contrast** | how far B moves from A (A plays the knobs): 0 the same settings, 1 the other side of the question and answer on every axis, in seeded directions; C and D around A and B (D49) | the same, with the drum axes |
 | *Permute* (parameter, no knob since D49) | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
-| **Variation** | syncopation, rewrites, fills, how many beats take a rhythm cell, how many long notes loop (D43); scales the seeded accents, stab drive and filter sweep; how far the operators go and how many melodic ones (not the rhythm ones, D51) | rewrites, fills, ghost notes; scales the seeded accents and velocity range; the operators as on the bass |
-| **Groove** | syncopation: a seeded share of on-8th notes moves a 16th or 8th early or a 16th late, landing accented (the bar's first note stays); the lane's own times in triplets, straight or dotted (D45); which rhythm operators the form picks, straight to funky, and `k`'s subdivision (D51) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts; the lane's own times in triplets, straight or dotted (D45); the rhythm operators and `k`'s roll as on the bass (D51) |
-| **Shape** | stabby to sustained: length (short stabs at 0, as written in the middle, held at full; Density's splits and fills then play as short subdivided hits at low Shape, 2026-10-21), expression, filter bite, the release (the designed one up to a quarter; held notes sustain at −1 dB, 2026-10-20); at full every note holds into the next (legato, no stabs) except the figures (cells, ratchets), which keep their lengths | tight to open: choke (at full Shape a retrigger fades over about 400 ms), loop hold, decay (it shortens every voice, the kick too, and lengthens none); the attack stays instant at every setting; a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to a dotted 8th, the hats and cymbals half as long and a little weaker, the kick a faint dotted 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
+| **Variation** | how far the operators go and how many slots play one; the mix of the Groove's moves (one way per letter at 0, each note its own at 1) and where a subdivision's window sits (D57); how many long notes loop (D43); scales the seeded accents, stab drive and filter sweep; how far B, C and D move Morph off A's (D52); Variation itself plays as set | rewrites, fills, ghost notes; scales the seeded accents and velocity range; the operators as on the bass |
+| **Groove** | how often and how far notes move off the grid (pushes, pulls, 64th steps; rare and mild at the middle, often and up to an 8th at the top) and their lengths nudge, and how often notes recurse (a subdivision with the skeleton's own pattern, or a doubling; about 1 in 10 at the middle, 1 in 3 at the top, D57); the lane's own times in triplets, straight or dotted (D45) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts; rolls and flams (D57, rarer than the bass's recursion); the lane's own times in triplets, straight or dotted (D45) |
+| **Shape** | stabby to sustained: the attack (5 ms .. 100 ms, D52), length (short stabs at 0, as written in the middle, held at full; Density's splits and fills then play as short subdivided hits at low Shape, 2026-10-21), expression, filter bite, the release (the designed one up to a quarter; held notes sustain at −1 dB, 2026-10-20); at full every note holds into the next (legato, no stabs) except the figures (held fill runs), which keep their lengths; stabs come in runs (D57), a held note's start or end sometimes a stab | tight to open: choke (at full Shape a retrigger fades over about 400 ms), loop hold, decay (it shortens every voice, the kick too, and lengthens none); the attack stays instant at every setting; a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to a dotted 8th, the hats and cymbals half as long and a little weaker, the kick a faint dotted 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style; a ring modulator above 400 Hz (the lows stay clean) fades in from a fifth to at most 30 %, its seeded carrier rising an octave and turning from sine to square |
 | **Spread** | width: octave lifts, jump size, notes above the home root spread in stereo (the sub stays centred), deeper filter LFO and envelope | — |
 | **Slide** | how often notes slide (up to 45 % of eligible notes) and the glide time, 30 ms to 250 ms; also the glide of the full-Shape legato; liquid: up to 35 % more held notes tie, filter glide 4 to 160 ms, vibrato on held notes | — |

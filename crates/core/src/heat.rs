@@ -2,13 +2,20 @@
 //! and the drums' ring modulator (Morph).
 //!
 //! Heat clips from the first touch, its threshold falling all the way up
-//! the knob. The tanh saturation comes in from a fifth and drives harder up
-//! to the top, level-matched so the lane keeps about its loudness. From the
-//! middle the bitcrush fades in: fewer bits and a held sample rate, mixed
-//! in gradually. A tilt around [`TILT_HZ`] before the saturation (undone
-//! after it) moves where it bites: low Tone drives the lows, high Tone the
-//! highs. RT-safe, no allocation.
+//! the knob, the crush comes last. The saturation is multiband (D54, [`crate::mbdist`]): it comes
+//! in from a fifth and drives harder up to the top, each band through its
+//! own curve, never all wet, level-matched so the lane keeps about its
+//! loudness. The bass: subtle tape on the low band (the sub stays solid),
+//! a tube then a slight tanh on the mids, a soft top; the drums: tape on
+//! the kick's band, a drive then a slight hard clip on the snare's, a
+//! slight tube on top, all mixed in under the clean hits so the transients
+//! stay. From the middle the bitcrush fades in: fewer bits and a
+//! held sample rate, mixed in gradually. A tilt around [`TILT_HZ`] before
+//! the saturation (undone after it) and the bands' drives move where it
+//! bites: low Tone drives the lows, high Tone the highs. RT-safe, no
+//! allocation.
 
+use crate::mbdist::{BandConfig, Curve, MbConfig, MbDist, Pass};
 use crate::types::StereoSample;
 
 // MUSICAL: first draft, tune by ear (user: clip hard enough, saturation
@@ -19,15 +26,42 @@ const CLIP_THRESHOLD: (f32, f32) = (0.95, 0.25);
 /// Where the saturation and the crush start, as Heat values.
 const SATURATE_FROM: f32 = 0.2;
 const CRUSH_FROM: f32 = 0.5;
-/// Saturation drive at full Heat, in dB, and its curve.
-const DRIVE_DB: f32 = 30.0;
+/// The saturation's curve over Heat.
 const DRIVE_CURVE: f32 = 1.3;
-/// Asymmetry of the saturation at full Heat (even harmonics).
-const ASYMMETRY: f32 = 0.2;
-/// Level the saturation's make-up gain keeps (about −10 dBFS).
-const MAKEUP_LEVEL: f32 = 0.3;
-/// RMS of a sine against a square of the same peak.
-const SQUARE_RMS: f32 = std::f32::consts::FRAC_1_SQRT_2;
+// MUSICAL: tune by ear (user, 2026-10-23: very subtle tape on the low
+// end up to about 150 Hz, the mids to 1 kHz in two stages, a character
+// drive that grows highs from the mids and a slight symmetric one that
+// brings it out, the highs only slightly; Heat like the neuro drive with
+// slightly different curves). The bands at full Heat.
+const BASS_HEAT: MbConfig = MbConfig {
+    xover: (150.0, 1000.0),
+    bands: [
+        BandConfig { passes: [Pass { curve: Curve::Tape, drive_db: 6.0, wet: 0.45 }, Pass::OFF], contain: 0.0, oversample: 1 },
+        BandConfig {
+            passes: [Pass { curve: Curve::Tube, drive_db: 24.0, wet: 0.7 }, Pass { curve: Curve::Tanh, drive_db: 10.0, wet: 0.4 }],
+            contain: 6.0,
+            oversample: 2,
+        },
+        BandConfig { passes: [Pass { curve: Curve::Tanh, drive_db: 8.0, wet: 0.3 }, Pass::OFF], contain: 0.0, oversample: 2 },
+    ],
+};
+const DRUM_HEAT: MbConfig = MbConfig {
+    xover: (150.0, 1200.0),
+    bands: [
+        BandConfig { passes: [Pass { curve: Curve::Tape, drive_db: 8.0, wet: 0.35 }, Pass::OFF], contain: 0.0, oversample: 1 },
+        BandConfig {
+            passes: [Pass { curve: Curve::Drive, drive_db: 18.0, wet: 0.35 }, Pass { curve: Curve::Hard, drive_db: 8.0, wet: 0.25 }],
+            contain: 4.0,
+            oversample: 4,
+        },
+        BandConfig { passes: [Pass { curve: Curve::Tube, drive_db: 6.0, wet: 0.2 }, Pass::OFF], contain: 0.0, oversample: 2 },
+    ],
+};
+/// How far Tone moves drive between the low and the high band (dB at full
+/// Tone either way, the mids stay).
+const TONE_BAND_DB: f32 = 9.0;
+/// Frames Heat works on at a time (its scratch).
+const HEAT_CHUNK: usize = 64;
 /// Bits at the crush's start and at full Heat, and the most samples held.
 const BITS: (f32, f32) = (12.0, 7.0);
 const HOLD_MAX: f32 = 4.0;
@@ -36,17 +70,12 @@ const CRUSH_MIX_MAX: f32 = 0.5;
 /// Tilt split frequency and the tilt at full Tone and full Heat, in dB.
 pub const TILT_HZ: f32 = 700.0;
 const TILT_DB: f32 = 12.0;
-/// The drums' saturation share at full Heat, next to the clean hits (user,
-/// 2026-10-20: from about 55 % Heat destroyed the transients).
-const DRUM_SATURATION_MIX: f32 = 0.35;
 /// Level match: the time the loudness followers average over, and the
 /// make-up range.
 const LEVEL_SECS: f32 = 0.5;
 const LEVEL_RANGE: (f32, f32) = (0.5, 2.0);
 /// The highs' extra weight in the level match (+4 dB, as K-weighting).
 pub(crate) const K_HIGH: f32 = 0.58;
-/// DC blocker cutoff.
-const DC_HZ: f32 = 10.0;
 
 /// One-pole lowpass state per channel.
 #[derive(Debug, Clone, Copy, Default)]
@@ -132,13 +161,12 @@ impl LevelMatch {
 pub struct Heat {
     held: [f32; 2],
     hold_left: u32,
-    dc: OnePole,
     pre: OnePole,
     post: OnePole,
-    /// One-pole coefficients of the tilt split and of the DC blocker.
+    /// One-pole coefficient of the tilt split.
     tilt_a: f32,
-    dc_a: f32,
     level: LevelMatch,
+    mb: MbDist,
 }
 
 impl Default for Heat {
@@ -156,12 +184,11 @@ impl Heat {
         Self {
             held: [0.0; 2],
             hold_left: 0,
-            dc: OnePole::default(),
             pre: OnePole::default(),
             post: OnePole::default(),
             tilt_a: one_pole(TILT_HZ, sample_rate),
-            dc_a: one_pole(DC_HZ, sample_rate),
             level: LevelMatch::new(sample_rate, LEVEL_RANGE, K_HIGH),
+            mb: MbDist::new(sample_rate),
         }
     }
 
@@ -169,7 +196,7 @@ impl Heat {
     /// 0..1 tilts the saturation's focus (0.5 = flat). On the `drums` the
     /// transients stay: the clip only shaves the very peaks at every Heat
     /// (the lane comes in at its calibrated loudness) and the saturation
-    /// runs in parallel with the clean hits.
+    /// is mixed in under the clean hits.
     pub fn process(&mut self, buf: &mut [StereoSample], amount: f32, tone: f32, drums: bool) {
         let h = amount.clamp(0.0, 1.0);
         if h <= 0.0 {
@@ -178,41 +205,52 @@ impl Heat {
         // Squared: the low end of the knob only shaves the very peaks.
         let clip_t = if drums { CLIP_THRESHOLD.0 } else { CLIP_THRESHOLD.0 + (CLIP_THRESHOLD.1 - CLIP_THRESHOLD.0) * h * h };
         let sat = ((h - SATURATE_FROM) / (1.0 - SATURATE_FROM)).clamp(0.0, 1.0);
-        let wet = if drums { DRUM_SATURATION_MIX * sat } else { 1.0 };
         let crush = ((h - CRUSH_FROM) / (1.0 - CRUSH_FROM)).clamp(0.0, 1.0);
-        let drive = 10f32.powf(DRIVE_DB * sat.powf(DRIVE_CURVE) / 20.0);
-        let bias = ASYMMETRY * sat;
-        // Peaks matched at the make-up level, less the RMS a squarer wave gains.
-        let makeup = MAKEUP_LEVEL / ((drive * MAKEUP_LEVEL + bias).tanh() - bias.tanh()).max(1e-6) * (1.0 - (1.0 - SQUARE_RMS) * sat);
         let steps = 2f32.powf(BITS.0 + (BITS.1 - BITS.0) * crush) / 2.0;
-        let hold = 1 + (crush * crush * (HOLD_MAX - 1.0)).round() as u32;
+        // The drums keep their top: bits only, no held sample rate.
+        let hold = if drums { 1 } else { 1 + (crush * crush * (HOLD_MAX - 1.0)).round() as u32 };
         let crush_mix = CRUSH_MIX_MAX * crush * crush * (3.0 - 2.0 * crush);
-        // Tilt: lows up and highs down for low Tone, the other way for high.
-        let tilt = 10f32.powf(TILT_DB * sat * (2.0 * tone.clamp(0.0, 1.0) - 1.0) / 20.0);
+        // Tilt: lows up and highs down for low Tone, the other way for high;
+        // the bands' drives follow it.
+        let t = 2.0 * tone.clamp(0.0, 1.0) - 1.0;
+        let tilt = 10f32.powf(TILT_DB * sat * t / 20.0);
         let (lo_g, hi_g) = (1.0 / tilt, tilt);
-        for s in buf.iter_mut() {
-            let mut x = [s.left, s.right].map(|v| soft_clip(v, clip_t));
-            if crush_mix > 0.0 {
-                if self.hold_left == 0 {
-                    self.held = x.map(|v| (v * steps).round() / steps);
-                    self.hold_left = hold;
+        let band_tilt = [-TONE_BAND_DB * sat * t, 0.0, TONE_BAND_DB * sat * t];
+        let cfg = if drums { &DRUM_HEAT } else { &BASS_HEAT };
+        let drive = sat.powf(DRIVE_CURVE);
+        for block in buf.chunks_mut(HEAT_CHUNK) {
+            let mut dry = [StereoSample::silence(); HEAT_CHUNK];
+            dry[..block.len()].copy_from_slice(block);
+            for s in block.iter_mut() {
+                let mut x = [s.left, s.right].map(|v| soft_clip(v, clip_t));
+                if sat > 0.0 {
+                    let lo = self.pre.low(x, self.tilt_a);
+                    x = [0, 1].map(|c| lo[c] * lo_g + (x[c] - lo[c]) * hi_g);
                 }
-                self.hold_left -= 1;
-                x = [0, 1].map(|c| x[c] + (self.held[c] - x[c]) * crush_mix);
+                (s.left, s.right) = (x[0], x[1]);
             }
             if sat > 0.0 {
-                let lo = self.pre.low(x, self.tilt_a);
-                let tilted = [0, 1].map(|c| lo[c] * lo_g + (x[c] - lo[c]) * hi_g);
-                let y = tilted.map(|v| ((drive * v + bias).tanh() - bias.tanh()) * makeup);
-                let lo = self.post.low(y, self.tilt_a);
-                let flat = [0, 1].map(|c| lo[c] / lo_g + (y[c] - lo[c]) / hi_g);
-                // The asymmetry leaves a DC offset: block it.
-                let dc = self.dc.low(flat, self.dc_a);
-                x = [0, 1].map(|c| x[c] + (flat[c] - dc[c] - x[c]) * wet);
+                self.mb.process(block, cfg, drive, band_tilt);
             }
-            // Level match: the output follows the input's loudness (slow).
-            let g = self.level.gain([s.left, s.right], x);
-            *s = StereoSample { left: flush(x[0] * g), right: flush(x[1] * g) };
+            for (s, d) in block.iter_mut().zip(&dry) {
+                let mut y = [s.left, s.right];
+                if sat > 0.0 {
+                    let lo = self.post.low(y, self.tilt_a);
+                    y = [0, 1].map(|c| lo[c] / lo_g + (y[c] - lo[c]) / hi_g);
+                }
+                // The crush on the driven sound (its steps stay sharp).
+                if crush_mix > 0.0 {
+                    if self.hold_left == 0 {
+                        self.held = y.map(|v| (v * steps).round() / steps);
+                        self.hold_left = hold;
+                    }
+                    self.hold_left -= 1;
+                    y = [0, 1].map(|c| y[c] + (self.held[c] - y[c]) * crush_mix);
+                }
+                // Level match: the output follows the input's loudness (slow).
+                let g = self.level.gain([d.left, d.right], y);
+                *s = StereoSample { left: flush(y[0] * g), right: flush(y[1] * g) };
+            }
         }
     }
 }
@@ -365,10 +403,14 @@ mod tests {
             assert!(out.iter().all(|s| s.left.is_finite()));
             let db = 20.0 * (rms(&out[4800..]) / rms(&input[4800..])).log10();
             assert!(db.abs() < 4.0, "Heat {h}: {db} dB");
-            // Distortion: what is left after the best-fit sine.
-            let k = out[4800..].iter().zip(&input[4800..]).map(|(o, i)| o.left * i.left).sum::<f32>()
-                / input[4800..].iter().map(|i| i.left * i.left).sum::<f32>();
-            let residue: f32 = out[4800..].iter().zip(&input[4800..]).map(|(o, i)| (o.left - k * i.left).powi(2)).sum();
+            // Distortion: what is left after the best-fit sine at any phase
+            // (the crossovers turn it).
+            let n = out.len() - 4800;
+            let (sn, cs): (Vec<f32>, Vec<f32>) = (0..n).map(|i| (((i + 4800) as f32 * 0.05).sin(), ((i + 4800) as f32 * 0.05).cos())).unzip();
+            let o: Vec<f32> = out[4800..].iter().map(|s| s.left).collect();
+            let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+            let (a, b) = (dot(&o, &sn) / dot(&sn, &sn), dot(&o, &cs) / dot(&cs, &cs));
+            let residue: f32 = (0..n).map(|i| (o[i] - a * sn[i] - b * cs[i]).powi(2)).sum();
             assert!(residue > last, "Heat {h} distorts more");
             last = residue;
         }
@@ -392,9 +434,10 @@ mod tests {
             crest(&b[48_000..])
         };
         let dry = crest(&hits[48_000..]);
+        // (Since the multiband Heat, D54, the bass keeps its transients too.)
         for h in [0.55, 0.8, 1.0] {
-            let (drums, bass) = (run(h, true), run(h, false));
-            assert!(dry - drums < 4.0 && drums > bass + 2.0, "Heat {h}: dry {dry:.1}, drums {drums:.1}, bass {bass:.1} dB crest");
+            let drums = run(h, true);
+            assert!(dry - drums < 4.0, "Heat {h}: dry {dry:.1}, drums {drums:.1} dB crest");
         }
     }
 
@@ -402,7 +445,7 @@ mod tests {
     fn the_crush_fades_in_from_the_middle() {
         let input = sine(0.3, 9600);
         let steps = |b: &[StereoSample]| b.windows(2).filter(|w| (w[0].left - w[1].left).abs() < 1e-4).count();
-        let held: Vec<usize> = [0.45, 0.6, 0.8, 1.0].iter().map(|&h| steps(&heated(h, 0.5, &input))).collect();
+        let held: Vec<usize> = [0.45, 0.75, 0.9, 1.0].iter().map(|&h| steps(&heated(h, 0.5, &input))).collect();
         // Below the middle no held samples beyond chance, above it there are.
         assert!(held[1..].iter().all(|h| *h > held[0]), "{held:?}");
     }
@@ -457,5 +500,39 @@ mod tests {
         // Capped: a mix of 1 rings no more than the cap.
         assert!((high - change(&tone(4000.0), RING_MIX_MAX)).abs() < 0.1);
         assert_eq!(change(&tone(4000.0), 0.0), f32::NEG_INFINITY);
+    }
+}
+#[cfg(test)]
+mod top_tests {
+    use super::*;
+
+    #[test]
+    fn drum_heat_keeps_the_top() {
+        // User, 2026-10-23: Heat on the drums lost the highs above 10 kHz
+        // (the crush's held samples, the oversampler's cutoff). Noise hits.
+        let sr = 48_000.0;
+        let mut seed = 1u32;
+        let x: Vec<StereoSample> = (0..96_000).map(|i| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let n = (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
+            let env = (-((i % 12_000) as f32) / 2400.0).exp();
+            let v = 0.5 * n * env;
+            StereoSample { left: v, right: v }
+        }).collect();
+        let top = |b: &[StereoSample]| {
+            let mut hp = crate::dsp::Butter4::default();
+            hp.highpass(10_000.0, sr);
+            let (mut e, mut a) = (0.0, 0.0);
+            for s in &b[48_000..] { let h = hp.run([s.left, s.right]); e += h[0] * h[0]; a += s.left * s.left; }
+            (10.0 * f32::log10(e), 10.0 * f32::log10(a))
+        };
+        let dry = top(&x).0;
+        for h in [0.3, 0.5, 0.75, 1.0] {
+            let mut y = x.clone();
+            let mut heat = Heat::new(sr);
+            for b in y.chunks_mut(256) { heat.process(b, h, 0.5, true); }
+            let (t, _) = top(&y);
+            assert!(dry - t < 1.0, "Heat {h}: the top {:.1} dB down", dry - t);
+        }
     }
 }

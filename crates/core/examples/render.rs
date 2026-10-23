@@ -9,7 +9,10 @@
 //! ```
 //!
 //! `--form N` plays the form seed N builds (all three form seeds N), or a
-//! form as written; `--param name=value` sets a generator parameter.
+//! form as written; `--param name=value` sets a generator parameter;
+//! `--neuro 0..1` runs the bass's neuro chain (D53) on the output,
+//! `--timbre centroid,bright,sub,over_1k` gives it a scanned file's
+//! spectrum (at `--root`).
 
 
 use std::path::PathBuf;
@@ -84,7 +87,7 @@ fn main() {
         match s.parse::<u32>() {
             Ok(seed) => {
                 let drums = player.lane().role() == mesh_vst_core::role::Role::Drums;
-                player.lane_mut().set_form_spec(FormSettings::seeded(seed).spec(drums, 0.5, 0.5, 0.5, 0.5, 0.5));
+                player.lane_mut().set_form_spec(FormSettings::seeded(seed).spec(drums, 0.5, 0.5, 0.5));
             }
             Err(_) => player.lane_mut().set_form(Form::parse(&s).unwrap_or_else(|e| fail(&format!("form: {e:?}")))),
         }
@@ -100,12 +103,23 @@ fn main() {
     let spec = hound::WavSpec { channels: 2, sample_rate: SR, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
     let mut wav = hound::WavWriter::create(&out_path, spec).unwrap_or_else(|e| fail(&format!("{out_path}: {e}")));
     let mut buf = vec![StereoSample::silence(); 256];
+    let neuro_amount = num("neuro", 0.0) as f32;
+    let mut neuro = mesh_vst_core::neuro::Neuro::new(SR as f32);
+    let neuro_knobs = mesh_vst_core::neuro::NeuroKnobs { amount: neuro_amount, shape: 0.3, morph: 0.5, variation: 0.5, spread: 0.5, contrast: 0.5, sound_seed: sound, letter: 0, timbre: one("timbre").map(|t| {
+        let v: Vec<f32> = t.split(',').map(|x| x.parse().unwrap_or_else(|_| fail("--timbre centroid,bright"))).collect();
+        let at = |i: usize| v.get(i).copied().unwrap_or(0.0);
+        (mesh_vst_core::library::Timbre { centroid: at(0), bright: at(1), flat: 0.0, sub: at(2), over_1k: at(3), version: mesh_vst_core::library::TIMBRE_VERSION }, num("root", 41.0) as u8)
+    }) };
     let mut pos = 0;
     let mut peak = 0.0f32;
     while pos < total {
         let n = 256.min(total - pos);
         let beat = pos as f64 * bpm / 60.0 / SR as f64;
         player.process(&mut buf[..n], &Transport { playing: true, beat, bpm });
+        if neuro_amount > 0.0 {
+            let letter = player.rendered().map_or(0, |(_, b)| b.letter);
+            neuro.process(&mut buf[..n], player.fired(), &mesh_vst_core::neuro::NeuroKnobs { letter, ..neuro_knobs }, bpm / 60.0 / SR as f64);
+        }
         for s in &buf[..n] {
             peak = peak.max(s.left.abs()).max(s.right.abs());
             wav.write_sample(s.left).and_then(|_| wav.write_sample(s.right)).unwrap_or_else(|e| fail(&e.to_string()));

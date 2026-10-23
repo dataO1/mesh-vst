@@ -116,6 +116,8 @@ pub enum Knob {
     Squash,
     /// D49: replaces Permute on the panel (Permute stays a parameter).
     Contrast,
+    /// D53: the bass's neuro chain.
+    Neuro,
 }
 
 impl Knob {
@@ -135,6 +137,7 @@ impl Knob {
             Knob::Splice => &p.splice,
             Knob::Squash => &p.squash,
             Knob::Contrast => &p.contrast,
+            Knob::Neuro => &p.neuro,
         }
     }
 }
@@ -1100,7 +1103,7 @@ impl Gui {
             let on = form.pins[i].is_some();
             phrases = phrases.push(button(text(l).font(DATA_FONT).size(11)).on_press(Message::PinPhrase(i)).padding([3, 6]).style(move |_, s| btn(on, s)));
         }
-        let (plan, recipes) = form_summary(&form, drums, [p.variation.value(), p.shape.value(), p.contrast.value(), p.density.value(), p.swing.value()]);
+        let (plan, recipes) = form_summary(&form, drums, [p.variation.value(), p.shape.value(), p.contrast.value()]);
         left = left.push(
             column![
                 text(format!("FORM · {plan}, then {recipes}")).font(DATA_FONT).size(11).color(DIM),
@@ -1132,7 +1135,7 @@ impl Gui {
                 right = right.push(knob(p, k, self.hit_marker(k)));
             }
         } else {
-            for k in [Knob::Shape, Knob::Morph, Knob::Spread, Knob::Slide, Knob::Heat] {
+            for k in [Knob::Shape, Knob::Morph, Knob::Spread, Knob::Slide, Knob::Heat, Knob::Neuro] {
                 right = right.push(knob(p, k, self.hit_marker(k)));
             }
             let source = p.bass_source.value();
@@ -1859,10 +1862,10 @@ impl Gui {
 
 /// The plan and the second pass's recipes of the form `form` builds at the
 /// knob positions (the seeds' centres aside), for the form panel.
-fn form_summary(form: &mesh_vst_core::macros::FormSettings, drums: bool, [variation, shape, contrast, density, groove]: [f32; 5]) -> (&'static str, String) {
+fn form_summary(form: &mesh_vst_core::macros::FormSettings, drums: bool, [variation, shape, contrast]: [f32; 3]) -> (&'static str, String) {
     let mut b = mesh_vst_core::arrange::FormBuilder::new();
     let mut f = mesh_vst_core::form::Form::generated();
-    b.build(&form.spec(drums, variation, shape, contrast, density, groove), &mut f);
+    b.build(&form.spec(drums, variation, shape, contrast), &mut f);
     let recipes: Vec<&str> = b.recipe_names().into_iter().flatten().collect();
     (b.plan_name(), recipes.join(" + "))
 }

@@ -110,7 +110,35 @@ pub struct Entry {
     pub beats: Option<u32>,
     /// Pitched material: the MIDI key it sounds at.
     pub root: Option<u8>,
+    /// Its spectrum (D53: the neuro chain reads it); `None` in a library
+    /// saved before it, scanned again.
+    #[serde(default)]
+    pub timbre: Option<Timbre>,
 }
+
+/// What a file sounds like, as the neuro chain (D53) reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Timbre {
+    /// The power-weighted centroid above 130 Hz, in Hz, at its root.
+    pub centroid: f32,
+    /// The share of the power above 130 Hz that lies above 1.5 kHz.
+    pub bright: f32,
+    /// Spectral flatness 0..1 (noise near 1).
+    pub flat: f32,
+    /// The share of all the power below 130 Hz (a bass's sub), and of the
+    /// power above 130 Hz that lies above 1 kHz (what turns harsh when
+    /// driven).
+    #[serde(default)]
+    pub sub: f32,
+    #[serde(default)]
+    pub over_1k: f32,
+    /// [`TIMBRE_VERSION`] when scanned; older entries scan again.
+    #[serde(default)]
+    pub version: u8,
+}
+
+/// The [`Timbre`] the scan writes now.
+pub const TIMBRE_VERSION: u8 = 2;
 
 /// File extensions the library reads.
 pub const AUDIO_EXTENSIONS: [&str; 5] = ["wav", "flac", "aif", "aiff", "ogg"];
@@ -157,7 +185,7 @@ impl Library {
             let Ok(meta) = fs::metadata(&path) else { continue };
             let size = meta.len();
             let mtime = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-            let known = self.entries.get(&path).filter(|e| e.size == size && e.mtime == mtime).cloned();
+            let known = self.entries.get(&path).filter(|e| e.size == size && e.mtime == mtime && e.timbre.is_some_and(|t| t.version == TIMBRE_VERSION)).cloned();
             let entry = match known {
                 Some(e) => e,
                 None => {
@@ -192,6 +220,7 @@ impl Library {
             bpm,
             beats,
             root,
+            timbre: Some(Timbre { centroid: f.centroid, bright: f.bright, flat: f.flat, sub: f.sub, over_1k: f.over_1k, version: TIMBRE_VERSION }),
         })
     }
 
@@ -441,7 +470,7 @@ mod tests {
             .enumerate()
         {
             let path = PathBuf::from(format!("/lib/{i}.wav"));
-            let e = Entry { path: path.clone(), size: 1, mtime: 1, hash: i as u64 + 1, detected: pool, tag, secs: 1.0, bpm: None, beats: None, root: None };
+            let e = Entry { path: path.clone(), size: 1, mtime: 1, hash: i as u64 + 1, detected: pool, tag, secs: 1.0, bpm: None, beats: None, root: None, timbre: None };
             lib.entries.insert(path, e);
         }
         let a = lib.pick(Pool::Cymbal, 5, 0, None).map(|e| e.path.clone());

@@ -168,7 +168,11 @@ pub fn load_mudpie(lib: &Library, path: &Path, sample_rate: u32) -> Result<Share
     let root = lib.entry(path).and_then(|e| e.root).unwrap_or(DEFAULT_MUDPIE_ROOT);
     // A mudpie plays from seeded positions across the whole file: its
     // silent stretches go, so every position sounds.
-    load_trimmed(path, root, sample_rate, 0.0, Trim::Gaps).map(share)
+    let timbre = lib.entry(path).and_then(|e| e.timbre);
+    load_trimmed(path, root, sample_rate, 0.0, Trim::Gaps).map(|mut d| {
+        d.timbre = timbre;
+        share(d)
+    })
 }
 
 /// Which silence a load cuts.
@@ -313,8 +317,11 @@ fn load_trimmed(path: &Path, root: u8, sample_rate: u32, offset_db: f64, trim: T
     let lufs = if frames.len() < (rate * 0.4).ceil() as usize { measure_hit_lufs(&frames, rate) } else { measure_lufs(&frames, rate) };
     let norm = if lufs.is_finite() { (SAMPLE_LOUDNESS_TARGET - lufs).clamp(-CUT_MAX_DB, BOOST_MAX_DB) } else { 0.0 };
     let gain = 10f64.powf((norm + offset_db) / 20.0) as f32;
-    let left: Vec<f32> = frames.iter().map(|s| s.left * gain).collect();
-    let right: Vec<f32> = frames.iter().map(|s| s.right * gain).collect();
+    let mut left: Vec<f32> = frames.iter().map(|s| s.left * gain).collect();
+    let mut right: Vec<f32> = frames.iter().map(|s| s.right * gain).collect();
+    if trim == Trim::Gaps {
+        cut_quiet_tail(&mut left, &mut right, rate);
+    }
     let cents = data.root_cents;
     let gains = if trim == Trim::Gaps { level_gains(&left, &right, rate) } else { Vec::new() };
     SampleData::from_channels(&left, &right, data.sample_rate(), root)
@@ -328,6 +335,40 @@ fn load_trimmed(path: &Path, root: u8, sample_rate: u32, offset_db: f64, trim: T
 const LEVEL_WINDOW_SECS: f64 = 0.4;
 /// Largest correction of a part's level, in dB.
 const LEVEL_MAX_DB: f32 = 18.0;
+
+// MUSICAL: tune by ear (user, 2026-10-21: a one-shot chord as a mudpie had
+// far too much dynamic range: notes streaming from its decayed tail were
+// 20 .. 40 dB down). A stream ends where it stays this far under its
+// overall level to the end, so the level map evens out what is left.
+const STREAM_TAIL_DB: f32 = 12.0;
+
+/// Cut a stream's tail from where every [`LEVEL_WINDOW_SECS`] window to the
+/// end is [`STREAM_TAIL_DB`] under the overall level, with a short fade.
+/// A steady stream keeps all of it.
+fn cut_quiet_tail(left: &mut Vec<f32>, right: &mut Vec<f32>, rate: f64) {
+    let n = left.len();
+    let window = ((LEVEL_WINDOW_SECS * rate) as usize).max(1);
+    if n <= 2 * window {
+        return;
+    }
+    let power = |a: usize, b: usize| (a..b).map(|i| 0.5 * (left[i] * left[i] + right[i] * right[i])).sum::<f32>() / (b - a).max(1) as f32;
+    let floor = power(0, n) * 10f32.powf(-STREAM_TAIL_DB / 10.0);
+    // The end of the last window that is loud enough (hop: a quarter window).
+    let hop = (window / 4).max(1);
+    let Some(last) = (0..=(n - window) / hop).rev().map(|k| k * hop).find(|&a| power(a, a + window) >= floor) else { return };
+    let end = (last + window).min(n);
+    if end >= n {
+        return;
+    }
+    left.truncate(end);
+    right.truncate(end);
+    let fade = ((ONE_SHOT_FADE_SECS * rate) as usize).min(end);
+    for k in 0..fade {
+        let g = 1.0 - (k as f32 + 0.5) / fade as f32;
+        left[end - fade + k] *= g;
+        right[end - fade + k] *= g;
+    }
+}
 
 /// Per part of the sample, the gain that brings the next
 /// [`LEVEL_WINDOW_SECS`] from there to the sample's overall level, so every
@@ -372,6 +413,20 @@ mod tests {
                 })
             })
             .collect()
+    }
+
+    #[test]
+    fn a_decaying_stream_loses_its_quiet_tail_and_a_steady_one_keeps_all() {
+        let rate = 48_000.0;
+        // One second at full level, then three decaying 30 dB more.
+        let n = (4.0 * rate) as usize;
+        let level = |i: usize| if i < rate as usize { 1.0 } else { 10f32.powf(-1.5 * (i as f32 / rate as f32 - 1.0) / 3.0 * 20.0 / 20.0) };
+        let (mut l, mut r): (Vec<f32>, Vec<f32>) = (0..n).map(|i| { let v = 0.5 * level(i) * (i as f32 * 0.05).sin(); (v, v) }).unzip();
+        cut_quiet_tail(&mut l, &mut r, rate);
+        assert!(l.len() < n * 3 / 4 && l.len() > rate as usize, "{} of {n}", l.len());
+        let (mut l, mut r): (Vec<f32>, Vec<f32>) = (0..n).map(|i| { let v = 0.5 * (i as f32 * 0.05).sin(); (v, v) }).unzip();
+        cut_quiet_tail(&mut l, &mut r, rate);
+        assert_eq!(l.len(), n);
     }
 
     #[test]

@@ -364,7 +364,7 @@ mod tests {
         data.bars[0].form_bar = 17;
         data.bars[0].flags = mesh_vst_core::splice::PITCHED | mesh_vst_core::splice::FORMED;
         // And the seeds its form is built from (D48).
-        let spec = mesh_vst_core::macros::FormSettings::seeded(12).spec(true, 0.25, 1.0, 0.5, 0.75, 0.0);
+        let spec = mesh_vst_core::macros::FormSettings::seeded(12).spec(true, 0.25, 1.0, 0.5);
         data.bars[0].set_form(&spec);
         a.publish(&data);
         b.publish(&SlotData { label: label("bass", 8, 0xB0B), ..Default::default() });

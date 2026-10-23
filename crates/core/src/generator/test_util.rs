@@ -100,10 +100,3 @@ pub(crate) fn notes(events: &[LiveEvent]) -> String {
         .join(" ")
 }
 
-/// Every starter motif (bass clips read as bass, lead clips as lead).
-pub(crate) fn starter_motifs() -> Vec<crate::motif::Motif> {
-    use crate::motif::{starter, Motif, Voice};
-    let bass = starter::BASS.iter().map(|c| (c, Voice::Lowest));
-    let lead = starter::LEAD.iter().map(|c| (c, Voice::Highest));
-    bass.chain(lead).map(|(c, v)| Motif::from_clip(c.name, &c.clip(v), v).unwrap()).collect()
-}

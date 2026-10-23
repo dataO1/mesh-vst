@@ -42,6 +42,32 @@ pub mod flags {
     pub const PING_PONG: u8 = 1 << 6;
 }
 
+/// Where a note came from in the render chain (D57), in
+/// [`LiveEvent::origin`]'s low bits; [`origin::FIXED`] marks a written pitch.
+pub mod origin {
+    /// The skeleton (the generator's, or the clip's).
+    pub const SKELETON: u8 = 0;
+    /// Density's fill (R5).
+    pub const FILL: u8 = 1;
+    /// A subdivision's pattern (R4): never subdivided again.
+    pub const RECURSION: u8 = 2;
+    /// A stab the Length phase split off a held note (R6).
+    pub const SPLIT: u8 = 3;
+    /// An operator added it (R9).
+    pub const OPERATOR: u8 = 4;
+    /// The origin bits.
+    pub const MASK: u8 = 0x0F;
+    /// The pitch is written (a clip's): the melody keeps it.
+    pub const FIXED: u8 = 0x80;
+    /// A doubled note (R4): not doubled or subdivided again.
+    pub const DOUBLED: u8 = 0x40;
+
+    /// The origin of `o` without the marks.
+    pub const fn of(o: u8) -> u8 {
+        o & MASK
+    }
+}
+
 /// One musical event inside a bar. `Copy`, fixed size, no heap.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -87,6 +113,11 @@ pub struct LiveEvent {
     /// seam (or back and forth with [`flags::PING_PONG`]).
     pub loop_at: u8,
     pub loop_len: u8,
+    /// Which phase of the render chain made the note (D57, [`origin`]), and
+    /// whether its pitch is fixed (a clip's written note).
+    pub origin: u8,
+    /// The recursion group the note belongs to (D57; 0 none).
+    pub group: u8,
 }
 
 impl LiveEvent {

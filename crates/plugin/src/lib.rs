@@ -121,6 +121,8 @@ pub struct MeshVst {
     /// bus output they grow on.
     tail: mesh_vst_core::tail::VoiceTails,
     buses: Vec<StereoSample>,
+    /// The bass's neuro chain (D53), before Heat.
+    neuro: mesh_vst_core::neuro::Neuro,
     /// The last stage: the multiband squash.
     squash: mesh_vst_core::squash::Squash,
     /// The monoizer below 80 Hz.
@@ -170,6 +172,7 @@ impl Default for MeshVst {
             ring: mesh_vst_core::heat::RingMod::default(),
             tail: mesh_vst_core::tail::VoiceTails::new(48_000.0),
             buses: Vec::new(),
+            neuro: mesh_vst_core::neuro::Neuro::new(48_000.0),
             squash: mesh_vst_core::squash::Squash::new(48_000.0),
             mono: mesh_vst_core::heat::MonoLows::default(),
             link: None,
@@ -560,14 +563,36 @@ impl MeshVst {
             self.ring.process(buf, hz, mix, shape, transport.beat * 60.0 / transport.bpm.max(1.0));
             self.resolved.tone
         } else {
+            // The bass: the neuro chain on the notes it plays, before Heat.
+            if let Some(l) = self.bass.as_ref() {
+                let knobs = mesh_vst_core::neuro::NeuroKnobs {
+                    amount: self.params.neuro.value(),
+                    shape: self.resolved.shape,
+                    morph: self.resolved.morph,
+                    variation: self.resolved.variation,
+                    spread: self.resolved.spread,
+                    contrast: self.params.contrast.value(),
+                    sound_seed: self.params.sound_seed.value() as u32,
+                    letter: l.player.rendered().map_or(0, |(_, b)| b.letter),
+                    timbre: l.player.sampler().bank().and_then(|b| b.resolve(0, 60)).and_then(|s| s.sample.timbre.map(|t| (t, s.root_key))),
+                };
+                let beats_per_frame = transport.bpm / 60.0 / self.sample_rate as f64;
+                self.neuro.process(buf, l.player.fired(), &knobs, beats_per_frame);
+            }
             0.5
         };
-        self.heat.process(buf, self.resolved.heat, tone, drums);
+        // The drums: Heat, then the squash last. The bass (D53): the squash,
+        // then Heat behind everything else.
+        if drums {
+            self.heat.process(buf, self.resolved.heat, tone, drums);
+        }
         if self.params.mono_lows.value() {
             self.mono.process(buf);
         }
-        // Last: the squash, after everything else.
         self.squash.process(buf, self.params.squash.value(), drums, mesh_vst_core::tempo::stretch(transport.bpm));
+        if !drums {
+            self.heat.process(buf, self.resolved.heat, tone, drums);
+        }
         self.meter.process(buf);
         // Splice: the sidechain's level per 16th of the song.
         if self.ui.host.load(std::sync::atomic::Ordering::Relaxed) == link::SIDECHAIN {
@@ -699,6 +724,7 @@ impl Plugin for MeshVst {
         self.heat = mesh_vst_core::heat::Heat::new(config.sample_rate);
         self.ring = mesh_vst_core::heat::RingMod::new(config.sample_rate);
         self.tail = mesh_vst_core::tail::VoiceTails::new(config.sample_rate);
+        self.neuro = mesh_vst_core::neuro::Neuro::new(config.sample_rate);
         self.squash = mesh_vst_core::squash::Squash::new(config.sample_rate);
         self.buses = vec![StereoSample::silence(); mesh_vst_core::tail::GROUPS * config.max_buffer_size as usize];
         self.mono = mesh_vst_core::heat::MonoLows::new(config.sample_rate);

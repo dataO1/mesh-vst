@@ -17,13 +17,6 @@ use crate::{STEPS_PER_BAR, TICKS_PER_BAR, TICKS_PER_STEP};
 /// Longest level map a generator stores: 4 bars of 16 steps.
 pub const MAX_MAP_STEPS: usize = 64;
 
-/// Bar of the phrase that carries the variation (A3: A A A B).
-pub const VARIATION_BAR: u8 = 3;
-
-/// RNG stream shared by all generators: selects which steps of the variation
-/// bar are re-drawn. Generator-private streams start at 0x100.
-pub const STREAM_PHRASE_SELECT: u32 = 1;
-
 // ─── Parameters ────────────────────────────────────────────────────────
 
 /// Read a normalized generator parameter, clamped to `0..=1` (non-finite = 0).
@@ -64,7 +57,7 @@ pub fn note_param(ctx: &BarCtx, index: usize, n: u8) -> f32 {
 /// Parameter `index` as a note of `shape` reads it (see [`patterned`]).
 pub fn note_param_for(ctx: &BarCtx, index: usize, shape: NoteShape) -> f32 {
     let amp = ctx.jitter.get(index).copied().unwrap_or(0.0);
-    let v = patterned(param(ctx, index), amp, ctx.seed, ctx.lane, ctx.bar_in_phrase, index, shape);
+    let v = patterned(param(ctx, index), amp, ctx.seed, ctx.lane, index, shape);
     // Splice: the focus moves the parameter on its steps.
     // A negative shift moves the parameter down off the focus only (density:
     // the line thins outside the focus, it does not crowd it).
@@ -75,15 +68,15 @@ pub fn note_param_for(ctx: &BarCtx, index: usize, shape: NoteShape) -> f32 {
 }
 
 // MUSICAL: first draft, tune by ear (user: the moves follow the notes, not
-// chance). Shares of a note's move: its place in the bar, the block's arc,
-// its length, its height.
-const MOVE_SHARES: [f32; 4] = [0.55, 0.15, 0.15, 0.15];
+// chance). Shares of a note's move: its place in the bar, its length, its
+// height (D57: no arc over a phrase's bars, a letter plays alike in each).
+const MOVE_SHARES: [f32; 3] = [0.6, 0.2, 0.2];
 
 /// `v` moved by up to `amp` for a note of `shape`: notes on the same kind
-/// of step (downbeat, beat, 8th, 16th) move alike, the block's bars build or
-/// fall, long and short notes and high and low ones lean their own ways. The
-/// letter seed sets each way per parameter, so a block plays one pattern.
-pub fn patterned(v: f32, amp: f32, seed: u32, lane: u8, bar_in_phrase: u8, index: usize, shape: NoteShape) -> f32 {
+/// of step (downbeat, beat, 8th, 16th) move alike, long and short notes and
+/// high and low ones lean their own ways. The letter seed sets each way per
+/// parameter, so a block plays one pattern.
+pub fn patterned(v: f32, amp: f32, seed: u32, lane: u8, index: usize, shape: NoteShape) -> f32 {
     if amp <= 0.0 {
         return v;
     }
@@ -94,12 +87,11 @@ pub fn patterned(v: f32, amp: f32, seed: u32, lane: u8, bar_in_phrase: u8, index
         2 | 6 => 2,
         _ => 3,
     });
-    let arc = way(4) * ((bar_in_phrase % 4) as f32 / 1.5 - 1.0);
     // Short (-1) .. two beats and longer (+1).
     let length = shape.gate.map_or(0.0, |g| way(5) * ((g as f32 / (2 * TICKS_PER_STEP) as f32).min(4.0) / 2.0 - 1.0).clamp(-1.0, 1.0));
     let height = shape.pitch_class.map_or(0.0, |pc| way(6) * (pc.min(11) as f32 / 5.5 - 1.0));
-    let [p, a, l, h] = MOVE_SHARES;
-    (v + amp * (p * place + a * arc + l * length + h * height).clamp(-1.0, 1.0)).clamp(0.0, 1.0)
+    let [p, l, h] = MOVE_SHARES;
+    (v + amp * (p * place + l * length + h * height).clamp(-1.0, 1.0)).clamp(0.0, 1.0)
 }
 
 /// Defaults for `names`, taken from the style's `generator.params` where
@@ -324,57 +316,32 @@ pub fn velocity(tier: Tier, rand: f32, amount: f32) -> u8 {
 
 // ─── Phrase shape (A3) ─────────────────────────────────────────────────
 
-// MUSICAL: first draft, tune by ear. Share of steps re-drawn in the
-// variation bar at `variation = 1`.
-pub const VARIATION_STEP_PROB: f32 = 0.5;
-
-/// Phrase-shaped randomness: bars 0-2 of a phrase draw from the same
-/// coordinates (so they repeat), the variation bar re-draws a share of its
-/// steps set by `variation`.
-///
-/// With the phrase rule off every bar draws from its own coordinates.
+/// A letter's randomness (D57: snapshotted): every bar of a letter draws
+/// from the same coordinates, so the letter plays alike wherever it plays.
+/// (The phrase rule, three bars repeated and the fourth partly re-drawn,
+/// is gone: variation over a phrase comes from the form.)
 #[derive(Debug, Clone, Copy)]
 pub struct PhraseRng {
-    /// Coordinates shared by the repeating bars.
+    /// The letter's coordinates.
     pub base: RngKey,
-    /// Coordinates of this bar.
+    /// The same (kept for the generators that read it).
     pub bar: RngKey,
-    /// Probability that a step of this bar is re-drawn (0 outside the
-    /// variation bar).
-    amount: f32,
-    varied: bool,
 }
 
 impl PhraseRng {
-    pub fn new(ctx: &BarCtx, variation: f32, phrase_rule: bool) -> Self {
-        let bar = RngKey::new(ctx.seed, ctx.lane, ctx.bar_in_phrase);
-        if !phrase_rule {
-            return Self { base: bar, bar, amount: 0.0, varied: false };
-        }
-        let varied = ctx.bar_in_phrase == VARIATION_BAR && variation > 0.0;
-        Self {
-            base: RngKey::new(ctx.seed, ctx.lane, 0),
-            bar,
-            amount: if varied { variation.clamp(0.0, 1.0) * VARIATION_STEP_PROB } else { 0.0 },
-            varied,
-        }
+    pub fn new(ctx: &BarCtx) -> Self {
+        let base = RngKey::new(ctx.seed, ctx.lane, 0);
+        Self { base, bar: base }
     }
 
-    /// `true` in the variation bar when `variation > 0`.
+    /// Always false (D57: no variation bar).
     pub fn is_variation_bar(&self) -> bool {
-        self.varied
-    }
-
-    /// `true` when `step` is re-drawn in this bar. The choice is per step, so
-    /// every decision on a varied step changes together.
-    #[inline]
-    pub fn step_varies(&self, step: u8) -> bool {
-        self.varied && self.bar.chance(step, STREAM_PHRASE_SELECT, self.amount)
+        false
     }
 
     #[inline]
     pub fn at(&self, step: u8, stream: u32) -> u64 {
-        if self.step_varies(step) { self.bar.at(step, stream) } else { self.base.at(step, stream) }
+        self.base.at(step, stream)
     }
 
     #[inline]
@@ -512,14 +479,23 @@ pub fn trigger(tick: u16, target: u8, vel: u8) -> LiveEvent {
 // follows the density, slow and soft when sparse, sharp when dense.
 /// Attack at density 0 and 1, in seconds (at [`crate::tempo::REF_BPM`]).
 pub const ATTACK_BY_DENSITY: (f32, f32) = (crate::tempo::note(1.0 / 16.0), crate::tempo::note(1.0 / 128.0));
+// MUSICAL: tune by ear (user, 2026-10-21: the bass attack blurred; sharp at
+// a short Shape, the longer the Shape the softer, at most about 100 ms).
+/// Bass attack at Shape 0 and 1 in seconds (at [`crate::tempo::REF_BPM`]),
+/// log-spaced between (about 22 ms at the middle).
+pub const BASS_ATTACK_BY_SHAPE: (f32, f32) = (0.005, 0.1);
 /// Note length as a share of the gap to the next note at density 0 and 1.
-/// Bass attack at density 0 and 1 (user: longer than the synths).
-pub const BASS_ATTACK_BY_DENSITY: (f32, f32) = (crate::tempo::note(3.0 / 32.0), crate::tempo::note(1.0 / 64.0));
 pub const LENGTH_BY_DENSITY: (f32, f32) = (1.0, 0.3);
 
 /// The event `attack` byte for a pitched lane at `density`.
 pub fn density_attack(density: f32) -> u8 {
     density_attack_in(density, ATTACK_BY_DENSITY)
+}
+
+/// The event `attack` byte for a bass note at Shape knob `shape`.
+pub fn shape_attack(shape: f32) -> u8 {
+    let (a, b) = BASS_ATTACK_BY_SHAPE;
+    crate::sampler::attack_byte(a * (b / a).powf(shape.clamp(0.0, 1.0)))
 }
 
 /// [`density_attack`] over an attack `range` (seconds at density 0 and 1).
@@ -709,39 +685,20 @@ mod tests {
     }
 
     #[test]
-    fn phrase_rng_repeats_then_varies() {
+    fn a_letter_draws_alike_in_every_bar() {
+        // D57: snapshotted, no phrase rule.
         let params = [0.0; MAX_GEN_PARAMS];
         let mask = [0u8; STEPS_PER_BAR];
-        let draw = |bar: u8, variation: f32, rule: bool| -> Vec<u64> {
-            let r = PhraseRng::new(&ctx_with(9, bar, &params, &mask), variation, rule);
+        let draw = |bar: u8, _variation: f32| -> Vec<u64> {
+            let r = PhraseRng::new(&ctx_with(9, bar, &params, &mask));
             (0..16u8).map(|s| r.at(s, 0x100)).collect()
         };
-        let b0 = draw(0, 1.0, true);
-        assert_eq!(b0, draw(1, 1.0, true));
-        assert_eq!(b0, draw(2, 1.0, true));
-        let b3 = draw(3, 1.0, true);
-        assert_ne!(b0, b3);
-        // Some steps of the variation bar still repeat.
-        assert!(b0.iter().zip(&b3).any(|(a, b)| a == b));
-        // No variation: bar 3 repeats too.
-        assert_eq!(b0, draw(3, 0.0, true));
-        // Rule off: every bar differs.
-        assert_ne!(draw(0, 1.0, false), draw(1, 1.0, false));
-    }
-
-    #[test]
-    fn phrase_rng_variation_grows_monotonically() {
-        let params = [0.0; MAX_GEN_PARAMS];
-        let mask = [0u8; STEPS_PER_BAR];
-        let c = ctx_with(4, VARIATION_BAR, &params, &mask);
-        let mut prev = 0;
-        for v in 0..=10 {
-            let r = PhraseRng::new(&c, v as f32 / 10.0, true);
-            let n = (0..16u8).filter(|&s| r.step_varies(s)).count();
-            assert!(n >= prev);
-            prev = n;
+        for b in 1..8 {
+            assert_eq!(draw(0, 1.0), draw(b, 1.0));
         }
-        assert!(prev > 0);
+        // Another letter seed draws its own.
+        let other = PhraseRng::new(&ctx_with(10, 0, &params, &mask));
+        assert_ne!(draw(0, 1.0)[0], other.at(0, 0x100));
     }
 
     #[test]

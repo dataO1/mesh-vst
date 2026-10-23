@@ -34,9 +34,9 @@
 //!
 //! Construction options (style `generator.params`, not performable):
 //! `blend` (1 = blend neighbours, 0 = hard switch), `break_layer` (0 = off),
-//! the rule scales `rule_a2` (backbone lock), `rule_a3` (phrase shape),
-//! `rule_a4` (slices in order), `rule_a5` (velocity tiers), all defaulting
-//! to 1.
+//! the rule scales `rule_a2` (backbone lock), `rule_a4` (slices in order),
+//! `rule_a5` (velocity tiers), all defaulting to 1 (D57: no phrase rule;
+//! a letter plays alike in every bar).
 
 use std::collections::BTreeMap;
 
@@ -326,8 +326,6 @@ pub struct DrumRules {
     pub break_layer: bool,
     /// A2: backbone lock, 0 = overlays land anywhere.
     pub lock: f32,
-    /// A3: bars 0-2 repeat, bar 3 varies.
-    pub phrase: bool,
     /// A4: share of break swaps that keep the slice type (the rest pick any slice).
     pub order: f32,
     /// A5: velocity tier depth, 0 = flat.
@@ -339,7 +337,7 @@ pub struct DrumRules {
 
 impl Default for DrumRules {
     fn default() -> Self {
-        Self { blend: true, break_layer: true, lock: 1.0, phrase: true, order: 1.0, tiers: 1.0, feel: false }
+        Self { blend: true, break_layer: true, lock: 1.0, order: 1.0, tiers: 1.0, feel: false }
     }
 }
 
@@ -349,7 +347,6 @@ impl DrumRules {
             blend: option(params, "blend", 1.0) >= 0.5,
             break_layer: option(params, "break_layer", 1.0) >= 0.5,
             lock: option(params, "rule_a2", 1.0),
-            phrase: option(params, "rule_a3", 1.0) >= 0.5,
             order: option(params, "rule_a4", 1.0),
             tiers: option(params, "rule_a5", 1.0),
             feel: option(params, "feel", 1.0) >= 0.5,
@@ -1234,7 +1231,7 @@ impl LaneGenerator for DrumGenerator {
             hats: blend_levels(&a.hats.bar_levels(bar), &b.hats.bar_levels(bar), t),
             ghost: blend_levels(&a.ghost.bar_levels(bar), &b.ghost.bar_levels(bar), t),
         };
-        let rng = PhraseRng::new(ctx, p.variation, self.rules.phrase);
+        let rng = PhraseRng::new(ctx);
         let recipe = self.recipe(ctx, &p, &rng);
         self.mutate(p.mutate, &rng, &mut lv);
         let fill_from = if ctx.fill { FILL_START_STEP } else { STEPS_PER_BAR };
@@ -1323,7 +1320,7 @@ impl LaneGenerator for DrumGenerator {
     /// mask decides which of them sound.
     fn voice_mask(&self, ctx: &BarCtx) -> u8 {
         let p = Params::read(ctx);
-        let rng = PhraseRng::new(ctx, p.variation, self.rules.phrase);
+        let rng = PhraseRng::new(ctx);
         let r = self.recipe(ctx, &p, &rng);
         let mut on = r.voices;
         for layer in [Layer::Ride, Layer::Shaker, Layer::Perc, Layer::Top, Layer::Break] {
@@ -1748,22 +1745,18 @@ mod tests {
     }
 
     #[test]
-    fn phrase_shape() {
-        // Without break and pools the bars of a phrase repeat and bar 4 varies.
-        // (Break roles and some pool patterns change per bar by design.)
+    fn a_letter_plays_alike_in_every_bar() {
+        // D57: no phrase rule. Without break and pools every bar of a letter
+        // is the same (break roles and some pool patterns change per bar by
+        // design; the form's fills vary the phrase's end).
         let g = kit_only();
         for seed in 0..20 {
             let p = params(|p| p[P_CHOP] = 0.7);
             let b0 = bar(&g, seed, 0, &p);
             assert!(!b0.is_empty());
-            assert_eq!(b0, bar(&g, seed, 1, &p));
-            assert_eq!(b0, bar(&g, seed, 2, &p));
-            assert_ne!(b0, bar(&g, seed, 3, &p), "seed {seed}");
-            let still = params(|p| {
-                p[P_CHOP] = 0.7;
-                p[P_VARIATION] = 0.0;
-            });
-            assert_eq!(bar(&g, seed, 0, &still), bar(&g, seed, 3, &still));
+            for b in 1..4 {
+                assert_eq!(b0, bar(&g, seed, b, &p), "seed {seed} bar {b}");
+            }
         }
     }
 
@@ -1772,13 +1765,6 @@ mod tests {
         (0..)
             .find(|&s| Recipe::new(0, s, 0, crate::form::SeedClass::Main, 0xFF).breaks[b] & break_role::GAPS != 0)
             .unwrap()
-    }
-
-    #[test]
-    fn phrase_rule_off_varies_every_bar() {
-        let g = with_rules(DrumRules { phrase: false, ..DrumRules::default() });
-        let p = params(|p| p[P_CHOP] = 0.9);
-        assert_ne!(bar(&g, 1, 0, &p), bar(&g, 1, 1, &p));
     }
 
     fn slices(g: &DrumGenerator, ev: &[LiveEvent]) -> Vec<(usize, u8)> {

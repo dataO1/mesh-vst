@@ -236,9 +236,9 @@ impl FormSettings {
         self.pins[l.index() as usize].unwrap_or_else(|| crate::arrange::phrase_seed(self.phrase_seed, l))
     }
 
-    /// The form spec for a lane at knob values `variation`, `shape`,
-    /// `contrast`, `density` and `groove`.
-    pub fn spec(&self, drums: bool, variation: f32, shape: f32, contrast: f32, density: f32, groove: f32) -> crate::arrange::FormSpec {
+    /// The form spec for a lane at knob values `variation`, `shape` and
+    /// `contrast`.
+    pub fn spec(&self, drums: bool, variation: f32, shape: f32, contrast: f32) -> crate::arrange::FormSpec {
         use crate::arrange::{band, FormSeeds, FormSpec};
         let phrases = crate::form::Letter::ALL.map(|l| self.phrase_of(l));
         FormSpec {
@@ -246,8 +246,6 @@ impl FormSettings {
             variation: band(variation),
             shape: band(shape),
             contrast: band(contrast),
-            density: band(density),
-            groove: band(groove),
             drums,
         }
     }
@@ -266,7 +264,7 @@ pub fn configure(lane: &mut PatternLane, base: LaneSamplerParams, s: &LaneSettin
     // The form, built for the Variation, Shape, Contrast, Density and
     // Groove bands (D48, D51).
     match s.form {
-        Some(f) => lane.set_form_spec(f.spec(role == Role::Drums, resolved.variation, resolved.shape, s.contrast, resolved.density, resolved.swing)),
+        Some(f) => lane.set_form_spec(f.spec(role == Role::Drums, resolved.variation, resolved.shape, s.contrast)),
         None => lane.clear_form(),
     }
     // Accent strength: the sound seed's, scaled by Variation.
@@ -445,7 +443,7 @@ fn shape_length(k: f32) -> f32 {
 }
 
 /// The Shape knob a note Length shows at (the inverse of [`shape_length`]).
-fn length_knob(l: f32) -> f32 {
+pub(crate) fn length_knob(l: f32) -> f32 {
     if l < SHAPE_LENGTH.1 { 0.5 * (l - SHAPE_LENGTH.0) / (SHAPE_LENGTH.1 - SHAPE_LENGTH.0) } else { 0.5 + 0.5 * (l - SHAPE_LENGTH.1) / (SHAPE_LENGTH.2 - SHAPE_LENGTH.1) }
 }
 
@@ -468,6 +466,7 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
     lane.set_param("expression", lerp(1.0, 0.15, shape));
     lane.set_param("stabs", lerp(1.0, 0.0, shape));
     character(p, shape);
+    p.release = shape_release(p, v.shape);
     // Accent also deepens the filter sweep and the stab punch; its level
     // stays near the others (the dynamics live in the velocity window).
     p.accent_gain = BASS_ACCENT_GAIN;
@@ -486,8 +485,19 @@ const BASS_ACCENT_GAIN: f32 = 1.06;
 const HELD_SUSTAIN: f32 = 0.89;
 /// Release at full Shape (from the designed one at the bottom).
 const HELD_RELEASE: f32 = note(1.0 / 4.0);
+/// Release at Shape 0 (user, 2026-10-21: at low Shape and full Density the
+/// release rang over every 16th, the line sounded held).
+const STAB_RELEASE: f32 = note(1.0 / 64.0);
 /// Stab accent at the sustained end of the macro (full at the stabby end).
 const STAB_PUNCH: f32 = 0.4;
+
+/// The bass release at Shape knob `k`: [`STAB_RELEASE`] at 0, the designed
+/// one at the middle, [`HELD_RELEASE`] at full.
+fn shape_release(p: &LaneSamplerParams, k: f32) -> f32 {
+    let k = k.clamp(0.0, 1.0);
+    let designed = p.designed_release;
+    if k < 0.5 { lerp(STAB_RELEASE.min(designed), designed, 2.0 * k) } else { lerp(designed, HELD_RELEASE.max(designed), 2.0 * k - 1.0) }
+}
 
 /// Mesh's Character macro: the share of stabs and held notes, the filter
 /// bite and the stab accent.
@@ -601,9 +611,9 @@ mod style_tests {
     }
 
     #[test]
-    fn full_shape_sustains_everything_but_the_figures() {
+    fn full_shape_sustains_everything() {
         use crate::event::{flags, EventKind};
-        let (mut held, mut notes, mut figures) = (0, 0, 0);
+        let (mut held, mut notes) = (0, 0);
         for seed in 1..=40 {
             let mut lane = PatternLane::bass(seed, seed);
             let s = LaneSettings { knobs: Knobs { shape: 1.0, ..Knobs::CENTERED }, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
@@ -614,16 +624,11 @@ mod style_tests {
                 let ev: Vec<_> = out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn).copied().collect();
                 assert!(ev.iter().all(|e| e.flags & flags::STAB == 0), "no stabs at full Shape");
                 for w in ev.windows(2) {
-                    if w[0].flags & flags::FIGURE != 0 {
-                        figures += 1;
-                        continue;
-                    }
                     notes += 1;
                     held += (w[0].gate + 4 >= w[1].tick - w[0].tick) as u32;
                 }
             }
         }
-        assert!(figures > 0);
         // (The form's operators shorten some on purpose: a question ends
         // each repeat of an asking phrase, mutations, double time.)
         assert!(held as f32 >= 0.7 * notes as f32, "{held} of {notes} held to the next note");
@@ -679,9 +684,12 @@ mod style_tests {
                     assert!(h.as_array().iter().all(|v| (0.0..=1.0).contains(v)), "{h:?}");
                     // Permute at 0 stays off; Shape moves much per note, Morph per block.
                     assert_eq!(h.permute, knobs.permute);
-                    if (h.variation - knobs.variation).abs() < 1e-3 {
+                    // Variation plays as set (user, 2026-10-21); Density
+                    // moves with the letters.
+                    assert!((h.variation - knobs.variation).abs() < 1e-3, "{h:?}");
+                    if (h.density - knobs.density).abs() < 1e-3 {
                         on_knob += 1;
-                    } else if (h.variation - knobs.variation).abs() > 0.1 {
+                    } else if (h.density - knobs.density).abs() > 0.02 {
                         moved += 1;
                     }
                 }
@@ -983,5 +991,58 @@ mod style_tests {
         // phrases that start on a note at an even beat (or the letter's
         // start) repeat a little more (user, 2026-10-21: less hectic).
         assert!((0.33..=0.75).contains(&reps[15]), "median rep4 {:.2} ({reps:?})", reps[15]);
+    }
+}
+
+#[cfg(test)]
+mod density_tests {
+    use super::*;
+    use crate::event::EventKind;
+    use crate::key::MusicalKey;
+    use crate::pattern::{RenderedBar, Scratch};
+
+    /// Share of bars where the line is silent for more than an 8th, over
+    /// ten seeds' forms at Density 1 (a note counts as at least a 16th: a
+    /// stab is a played note too).
+    fn silent_bars(clips: bool, shape: f32) -> f32 {
+        let bar = crate::TICKS_PER_BAR as usize;
+        let knobs = Knobs { density: 1.0, shape, variation: 0.5, ..Knobs::CENTERED };
+        let (mut silent, mut bars) = (0, 0);
+        for seed in 1..=10u32 {
+            let mut lane = PatternLane::bass(seed, seed);
+            let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips, squash: 0.0 };
+            configure(&mut lane, mudpie_params(), &s);
+            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+            for b in 0..64 {
+                lane.render(b, MusicalKey::new(5, true), &mut out, &mut scratch);
+                let mut sounding = vec![false; bar];
+                for e in out.events.as_slice().iter().filter(|e| e.kind == EventKind::NoteOn && e.vel > 0) {
+                    for k in e.tick as usize..(e.tick as usize + (e.gate as usize).max(bar / 16)).min(bar) {
+                        sounding[k] = true;
+                    }
+                }
+                // The longest silence, wrapping round the bar.
+                let (mut gap, mut run) = (0, 0);
+                for k in 0..2 * bar {
+                    run = if sounding[k % bar] { 0 } else { run + 1 };
+                    gap = gap.max(run.min(bar));
+                }
+                silent += (gap > bar / 6) as u32;
+                bars += 1;
+            }
+        }
+        silent as f32 / bars as f32
+    }
+
+    #[test]
+    fn full_density_fills_almost_every_bar() {
+        // User, 2026-10-21: at full Density the line still left rests
+        // (merged pushed 8ths, the bar's start, the rhythm operators).
+        for clips in [true, false] {
+            for shape in [0.0, 0.5] {
+                let s = silent_bars(clips, shape);
+                assert!(s < 0.15, "clips {clips} shape {shape}: {s:.2} of the bars silent for over an 8th");
+            }
+        }
     }
 }

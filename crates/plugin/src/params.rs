@@ -202,6 +202,10 @@ pub struct MeshParams {
     #[id = "heat"]
     pub heat: FloatParam,
 
+    /// The bass's neuro processing chain (D53): none .. a lot.
+    #[id = "neuro"]
+    pub neuro: FloatParam,
+
     #[id = "tail"]
     pub tail: EnumParam<Tail>,
 
@@ -329,6 +333,7 @@ impl Default for MeshParams {
             tone: knob_at("Tone", fresh.knob()),
             // MUSICAL: a new instance starts warm, below the crush.
             heat: knob_at("Heat", 0.6 * (fresh.knob() - 0.25) + 0.1),
+            neuro: knob_at("Neuro", 0.0),
             tail: EnumParam::new("Tail", Tail::seeded(sound as u32)),
             splice: knob_at("Splice", 0.5),
             // MUSICAL: tune by ear.

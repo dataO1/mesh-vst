@@ -110,7 +110,7 @@ struct Voice {
 ///   voice to the new pitch with an exponential rate ramp over `glide`
 ///   (0 = instant), and takes over its `note_id` and gate. Without a held voice
 ///   the note starts normally.
-/// - **Pitch envelope**: a pitched `NoteOn` with a short gate (stab) starts
+/// - **Pitch envelope**: a pitched `NoteOn` stab (`STAB`, a short gate) starts
 ///   with a slight pitch rise and fall ([`pitch_env`]). The shorter the note,
 ///   the larger the rise and the faster the fall. Long notes play straight.
 /// - **NoteOff** releases held voices with the matching `note_id`.
@@ -254,6 +254,11 @@ impl Sampler {
     /// Swap the lane's sample bank. Playing voices keep their own sample
     /// handles and ring out (released, so a mono or tied note never glides
     /// an old-bank voice on); the old bank is freed by the basedrop collector.
+    /// The bank playing, if any.
+    pub fn bank(&self) -> Option<&SampleBank> {
+        self.bank.as_deref()
+    }
+
     pub fn set_bank(&mut self, bank: Shared<SampleBank>) {
         if self.bank.as_ref().is_some_and(|b| !std::ptr::eq::<SampleBank>(&**b, &*bank)) {
             for v in self.voices.iter_mut().filter(|v| v.st.active && v.st.held) {
@@ -541,7 +546,9 @@ impl Sampler {
                 .filter(|v| v.st.active && v.st.held && !v.st.is_choking() && (!mono || v.st.group == group))
                 // A note whose gate ends now is over: the next one strikes
                 // (else it would glide on from where the old one got to).
-                .filter(|v| v.st.gate_ticks_left * self.spt > 1.0)
+                // (Within half a tick: a fill or a split repeat that ends
+                // where the next starts, user 2026-10-21.)
+                .filter(|v| v.st.gate_ticks_left > 0.5)
                 .max_by_key(|v| v.st.age)
                 .map(|v| v.st.note_id);
             if let Some(id) = newest {
@@ -659,7 +666,9 @@ impl Sampler {
                 ev.cutoff as f32 / 127.0
             },
             attack: if ev.attack != 0 { attack_secs(ev.attack) } else { p.attack },
-            pitch_env: if slot.pitched && ev.kind == EventKind::NoteOn {
+            // Stabs only (user, 2026-10-21: every 8th got the blip and the
+            // full Density line sounded staccato).
+            pitch_env: if slot.pitched && ev.kind == EventKind::NoteOn && ev.has(flags::STAB) {
                 pitch_env(gate_ticks * self.spt / self.ts as f64)
             } else {
                 None

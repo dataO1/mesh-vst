@@ -636,7 +636,7 @@ fn event_attack_overrides_the_lane_and_rises_round() {
 #[test]
 fn short_notes_get_a_pitch_envelope() {
     // 100 samples per tick at 48 kHz: 24 ticks = 50 ms (stab), 480 ticks = 1 s.
-    let stab = |gate| LiveEvent { gate, ..note_on(60, 1) };
+    let stab = |gate| LiveEvent { gate, flags: crate::event::flags::STAB, ..note_on(60, 1) };
     let mut s = sampler(vec![(0, SlotDef::whole(sine(441.0, 4.0, 60)))], 4);
     s.handle_event(&stab(24), 0);
     render(&mut s, 192, 100.0); // 4 ms: the rise peaks
@@ -654,6 +654,11 @@ fn short_notes_get_a_pitch_envelope() {
         render(&mut s, 192, 100.0);
         assert_eq!(s.newest_voice_pitch().unwrap(), 1.0, "gate {gate}");
     }
+    // A short note that is no stab plays straight too.
+    let mut s = sampler(vec![(0, SlotDef::whole(sine(441.0, 4.0, 60)))], 4);
+    s.handle_event(&LiveEvent { gate: 24, ..note_on(60, 1) }, 0);
+    render(&mut s, 192, 100.0);
+    assert_eq!(s.newest_voice_pitch().unwrap(), 1.0, "not a stab");
     // Unpitched triggers (drums) never.
     let mut s = sampler(vec![(0, SlotDef::whole(dc(0.25, 96_000)))], 4);
     s.handle_event(&LiveEvent { gate: 24, ..trig(0) }, 0);

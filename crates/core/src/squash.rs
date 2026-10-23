@@ -50,7 +50,9 @@ struct Voicing {
 // MUSICAL: first draft, tune by ear (user: mild = gentle ratios, easy
 // thresholds, fast times; strong = OTT-like on the mudpie with a smiley
 // balance, as Mesh live's bass multiband; the drums much less aggressive;
-// user, 2026-10-20: the mids cut too much).
+// user, 2026-10-20: the mids cut too much; 2026-10-23: more aggressive,
+// mostly by lifting more, the down thresholds only a little lower; a
+// balance kept around each band's own level muffled it, reverted).
 // Bands: sub | low | mids | high mids | highs | air.
 const MUDPIE: Voicing = Voicing {
     splits: [90.0, 250.0, 2000.0, 5000.0, 10_000.0],
@@ -67,14 +69,14 @@ const MUDPIE: Voicing = Voicing {
     },
     strong: Setting {
         bands: [
-            band((-22.0, 4.0), (-80.0, 1.0), note(1.0 / 64.0), note(1.0 / 8.0), -1.5),
-            band((-27.0, 6.0), (-44.0, 2.5), note(1.0 / 128.0), note(1.0 / 16.0), -1.0),
-            band((-30.0, 4.0), (-44.0, 3.0), note(1.0 / 256.0), note(1.0 / 16.0), 2.5),
-            band((-33.0, 6.0), (-42.0, 6.0), note(1.0 / 512.0), note(3.0 / 64.0), 3.5),
-            band((-33.0, 6.0), (-44.0, 6.0), note(1.0 / 1024.0), note(1.0 / 32.0), 3.5),
-            band((-33.0, 6.0), (-44.0, 6.0), note(1.0 / 1024.0), note(1.0 / 32.0), 3.0),
+            band((-23.0, 5.0), (-80.0, 1.0), note(1.0 / 64.0), note(1.0 / 8.0), -1.5),
+            band((-28.0, 8.0), (-40.0, 3.5), note(1.0 / 128.0), note(1.0 / 16.0), -1.0),
+            band((-31.0, 5.0), (-40.0, 4.0), note(1.0 / 256.0), note(1.0 / 16.0), 2.5),
+            band((-34.0, 8.0), (-38.0, 8.0), note(1.0 / 512.0), note(3.0 / 64.0), 3.5),
+            band((-34.0, 8.0), (-40.0, 8.0), note(1.0 / 1024.0), note(1.0 / 32.0), 3.5),
+            band((-34.0, 8.0), (-40.0, 8.0), note(1.0 / 1024.0), note(1.0 / 32.0), 3.0),
         ],
-        up_max: 14.0,
+        up_max: 20.0,
     },
 };
 
@@ -94,14 +96,14 @@ const DRUMS: Voicing = Voicing {
     // The attacks stay at a 128th so the hits keep their punch.
     strong: Setting {
         bands: [
-            band((-22.0, 2.5), (-80.0, 1.0), note(1.0 / 128.0), note(1.0 / 16.0), 1.0),
-            band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 16.0), 0.0),
-            band((-22.0, 2.2), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 16.0), 0.5),
-            band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 16.0), 1.0),
-            band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 32.0), 1.5),
-            band((-24.0, 3.0), (-42.0, 1.8), note(1.0 / 128.0), note(1.0 / 32.0), 1.0),
+            band((-23.0, 3.0), (-80.0, 1.0), note(1.0 / 128.0), note(1.0 / 16.0), 1.0),
+            band((-25.0, 3.5), (-39.0, 2.2), note(1.0 / 128.0), note(1.0 / 16.0), 0.0),
+            band((-23.0, 2.6), (-39.0, 2.2), note(1.0 / 128.0), note(1.0 / 16.0), 0.5),
+            band((-25.0, 3.5), (-39.0, 2.2), note(1.0 / 128.0), note(1.0 / 16.0), 1.0),
+            band((-25.0, 3.5), (-39.0, 2.2), note(1.0 / 128.0), note(1.0 / 32.0), 1.5),
+            band((-25.0, 3.5), (-39.0, 2.2), note(1.0 / 128.0), note(1.0 / 32.0), 1.0),
         ],
-        up_max: 8.0,
+        up_max: 11.0,
     },
 };
 
@@ -165,21 +167,21 @@ impl Svf {
 
 /// Linkwitz-Riley 4th-order split: its low and high sum to an allpass.
 #[derive(Debug, Clone, Copy, Default)]
-struct Lr4 {
+pub(crate) struct Lr4 {
     first: Svf,
     low: Svf,
     high: Svf,
 }
 
 impl Lr4 {
-    fn set(&mut self, hz: f32, sr: f32) {
+    pub(crate) fn set(&mut self, hz: f32, sr: f32) {
         for f in [&mut self.first, &mut self.low, &mut self.high] {
             f.set(hz, sr);
         }
     }
 
     #[inline]
-    fn split(&mut self, x: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+    pub(crate) fn split(&mut self, x: [f32; 2]) -> ([f32; 2], [f32; 2]) {
         let (lo, hi) = self.first.run(x);
         (self.low.run(lo).0, self.high.run(hi).1)
     }
@@ -210,6 +212,9 @@ pub struct Squash {
     up_max: f32,
     smooth: f32,
     level: LevelMatch,
+    /// The amount, stretch and voicing the bands' settings were made for
+    /// (made again only when these change).
+    set_for: Option<(f32, f32, bool)>,
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -233,7 +238,22 @@ impl Squash {
             up_max: 0.0,
             smooth: coeff(GAIN_SMOOTH_SECS, sr),
             level: LevelMatch::new(sr, LEVEL_RANGE, LEVEL_HIGH),
+            set_for: None,
         }
+    }
+
+    /// The bands' settings at `t` 0 (mild) .. 1 (strong) of voicing `v`.
+    fn set(&mut self, v: &Voicing, t: f32, stretch: f32) {
+        for (st, (m, s)) in self.bands.iter_mut().zip(v.mild.bands.iter().zip(v.strong.bands.iter())) {
+            st.down_t = lerp(m.down.0, s.down.0, t);
+            st.down_slope = 1.0 - 1.0 / lerp(m.down.1, s.down.1, t).max(1.0);
+            st.up_t = lerp(m.up.0, s.up.0, t);
+            st.up_slope = 1.0 - 1.0 / lerp(m.up.1, s.up.1, t).max(1.0);
+            st.attack = coeff(lerp_log(m.attack, s.attack, t) * stretch, self.sr);
+            st.release = coeff(lerp_log(m.release, s.release, t) * stretch, self.sr);
+            st.makeup_db = lerp(m.gain, s.gain, t);
+        }
+        self.up_max = lerp(v.mild.up_max, v.strong.up_max, t);
     }
 
     /// Squash `buf` in place at `amount` 0 (mild) .. 1 (strong), voiced for
@@ -253,16 +273,10 @@ impl Squash {
             }
         }
         let t = amount.clamp(0.0, 1.0);
-        for (st, (m, s)) in self.bands.iter_mut().zip(v.mild.bands.iter().zip(v.strong.bands.iter())) {
-            st.down_t = lerp(m.down.0, s.down.0, t);
-            st.down_slope = 1.0 - 1.0 / lerp(m.down.1, s.down.1, t).max(1.0);
-            st.up_t = lerp(m.up.0, s.up.0, t);
-            st.up_slope = 1.0 - 1.0 / lerp(m.up.1, s.up.1, t).max(1.0);
-            st.attack = coeff(lerp_log(m.attack, s.attack, t) * stretch, self.sr);
-            st.release = coeff(lerp_log(m.release, s.release, t) * stretch, self.sr);
-            st.makeup_db = lerp(m.gain, s.gain, t);
+        if self.set_for != Some((t, stretch, drums)) {
+            self.set_for = Some((t, stretch, drums));
+            self.set(v, t, stretch);
         }
-        self.up_max = lerp(v.mild.up_max, v.strong.up_max, t);
         for s in buf.iter_mut() {
             let x = [s.left, s.right];
             // Band b is the low side of split b, the last band the rest.

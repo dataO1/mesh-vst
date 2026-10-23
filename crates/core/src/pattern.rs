@@ -22,12 +22,12 @@ use crate::form::{
 use crate::generator::bass::{self, BassGenerator, BassRules};
 use crate::generator::blocks::{defaults_from_spec, patterned, NoteShape};
 use crate::generator::drums::{self, DrumGenerator, DrumRules};
-use crate::generator::layout::DrumVoice;
 use crate::generator::{idiom, BarCtx, DrumLayout, LaneGenerator, MAX_GEN_PARAMS};
 use crate::harmony::{HarmonyCtx, BARS_PER_PHRASE};
 use crate::key::MusicalKey;
 use crate::ops::{self, Op, OpChain, OpCtx, SpanNote, MAX_SPAN_BARS};
 use crate::role::Role;
+use crate::chain::speed;
 use crate::{rng, STEPS_PER_BAR, TICKS_PER_BAR};
 
 /// Lane index the generators' seeds are hashed with. Mesh numbered its lanes
@@ -50,64 +50,13 @@ const RELATION_BANDS: i8 = 4;
 const BLOCK_RATE_MAIN: [(i8, f32); 3] = [(0, 0.65), (1, 0.25), (-1, 0.1)];
 const BLOCK_RATE_FILLER: [(i8, f32); 3] = [(0, 0.35), (1, 0.45), (-1, 0.2)];
 const S_BLOCK_RATE: u32 = 0xF51;
-// MUSICAL: user, 2026-10-20: the centre speed was twice too fast. Speed
-// exponent under the Rate setting: Normal plays what half speed played,
-// Double what Normal played, Half half of that.
-const BASE_RATE: i8 = -1;
 /// RNG stream of the sound seed a filler letter derives.
 const S_SOUND: u32 = 0xF52;
 const S_PERMUTE: u32 = 0xF53;
 
-// MUSICAL: first draft, tune by ear (user: Groove, the drums' feel).
-/// Ticks each voice plays off the grid at full Groove: the snare laid back,
-/// the hats and shakers pushed, the kick on the grid.
-const GROOVE_PUSH: [(DrumVoice, i32); 6] = [
-    (DrumVoice::Snare, 4),
-    (DrumVoice::Hats, -2),
-    (DrumVoice::Shaker, -2),
-    (DrumVoice::Ride, -1),
-    (DrumVoice::Perc, 2),
-    (DrumVoice::Top, 1),
-];
-/// Velocity scale of the cymbals' off 16ths and on-beat 8ths at full Groove.
-const GROOVE_OFF_VEL: f32 = 0.55;
-const GROOVE_ON_VEL: f32 = 1.15;
-/// Velocity of snare ghosts (hits below [`GHOST_VEL`]) at full Groove.
-const GROOVE_GHOST_VEL: f32 = 0.7;
-const GHOST_VEL: u8 = 70;
-
-/// The drums' Groove beyond the swing: each voice pushed or laid back, the
-/// cymbals' accent shape (strong 8ths, soft off 16ths), softer ghosts.
-/// `amount` 0 plays the bar as rendered.
-fn groove(out: &mut BarEvents, amount: f32) {
-    let g = amount.clamp(0.0, 1.0);
-    if g <= 0.0 {
-        return;
-    }
-    for e in out.as_mut_slice() {
-        let Some(voice) = DrumVoice::of_target(e.target) else { continue };
-        if let Some((_, push)) = GROOVE_PUSH.iter().find(|(v, _)| *v == voice) {
-            let to = e.tick as i32 + (*push as f32 * g).round() as i32;
-            e.tick = to.clamp(0, TICKS_PER_BAR as i32 - 1) as u16;
-            e.gate = e.gate.min(TICKS_PER_BAR - e.tick);
-        }
-        let scale = match voice {
-            DrumVoice::Hats | DrumVoice::Ride | DrumVoice::Shaker => {
-                let off = e.step % 2 == 1;
-                1.0 + (if off { GROOVE_OFF_VEL } else { GROOVE_ON_VEL } - 1.0) * g
-            }
-            DrumVoice::Snare if e.vel < GHOST_VEL => 1.0 + (GROOVE_GHOST_VEL - 1.0) * g,
-            _ => 1.0,
-        };
-        if e.vel > 0 && scale != 1.0 {
-            e.vel = (e.vel as f32 * scale).round().clamp(1.0, 127.0) as u8;
-        }
-    }
-    out.sort();
-}
-
-/// Parameters the Splice focus moves per step, the rest stay.
-const FOCUS_PARAMS: [&str; 3] = ["density", "variation", "spread"];
+/// Parameters the Splice focus moves per step, the rest stay (Variation
+/// plays as set).
+const FOCUS_PARAMS: [&str; 2] = ["density", "spread"];
 const S_SPLICE: u32 = 0xF54;
 
 /// How far the focus moves each generator parameter (negative: only down,
@@ -131,8 +80,11 @@ fn focus_shift(names: &[&str], focus: &[f32; STEPS_PER_BAR]) -> [f32; MAX_GEN_PA
 /// hit). A hit on a step of low focus moves a 16th or an 8th to a step of
 /// more focus where it does not land on another of its kind; where it can't
 /// it drops, up to [`crate::splice::DROP_MAX`] of them where the focus is
-/// lowest. The bar stays sorted, ties and gates move with their notes.
-fn splice_thin(out: &mut BarEvents, focus: &[f32; STEPS_PER_BAR], seed: u32, lane: u8, bar_in_phrase: u8) {
+/// lowest. A dropped note's time is held by the note before it at chance
+/// `hold` (a pitched lane's Density near the top: the line keeps sounding,
+/// its onsets leave the host's), unless that one is a stab. The bar stays
+/// sorted, ties and gates move with their notes.
+fn splice_thin(out: &mut BarEvents, focus: &[f32; STEPS_PER_BAR], seed: u32, lane: u8, hold: f32) {
     if focus.iter().all(|f| *f >= 1.0) {
         return;
     }
@@ -147,7 +99,7 @@ fn splice_thin(out: &mut BarEvents, focus: &[f32; STEPS_PER_BAR], seed: u32, lan
         }
         let s = ((e.tick / step) as usize).min(STEPS_PER_BAR - 1);
         let low = ((1.0 - focus[s]) / crate::splice::FOCUS_RANGE).clamp(0.0, 1.0);
-        let h = rng::hash(seed, lane, bar_in_phrase, (e.tick / 4) as u8 ^ e.target, S_SPLICE);
+        let h = rng::hash(seed, lane, 0, (e.tick / 4) as u8 ^ e.target, S_SPLICE);
         if low <= 0.0 {
             continue;
         }
@@ -173,6 +125,25 @@ fn splice_thin(out: &mut BarEvents, focus: &[f32; STEPS_PER_BAR], seed: u32, lan
             None => {}
         }
     }
+    if hold > 0.0 {
+        let ev = out.as_mut_slice();
+        let mut prev: Option<usize> = None;
+        for i in 0..ev.len() {
+            if ev[i].kind != EventKind::NoteOn {
+                continue;
+            }
+            if ev[i].vel > 0 {
+                prev = Some(i);
+                continue;
+            }
+            let h = rng::hash(seed, lane, 0, (ev[i].tick / 4) as u8 ^ ev[i].target, S_SPLICE + 1);
+            let Some(p) = prev.filter(|&p| ev[p].flags & flags::STAB == 0 && rng::unit_f32(h) < hold) else { continue };
+            // Up to the next note that plays (no slur into it).
+            let next = ev[i + 1..].iter().filter(|e| e.kind == EventKind::NoteOn && e.vel > 0).map(|e| e.tick).next().unwrap_or(TICKS_PER_BAR);
+            let end = (ev[i].tick + ev[i].gate).min(next);
+            ev[p].gate = ev[p].gate.max(end.saturating_sub(ev[p].tick));
+        }
+    }
     out.retain(|_, e| !(matches!(e.kind, EventKind::Trigger | EventKind::NoteOn) && e.vel == 0));
     out.sort();
 }
@@ -185,15 +156,15 @@ pub const PERMUTE_CHUNKS: usize = 8;
 /// `amount × chunks` of a fixed seeded swap list, so turning the knob up only
 /// adds moves. The first chunk (the downbeat) stays. Events keep their place
 /// inside their chunk; the bar stays sorted.
-fn permute(out: &mut BarEvents, amount: f32, seed: u32, lane: u8, bar_in_phrase: u8) {
+fn permute(out: &mut BarEvents, amount: f32, seed: u32, lane: u8) {
     let swaps = (amount.clamp(0.0, 1.0) * PERMUTE_CHUNKS as f32).round() as usize;
     if swaps == 0 {
         return;
     }
     // Where each chunk's content plays.
     let mut dest: [usize; PERMUTE_CHUNKS] = std::array::from_fn(|i| i);
-    // The same swaps for the bars of a 4-bar block, so a block keeps its shape.
-    let h = |k: u8, s: u32| rng::hash(seed, lane, bar_in_phrase % 4, k, s);
+    // The same swaps in every bar of the letter (snapshotted, D57).
+    let h = |k: u8, s: u32| rng::hash(seed, lane, 0, k, s);
     for k in 0..swaps {
         let a = 1 + rng::below(h(k as u8, S_PERMUTE), (PERMUTE_CHUNKS - 1) as u32) as usize;
         let mut b = 1 + rng::below(h(k as u8, S_PERMUTE + 1), (PERMUTE_CHUNKS - 2) as u32) as usize;
@@ -225,6 +196,25 @@ pub struct RenderedBar {
 // MUSICAL: first draft, tune by ear (user: very slight).
 /// Largest Morph move of a bass note, in knob values (at full Variation).
 pub const MORPH_NOTE: f32 = 0.04;
+// MUSICAL: tune by ear (user, 2026-10-21: A and B vary in Morph by the
+// Variation knob). Largest Morph move of a letter off A's at Variation 1,
+// in knob values (wrapping, times the stream region), and its curve.
+const LETTER_MORPH: f32 = 0.6;
+const LETTER_MORPH_CURVE: f32 = 1.5;
+const S_LETTER_MORPH: u32 = 0xF56;
+
+/// Letter `letter`'s Morph move by Variation (`variation` 0..1): none for
+/// A, B, C and D each a seeded way off it, up to [`LETTER_MORPH`].
+fn letter_morph(pattern_seed: u32, lane: u8, letter: Letter, variation: f32) -> f32 {
+    if letter == Letter::A {
+        return 0.0;
+    }
+    let u = rng::unit_f32(rng::hash(letter_seed(pattern_seed, lane, letter), lane, 0, 0, S_LETTER_MORPH));
+    // At least a third of the way, so a letter never lands next to A's.
+    let way = (2.0 * u - 1.0).signum() * (1.0 / 3.0 + 2.0 / 3.0 * (2.0 * u - 1.0).abs());
+    LETTER_MORPH * variation.clamp(0.0, 1.0).powf(LETTER_MORPH_CURVE) * way
+}
+
 /// Seed index of the Morph move, past the generator parameters.
 const MORPH_INDEX: usize = MAX_GEN_PARAMS;
 /// Seed index of a note's stereo side.
@@ -244,7 +234,6 @@ pub struct BarParams {
     jitter: [f32; MAX_GEN_PARAMS],
     seed: u32,
     lane: u8,
-    bar_in_phrase: u8,
     /// Pitch class of the key root.
     root: u8,
     /// How far Variation lets letters and notes move the parameters.
@@ -262,7 +251,7 @@ impl BarParams {
     /// note of `shape`.
     pub fn at(&self, index: usize, shape: NoteShape) -> f32 {
         let (Some(v), Some(amp)) = (self.values.get(index), self.jitter.get(index)) else { return 0.0 };
-        patterned(*v, *amp, self.seed, self.lane, self.bar_in_phrase, index, shape)
+        patterned(*v, *amp, self.seed, self.lane, index, shape)
     }
 
     /// The shape of a played note `ev` (its step, gate and height).
@@ -272,7 +261,7 @@ impl BarParams {
 
     /// The Morph move of bass note `ev`, in knob values (see [`MORPH_NOTE`]).
     pub fn morph_move(&self, ev: &LiveEvent) -> f32 {
-        patterned(0.5, MORPH_NOTE * self.reach, self.seed, self.lane, self.bar_in_phrase, MORPH_INDEX, self.shape_of(ev)) - 0.5
+        patterned(0.5, MORPH_NOTE * self.reach, self.seed, self.lane, MORPH_INDEX, self.shape_of(ev)) - 0.5
     }
 }
 
@@ -300,7 +289,7 @@ pub struct PatternLane {
     /// Seed of the sample picks.
     pub sound_seed: u32,
     /// Rate setting on top of the seeded block speed (bass): −1 half, 1
-    /// double, of a centre at half the rendered speed ([`BASE_RATE`]).
+    /// double (D57: Normal plays the generator's own pace).
     pub rate: i8,
     /// Mode in the key's family (0 = plain minor or major).
     pub mode: u8,
@@ -342,7 +331,7 @@ impl PatternLane {
     pub fn bass_with_clips(pattern_seed: u32, sound_seed: u32, clips: std::sync::Arc<crate::clips::ClipSet>) -> Self {
         let none = BTreeMap::new();
         let defaults = defaults_from_spec(&bass::PARAM_NAMES, &bass::PARAM_DEFAULTS, &none);
-        let generator = BassGenerator::new(defaults, BassRules::from_spec(&none), Vec::new()).with_clips(clips);
+        let generator = BassGenerator::new(defaults, BassRules::from_spec(&none)).with_clips(clips);
         Self::new(Role::Bass, Box::new(generator), DrumLayout::standard(), pattern_seed, sound_seed, defaults)
     }
 
@@ -484,20 +473,18 @@ impl PatternLane {
         out.events.clear();
         out.params = BarParams::default();
         let form_seed = self.follow.map_or(self.pattern_seed, |f| f.spec.seeds.fill);
-        out.voices = self.render_part(&ctx, &pos, 0, form_seed, &mut out.events, &mut scratch.second, &mut scratch.span, Some(&mut out.params));
+        out.voices = self.render_part(&ctx, &pos, 0, form_seed, &mut out.events, &mut scratch.work, &mut scratch.span, Some(&mut out.params));
         out.letter = pos.letter.index();
         for p in &parts[1..n_parts] {
             scratch.part.clear();
-            self.render_part(&ctx, &p.pos, p.from, form_seed, &mut scratch.part, &mut scratch.second, &mut scratch.span, None);
-            splice_range(&mut out.events, &scratch.part, p.from, p.to, &mut scratch.second);
-        }
-        // Splice: the bar as it plays (after the operators, the speed and the
-        // thinning, its parts together) fitted to the host's line (D46, D47).
-        if self.host_line.on && self.role != Role::Drums {
-            fit_to_host(&mut out.events, &self.host_line, &ctx.harmony);
+            self.render_part(&ctx, &p.pos, p.from, form_seed, &mut scratch.part, &mut scratch.work, &mut scratch.span, None);
+            splice_range(&mut out.events, &scratch.part, p.from, p.to, &mut scratch.work.a);
         }
     }
 
+    /// One part of a bar through the render chain (D57, [`crate::chain`]):
+    /// R0 here, R1 to R8 in [`Self::front`] (per bar of the span when the
+    /// part plays operators, R9 in [`Self::render_span`]), then R10 to R12.
     #[allow(clippy::too_many_arguments)]
     fn render_part(
         &self,
@@ -506,7 +493,7 @@ impl PatternLane {
         from: u16,
         form_seed: u32,
         out: &mut BarEvents,
-        scratch: &mut BarEvents,
+        work: &mut Work,
         span: &mut [SpanCache; SPAN_SLOTS],
         played: Option<&mut BarParams>,
     ) -> u8 {
@@ -516,6 +503,7 @@ impl PatternLane {
             out.clear();
             return 0;
         }
+        // R0 Resolve: the letter's seeds and its own knob values.
         let seed = letter_seed(self.pattern_seed, c.lane, pos.letter);
         let class = pos.letter.class();
         let names = self.generator.param_names();
@@ -525,7 +513,8 @@ impl PatternLane {
         let mut params = contrast::letter_params(names, &self.params, self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast);
         // The block's own Permute and (bass) Morph. A Permute at 0 stays off.
         let permute_amount = contrast::knob_value("permute", self.permute, self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast);
-        let block_morph = contrast::morph_move(self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast);
+        let variation = names.iter().position(|n| *n == "variation").map_or(0.0, |i| params[i]);
+        let block_morph = contrast::morph_move(self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast) + letter_morph(self.pattern_seed, c.lane, pos.letter, variation);
         // Drums: the Swing knob swings every off 16th of the bar (breaks,
         // ghosts, percussion and tops too), on top of the letter's feel, so
         // the generator itself plays straight.
@@ -542,7 +531,8 @@ impl PatternLane {
             SeedClass::Main => self.sound_seed,
             SeedClass::Filler => rng::hash(self.sound_seed, c.lane, pos.letter.index(), 0, S_SOUND) as u32,
         };
-        let mut bar_ctx = BarCtx {
+        let exponent = self.rate + self.letter_rate(c.lane, pos.letter);
+        let bar_ctx = BarCtx {
             style_seed: self.pattern_seed,
             seed,
             sound_seed,
@@ -568,88 +558,73 @@ impl PatternLane {
             drum_fill: false,
             focus: self.focus,
             focus_shift: focus_shift(names, &self.focus),
-            // The host's line as the generator's bar will play after the
-            // speed (half speed plays a part of it stretched).
-            host: if self.role == Role::Drums {
-                self.host_line
-            } else {
-                let block = if self.role == Role::Bass { self.letter_rate(c.lane, pos.letter) } else { 0 };
-                host_in_render(&self.host_line, self.rate + BASE_RATE + block, c.bar)
-            },
+            // The host's line as the bar will play after the speed (half
+            // speed plays a part of it stretched).
+            host: if self.role == Role::Drums { self.host_line } else { speed::host_in_render(&self.host_line, exponent, c.bar) },
             letter: pos.letter.index(),
             material_bar: (c.bar % (u16::MAX as u64 + 1)) as u16,
         };
+        let groove = self.groove_of(&params, knob_swing);
+        let front = Front { exponent, permute: permute_amount, groove, variation, swing: knob_swing };
         let voices = self.generator.voice_mask(&bar_ctx);
         let chain = self.resolve_ops(pos, form_seed, c.lane);
         // A phrase loops from its own start (D48); the drums' phrase-end
         // bar plays the letter's fill on the song's bars.
         let plain = if pos.phrase > 0 { self.role == Role::Drums && phrase_end } else { chain.is_empty() };
         if plain {
-            self.generator.render_bar(&bar_ctx, out);
-            out.sort();
-            if pos.prime {
-                // A': same seed, a different second half.
-                bar_ctx.seed = prime_seed(seed, c.lane);
-                scratch.clear();
-                self.generator.render_bar(&bar_ctx, scratch);
-                scratch.sort();
-                splice_from(out, scratch, prime_from(self.op_amount()));
-            }
+            self.front(&bar_ctx, &front, c.bar, pos.prime, out, work);
         } else {
-            // Operators (D47): the letter's first bars, transformed over the
-            // segment, this bar's part of it.
-            self.render_span(c, pos, &bar_ctx, &chain, from, out, scratch, span);
+            // R9 Operators (D47): the letter's first bars, transformed over
+            // the segment, this bar's part of it.
+            self.render_span(c, pos, &bar_ctx, &front, &chain, from, out, work, span);
         }
-        permute(out, permute_amount, seed, c.lane, c.bar_in_phrase);
-        let mut feel = Feel::of(seed, c.lane, class);
-        feel.swing = (feel.swing + knob_swing).min(1.0);
         if let Some(p) = played {
             *p = BarParams {
                 values: params,
                 jitter: bar_ctx.jitter,
                 seed,
                 lane: c.lane,
-                bar_in_phrase: c.bar_in_phrase,
                 root: c.harmony.key.root,
                 reach,
-                swing: feel.swing,
+                swing: (Feel::of(seed, c.lane, class).swing + knob_swing).min(1.0),
                 morph: if self.role == Role::Drums { 0.0 } else { block_morph },
                 permute: permute_amount,
             };
         }
-        feel.apply(out, seed, c.lane);
-        if self.role == Role::Drums {
-            groove(out, knob_swing);
-        }
-        if self.role != Role::Drums {
-            let block = if self.role == Role::Bass { self.letter_rate(c.lane, pos.letter) } else { 0 };
-            let rate = self.rate + BASE_RATE;
-            apply_speed(out, rate + block, c.bar, scratch);
-            limit_speed(out, rate, rate + block);
-            // Splice: the lengths alike or against a pitched host's (D46),
-            // as the bar plays. The bar's first note is the anchor (music
-            // theory §3.3); figures and slid notes keep theirs.
-            if self.host_line.on {
-                let ev = out.as_mut_slice();
-                let mut first = true;
-                for i in 0..ev.len() {
-                    if ev[i].kind != EventKind::NoteOn {
-                        continue;
-                    }
-                    if std::mem::take(&mut first) {
-                        continue;
-                    }
-                    let next = ev[i + 1..].iter().find(|e| e.kind == EventKind::NoteOn);
-                    if ev[i].has(flags::FIGURE) || next.is_some_and(|n| n.has(flags::TIE)) {
-                        continue;
-                    }
-                    let room = next.map_or(TICKS_PER_BAR, |n| n.tick).saturating_sub(ev[i].tick);
-                    let s = (ev[i].tick / crate::TICKS_PER_STEP) as usize;
-                    ev[i].gate = crate::splice::contrast_gate(&self.host_line, s, ev[i].gate, room);
+        // R10 Splice.
+        if self.role != Role::Drums && self.host_line.on {
+            // The bar as it plays fitted to the host's line (D46, D47), then
+            // the lengths alike or against it. The bar's first note is the
+            // anchor (music theory §3.3); figures and slid notes keep theirs.
+            fit_to_host(out, &self.host_line, &c.harmony);
+            let ev = out.as_mut_slice();
+            let mut first = true;
+            for i in 0..ev.len() {
+                if ev[i].kind != EventKind::NoteOn {
+                    continue;
                 }
+                if std::mem::take(&mut first) {
+                    continue;
+                }
+                let next = ev[i + 1..].iter().find(|e| e.kind == EventKind::NoteOn);
+                if ev[i].has(flags::FIGURE) || next.is_some_and(|n| n.has(flags::TIE)) {
+                    continue;
+                }
+                let room = next.map_or(TICKS_PER_BAR, |n| n.tick).saturating_sub(ev[i].tick);
+                let s = (ev[i].tick / crate::TICKS_PER_STEP) as usize % STEPS_PER_BAR;
+                ev[i].gate = crate::splice::contrast_gate(&self.host_line, s, ev[i].gate, room);
             }
+        }
+        let hold = match names.iter().position(|n| *n == "density") {
+            Some(i) if self.role == Role::Bass => crate::chain::fill::amount(params[i]).powi(2),
+            _ => 0.0,
+        };
+        splice_thin(out, &self.focus, seed, c.lane, hold);
+        // R11 Expression.
+        if self.role != Role::Drums {
+            self.generator.expression(&bar_ctx, out);
             // Each note moves Morph a touch, as its shape says.
-            let played = BarParams { seed, lane: c.lane, bar_in_phrase: c.bar_in_phrase, root: c.harmony.key.root, reach, ..BarParams::default() };
+            let played = BarParams { seed, lane: c.lane, root: c.harmony.key.root, reach, ..BarParams::default() };
             // Spread is width too: notes above the home root spread out in
             // the stereo field, the sub stays centred.
             let spread = names.iter().position(|n| *n == "spread").map_or(0.0, |i| params[i]);
@@ -658,13 +633,88 @@ impl PatternLane {
                 let at = e.start as f64 / u16::MAX as f64 + (block_morph + played.morph_move(e)) as f64 * MORPH_REGION;
                 e.start = (at.rem_euclid(1.0) * u16::MAX as f64) as u16;
                 let above = ((e.key as i32 - home) as f32 / WIDTH_FULL_SEMIS).clamp(0.0, 1.0);
-                let side = patterned(0.5, 0.5, seed, c.lane, c.bar_in_phrase, PAN_INDEX, played.shape_of(e)) * 2.0 - 1.0;
+                let side = patterned(0.5, 0.5, seed, c.lane, PAN_INDEX, played.shape_of(e)) * 2.0 - 1.0;
                 e.pan = (side.signum() * WIDTH_PAN * spread * above * 127.0).round() as i8;
             }
+            // R12 Cleanup.
+            crate::chain::cleanup(out);
+        } else {
+            out.sort();
         }
-        splice_thin(out, &self.focus, seed, c.lane, c.bar_in_phrase);
         voices
     }
+
+    /// R1 to R8 (D57) of one bar (`bar` the bar it renders for, the speed's
+    /// part of the skeleton) into `out`.
+    fn front(&self, ctx: &BarCtx, f: &Front, bar: u64, prime: bool, out: &mut BarEvents, work: &mut Work) {
+        let pitched = self.role != Role::Drums;
+        // R1 Skeleton.
+        out.clear();
+        self.generator.render_bar(ctx, out);
+        out.sort();
+        // R2 Structure: A′ (the same seed, a different second half), Permute.
+        if prime {
+            let pctx = BarCtx { seed: prime_seed(ctx.seed, ctx.lane), ..*ctx };
+            work.a.clear();
+            self.generator.render_bar(&pctx, &mut work.a);
+            work.a.sort();
+            splice_from(out, &work.a, prime_from(self.op_amount()));
+        }
+        permute(out, f.permute, ctx.seed, ctx.lane);
+        // R3 Speed.
+        if pitched {
+            speed::apply_speed(out, f.exponent, bar, &mut work.a);
+            speed::limit_speed(out, self.rate, f.exponent);
+        }
+        // R4 Recursion: a note's own pattern is the skeleton again with its
+        // seed (R1 and R3), once.
+        if pitched {
+            let (gen, rate, exponent) = (&self.generator, self.rate, f.exponent);
+            let (a, b, child) = (&mut work.a, &mut work.b, &mut work.c);
+            let mut render = |seed: u32, buf: &mut BarEvents| {
+                let cctx = BarCtx { seed, ..*ctx };
+                buf.clear();
+                gen.render_bar(&cctx, buf);
+                buf.sort();
+                speed::apply_speed(buf, exponent, bar, child);
+                speed::limit_speed(buf, rate, exponent);
+            };
+            crate::chain::recursion::pitched(out, f.groove, f.variation, ctx.seed, ctx.lane, &mut render, a, b);
+        } else {
+            crate::chain::recursion::drums(out, f.groove, ctx.seed, ctx.lane, &mut work.a);
+        }
+        // R5 Density fill, R6 Length.
+        let finest = speed::grid(self.rate, f.exponent);
+        self.generator.fill(ctx, out, finest);
+        self.generator.lengths(ctx, out, finest);
+        // R7 Groove: the letter's feel (its swing and drift; the triplet
+        // reflow on the drums only, D57), then the knob's.
+        let mut feel = Feel::of(ctx.seed, ctx.lane, ctx.class);
+        if pitched {
+            feel.triplet = false;
+            feel.apply(out, ctx.seed, ctx.lane);
+            crate::chain::groove::pitched(out, f.groove, f.variation, ctx.seed, ctx.lane);
+        } else {
+            feel.swing = (feel.swing + f.swing).min(1.0);
+            feel.apply(out, ctx.seed, ctx.lane);
+            crate::chain::groove::drums(out, f.swing);
+        }
+        // R8 Melody.
+        self.generator.melody(ctx, out);
+        out.sort();
+    }
+}
+
+/// What [`PatternLane::front`] reads besides the bar's context: the speed
+/// exponent, Permute, the Groove knob (the recursion's and the groove's),
+/// Variation, the drums' Swing knob.
+#[derive(Debug, Clone, Copy)]
+struct Front {
+    exponent: i8,
+    permute: f32,
+    groove: f32,
+    variation: f32,
+    swing: f32,
 }
 
 impl PatternLane {
@@ -711,11 +761,13 @@ impl PatternLane {
         contrast::letter_rate(a, self.pattern_seed, lane, letter, self.contrast)
     }
 
-    /// The Groove knob as the lane reads it (the drums' swing, the bass's
-    /// syncopation): the subdivision `k` splits into (D51).
-    fn groove_knob(&self) -> f32 {
-        let names = self.param_names();
-        names.iter().position(|n| *n == "swing").or_else(|| names.iter().position(|n| *n == "syncopation")).map_or(0.5, |i| self.params[i]).clamp(0.0, 1.0)
+    /// The Groove a letter plays with (`params` its own values): the bass's
+    /// syncopation, the drums' Swing knob (`swing`, taken out of them).
+    fn groove_of(&self, params: &[f32; MAX_GEN_PARAMS], swing: f32) -> f32 {
+        if self.role == Role::Drums {
+            return swing.clamp(0.0, 1.0);
+        }
+        self.param_names().iter().position(|n| *n == "syncopation").map_or(0.0, |i| params[i]).clamp(0.0, 1.0)
     }
 
     /// How far the operators go: Variation 0 still a little (D47).
@@ -728,7 +780,7 @@ impl PatternLane {
     /// `from`: the letter's first bars (as the letter first plays them),
     /// transformed by `chain` over the whole segment, cached per span.
     #[allow(clippy::too_many_arguments)]
-    fn render_span(&self, c: &PartCtx, pos: &FormPos, base: &BarCtx, chain: &OpChain, from: u16, out: &mut BarEvents, tmp: &mut BarEvents, spans: &mut [SpanCache; SPAN_SLOTS]) {
+    fn render_span(&self, c: &PartCtx, pos: &FormPos, base: &BarCtx, front: &Front, chain: &OpChain, from: u16, out: &mut BarEvents, work: &mut Work, spans: &mut [SpanCache; SPAN_SLOTS]) {
         let bar_ticks = TICKS_PER_BAR as u32;
         let beat_ticks = bar_ticks / crate::form::BEATS_PER_BAR as u32;
         // A phrase (D48) is its own length wherever it plays; a segment
@@ -761,6 +813,9 @@ impl PatternLane {
             self.phrase_bars as u64,
             amount.to_bits() as u64,
             limit as u64,
+            (front.exponent as u8 as u64) | (self.rate as u8 as u64) << 8,
+            front.groove.to_bits() as u64 | (front.permute.to_bits() as u64) << 32,
+            front.swing.to_bits() as u64,
         ] {
             key = mix(key, v);
         }
@@ -795,7 +850,7 @@ impl PatternLane {
                 }
                 let phrase_end = !phrased && self.phrase_bars > 1 && (first_bar + j as u64 + 1) % self.phrase_bars as u64 == 0;
                 let fill = self.role == Role::Drums && ((base.class == SeedClass::Filler && j + 1 == bars) || phrase_end);
-                let mut ctx = BarCtx {
+                let ctx = BarCtx {
                     bar_in_phrase: (j as u64 % BARS_PER_PHRASE) as u8,
                     phrase: (first_bar / BARS_PER_PHRASE) as u32,
                     fill,
@@ -805,16 +860,8 @@ impl PatternLane {
                     material_bar: if phrased { j } else { (first_bar + j as u64) as u16 },
                     ..*base
                 };
-                tmp.clear();
-                self.generator.render_bar(&ctx, tmp);
-                tmp.sort();
-                if pos.prime {
-                    ctx.seed = prime_seed(base.seed, c.lane);
-                    span.prime.clear();
-                    self.generator.render_bar(&ctx, &mut span.prime);
-                    span.prime.sort();
-                    splice_from(tmp, &span.prime, prime_from(amount));
-                }
+                let mut tmp = std::mem::take(&mut work.d);
+                self.front(&ctx, front, first_bar + j as u64, pos.prime, &mut tmp, work);
                 for e in tmp.as_slice() {
                     let at = j as u32 * bar_ticks + e.tick as u32;
                     if at < limit && span.notes.len() < span.notes.capacity() {
@@ -822,6 +869,7 @@ impl PatternLane {
                         span.notes.push(SpanNote { at, seq, ev: *e });
                     }
                 }
+                work.d = tmp;
             }
             if phrased {
                 // The phrase starts `offset` beats into the letter's notes,
@@ -861,7 +909,7 @@ impl PatternLane {
                 }
             }
             ops::sort(&mut span.notes);
-            let ctx = OpCtx { ticks, amount, seed: base.seed, lane: c.lane, drums: self.role == Role::Drums, harmony: base.harmony, groove: self.groove_knob() };
+            let ctx = OpCtx { ticks, amount, seed: base.seed, lane: c.lane, drums: self.role == Role::Drums, harmony: base.harmony };
             ops::apply(chain, &mut span.notes, &ctx);
             span.ticks = ticks;
             span.key = key;
@@ -921,8 +969,17 @@ pub struct FormFollow {
 #[derive(Clone, Default)]
 pub struct Scratch {
     part: BarEvents,
-    second: BarEvents,
+    work: Work,
     span: [SpanCache; SPAN_SLOTS],
+}
+
+/// The chain's work buffers.
+#[derive(Clone, Default)]
+struct Work {
+    a: BarEvents,
+    b: BarEvents,
+    c: BarEvents,
+    d: BarEvents,
 }
 
 /// Spans [`Scratch`] keeps: a bar's parts (a question and its answer) each
@@ -939,7 +996,6 @@ pub struct SpanCache {
     used: u64,
     ticks: u32,
     notes: Vec<SpanNote>,
-    prime: BarEvents,
 }
 
 impl Default for SpanCache {
@@ -951,7 +1007,6 @@ impl Default for SpanCache {
             ticks: 0,
 
             notes: Vec::with_capacity(MAX_SPAN_BARS * crate::MAX_EVENTS_PER_BAR),
-            prime: BarEvents::default(),
 
         }
     }
@@ -1041,8 +1096,27 @@ fn block_rate(seed: u32, lane: u8, class: SeedClass) -> i8 {
 /// Replace the events of `out` in ticks `from..to` with those of `part`.
 fn splice_range(out: &mut BarEvents, part: &BarEvents, from: u16, to: u16, scratch: &mut BarEvents) {
     scratch.clear();
+    // A note of the part held over its start comes in on its first tick
+    // (user, 2026-10-21: it was lost, a silence up to half a bar long).
+    let held = |e: &LiveEvent| e.kind == EventKind::NoteOn && e.gate > 0 && e.tick < from && e.tick + e.gate > from;
+    let carried = part.as_slice().iter().find(|e| held(e)).copied();
+    let enters = carried.is_some() || part.as_slice().iter().any(|e| e.kind == EventKind::NoteOn && e.tick >= from && e.tick < from + crate::TICKS_PER_STEP);
     for e in out.as_slice().iter().filter(|e| e.tick < from || e.tick >= to) {
-        scratch.push(*e);
+        let mut e = *e;
+        // The bar's notes end where the part's start.
+        if enters && held(&e) {
+            e.gate = from - e.tick;
+        }
+        scratch.push(e);
+    }
+    if let Some(mut e) = carried {
+        e.gate = (e.tick + e.gate).min(to) - from;
+        e.tick = from;
+        e.step = (from / crate::TICKS_PER_STEP) as u8;
+        e.flags &= !(flags::TIE | flags::REVERSE);
+        e.loop_len = 0;
+        e.note_id = e.note_id.wrapping_add(0x1000);
+        scratch.push(e);
     }
     for e in part.as_slice().iter().filter(|e| e.tick >= from && e.tick < to) {
         scratch.push(*e);
@@ -1113,163 +1187,6 @@ fn note_jitter(names: &[&str], reach: f32) -> [f32; MAX_GEN_PARAMS] {
     out
 }
 
-/// A note's loop section at `k` times its speed's length (none when it no
-/// longer fits its tick bytes).
-fn scale_loop(e: &mut LiveEvent, k: f32) {
-    let (at, len) = (e.loop_at as f32 * k, e.loop_len as f32 * k);
-    if e.loop_len == 0 || at + len > u8::MAX as f32 || len < 1.0 {
-        e.loop_len = 0;
-    } else {
-        (e.loop_at, e.loop_len) = (at as u8, len as u8);
-    }
-}
-
-/// Play the bar at `2^exponent` speed (clamped to −3..=1). Below 1 each bar
-/// plays the next part of the rendered bar stretched over the whole bar, or
-/// the busiest part when the next one is far quieter (a bar of near silence
-/// otherwise); a note held over the part start comes back on its first
-/// tick. 1 plays the bar compressed into each half.
-fn apply_speed(out: &mut BarEvents, exponent: i8, bar: u64, scratch: &mut BarEvents) {
-    let half = TICKS_PER_BAR / 2;
-    match exponent.clamp(-3, 1) {
-        0 => return,
-        e if e < 0 => {
-            let k = 1u16 << (-e) as u16;
-            let part = TICKS_PER_BAR / k;
-            let from = busy_part(out.as_slice(), k, (bar % k as u64) as u16) * part;
-            scratch.clear();
-            for e in out.as_slice().iter().filter(|e| {
-                e.kind == EventKind::NoteOn && e.gate > 0 && e.tick < from && e.tick + e.gate > from
-            }) {
-                let mut e = *e;
-                e.gate = (e.tick + e.gate - from).min(part) * k;
-                e.tick = 0;
-                e.flags &= !(flags::TIE | flags::ACCENT | flags::REVERSE);
-                // Picked up mid-note: its loop section (or reversed stretch) is behind it.
-                e.loop_len = 0;
-                e.note_id = e.note_id.wrapping_add(0x2000);
-                scratch.push(e);
-            }
-            for e in out.as_slice().iter().filter(|e| e.tick >= from && e.tick < from + part) {
-                let mut e = *e;
-                e.tick = (e.tick - from) * k;
-                e.gate = e.gate.saturating_mul(k).min(TICKS_PER_BAR - e.tick);
-                scale_loop(&mut e, k as f32);
-                scratch.push(e);
-            }
-        }
-        _ => {
-            scratch.clear();
-            for offset in [0, half] {
-                for e in out.as_slice() {
-                    let mut e = *e;
-                    e.tick = e.tick / 2 + offset;
-                    e.gate = if e.gate > 0 { (e.gate / 2).max(1) } else { 0 };
-                    scale_loop(&mut e, 0.5);
-                    if offset > 0 {
-                        // Distinct voices for the repeat (NoteOff matching).
-                        e.note_id = e.note_id.wrapping_add(0x4000);
-                    }
-                    scratch.push(e);
-                }
-            }
-            scratch.sort();
-        }
-    }
-    std::mem::swap(out, scratch);
-}
-
-// MUSICAL: tune by ear (2026-10-20, the half speed centre: a seed's quiet
-// half bar became a near silent bar).
-/// A part this much quieter than the busiest one gives way to it.
-const QUIET_PART: f32 = 0.35;
-/// What a stab sounds for, whatever its gate (it decays).
-const STAB_SOUNDS: u16 = crate::TICKS_PER_STEP;
-
-/// Part `next` of the bar's `k` parts, or the busiest one when `next` plays
-/// under [`QUIET_PART`] of it (sounding ticks times velocity).
-fn busy_part(events: &[LiveEvent], k: u16, next: u16) -> u16 {
-    let part = TICKS_PER_BAR / k;
-    let score = |p: u16| -> f32 {
-        let (lo, hi) = (p * part, (p + 1) * part);
-        events
-            .iter()
-            .filter(|e| e.kind == EventKind::NoteOn && e.gate > 0)
-            .map(|e| {
-                let gate = if e.has(flags::STAB) { e.gate.min(STAB_SOUNDS) } else { e.gate };
-                let covered = (e.tick + gate).min(hi).saturating_sub(e.tick.max(lo));
-                covered as f32 * e.vel as f32
-            })
-            .sum()
-    };
-    let busiest = (0..k).map(|p| (p, score(p))).fold((next, score(next)), |a, b| if b.1 > a.1 { b } else { a });
-    if score(next) < QUIET_PART * busiest.1 { busiest.0 } else { next }
-}
-
-/// A host's line (per played step) in the frame of a bar rendered for
-/// `2^exponent` speed ([`apply_speed`]): at slow speeds the part bar `bar`
-/// plays (and the other parts repeating it), at double speed the first
-/// half; lengths stay in host steps ([`crate::splice::HostLine::step_ticks`]).
-fn host_in_render(line: &crate::splice::HostLine, exponent: i8, bar: u64) -> crate::splice::HostLine {
-    let e = exponent.clamp(-3, 1);
-    if e == 0 || !line.on {
-        return *line;
-    }
-    let k = if e < 0 { (1u32 << (-e) as u32) as f32 } else { 0.5 };
-    let mut out = crate::splice::HostLine { on: true, relation: line.relation, step_ticks: line.step_ticks / k, ..Default::default() };
-    for r in 0..STEPS_PER_BAR {
-        // The played steps rendered step `r` covers.
-        let (from, width, len) = if e < 0 {
-            let k = 1usize << (-e) as usize;
-            let part = STEPS_PER_BAR / k;
-            let first = (bar % k as u64) as usize * part;
-            (((r + STEPS_PER_BAR - first) % part) * k, k, line.lens[((r + STEPS_PER_BAR - first) % part) * k])
-        } else {
-            ((r / 2) % STEPS_PER_BAR, 1, line.lens[(r / 2) % STEPS_PER_BAR])
-        };
-        out.keys[r] = line.keys[from];
-        out.lens[r] = len;
-        if (from..(from + width).min(STEPS_PER_BAR)).any(|p| line.onsets & (1 << p) != 0) {
-            out.onsets |= 1 << r;
-        }
-    }
-    out
-}
-
-/// The fastest notes a speed keeps (user, 2026-10-20): double speed stays
-/// at 16ths and half speed at 8ths, instead of everything scaled (`rate`
-/// and `exponent` with [`BASE_RATE`] in them: the Normal setting is half). A note
-/// closer than that to the previous one goes; the previous one holds over it.
-fn limit_speed(out: &mut BarEvents, rate: i8, exponent: i8) {
-    // The Rate setting decides; a block at double speed stays at 16ths too.
-    let min = if rate >= 1 || exponent >= 1 {
-        TICKS_PER_BAR / 16
-    } else if rate <= -1 {
-        TICKS_PER_BAR / 8
-    } else {
-        return;
-    };
-    let events = out.as_mut_slice();
-    let mut kept = 0usize;
-    let mut last: Option<usize> = None;
-    for i in 0..events.len() {
-        let e = events[i];
-        if e.kind == EventKind::NoteOn {
-            if let Some(l) = last {
-                if e.tick < events[l].tick + min {
-                    let p = &mut events[l];
-                    p.gate = p.gate.max((e.tick + e.gate).saturating_sub(p.tick));
-                    continue;
-                }
-            }
-            last = Some(kept);
-        }
-        events[kept] = e;
-        kept += 1;
-    }
-    out.truncate(kept);
-}
-
 // MUSICAL: tune by ear (D50). A clip's window: a seeded block of this many
 // beats in the clip, the phrase's offset on top.
 const CLIP_WINDOW_BEATS: u32 = 16;
@@ -1286,6 +1203,9 @@ fn clip_window(seed: u32, lane: u8, beats: u32) -> u32 {
 /// 16th earlier (that note is clipped to start on the beat); the letter's own
 /// start when no beat has one. Even beats keep the kick's beats with the
 /// kick, a note on the beat keeps the phrase from sounding late.
+/// How late after a beat a note still counts as on it (the letter's feel).
+const ONSET_FEEL_TICKS: u32 = crate::form::MAX_SWING_TICKS as u32;
+
 fn onset_shift(notes: &mut [SpanNote], want: u32, ticks: u32, beat: u32) -> u32 {
     let points = ticks / (2 * beat);
     let first = (want / 2) % points.max(1);
@@ -1295,14 +1215,22 @@ fn onset_shift(notes: &mut [SpanNote], want: u32, ticks: u32, beat: u32) -> u32 
             return 0;
         }
         let t = p * 2 * beat;
+        // A note from a 16th before the beat (clipped to it) to a few ticks
+        // after it (the letter's feel moved it, D57): the nearest one.
         let sounds = |n: &SpanNote| {
-            matches!(n.ev.kind, EventKind::NoteOn | EventKind::Trigger) && n.ev.vel > 0 && n.at <= t && t - n.at <= crate::TICKS_PER_STEP as u32 && (n.ev.gate == 0 || n.at + n.ev.gate as u32 > t)
+            matches!(n.ev.kind, EventKind::NoteOn | EventKind::Trigger)
+                && n.ev.vel > 0
+                && n.at + crate::TICKS_PER_STEP as u32 >= t
+                && n.at <= t + ONSET_FEEL_TICKS
+                && (n.ev.gate == 0 || n.at + n.ev.gate as u32 > t)
         };
-        if let Some(n) = notes.iter_mut().find(|n| sounds(n)) {
-            if n.ev.gate > 0 {
-                n.ev.gate -= (t - n.at) as u16;
+        if let Some(n) = notes.iter_mut().filter(|n| sounds(n)).min_by_key(|n| n.at.abs_diff(t)) {
+            if n.at < t {
+                if n.ev.gate > 0 {
+                    n.ev.gate -= (t - n.at) as u16;
+                }
+                n.at = t;
             }
-            n.at = t;
             return t;
         }
     }
@@ -1326,12 +1254,16 @@ mod tests {
     }
 
     #[test]
-    fn normal_and_half_speed_stay_at_8ths() {
-        for (rate, min) in [(0i8, TICKS_PER_BAR / 8), (-1, TICKS_PER_BAR / 8)] {
+    fn normal_plays_16ths_and_half_speed_8ths() {
+        // D57: Normal is the generator's own pace; half speed keeps 8ths
+        // (at Groove 0: no recursion and no moves). A pushed 8th keeps its
+        // onset (the speed's slack).
+        for (rate, min) in [(0i8, TICKS_PER_BAR / 16 * 3 / 4), (-1, TICKS_PER_BAR / 8 * 3 / 4)] {
             let mut fastest = u16::MAX;
             for seed in 0..40 {
                 let mut lane = PatternLane::bass(seed, seed);
                 lane.rate = rate;
+                lane.set_param("syncopation", 0.0);
                 for bar in render_all(&lane, 8) {
                     let on: Vec<u16> = bar.iter().filter(|e| e.kind == EventKind::NoteOn).map(|e| e.tick).collect();
                     fastest = on.windows(2).map(|w| w[1] - w[0]).fold(fastest, u16::min);
@@ -1379,9 +1311,9 @@ mod tests {
             let lane = |amount: f32| {
                 let mut l = if drums { PatternLane::drums(DrumLayout::standard(), 7, 3) } else { PatternLane::bass(7, 3) };
                 l.permute = amount;
-                // The bar at its rendered speed: half speed's 8th limit
-                // thins moved notes differently.
-                l.rate = 1;
+                // No stabs: the Length phase splits no held note (their
+                // lengths differ once the chunks move).
+                l.set_param("stabs", 0.0);
                 l
             };
             let plain = render_all(&lane(0.0), 8);
@@ -1389,7 +1321,8 @@ mod tests {
             let mut moved = 0;
             for (a, b) in plain.iter().zip(&full) {
                 assert_eq!(a.len(), b.len(), "every hit stays");
-                let first = |v: &[crate::event::LiveEvent]| v.iter().filter(|e| e.tick < chunk).map(|e| (e.tick, e.target, e.key)).collect::<Vec<_>>();
+                // (The melody walks the moved line anew: its pitches move.)
+                let first = |v: &[crate::event::LiveEvent]| v.iter().filter(|e| e.tick < chunk).map(|e| (e.tick, e.target)).collect::<Vec<_>>();
                 assert_eq!(first(a), first(b), "the downbeat chunk stays");
                 let ticks = |v: &[crate::event::LiveEvent]| v.iter().map(|e| (e.tick, e.target)).collect::<Vec<_>>();
                 moved += (ticks(a) != ticks(b)) as usize;
@@ -1434,7 +1367,7 @@ mod tests {
         let mut fills = 0;
         for seed in 0..40 {
             let mut lane = PatternLane::drums(DrumLayout::standard(), 5, 5);
-            lane.set_form_spec(crate::macros::FormSettings::seeded(seed).spec(true, 0.5, 0.5, 0.5, 0.5, 0.5));
+            lane.set_form_spec(crate::macros::FormSettings::seeded(seed).spec(true, 0.5, 0.5, 0.5));
             let f = lane.form();
             // The seams at bars 32 and 64 (the ones at 16 and 48 are rarer).
             fills += [127u64, 255].iter().filter(|&&b| f.pos_at(b).letter.class() == SeedClass::Filler).count();
@@ -1493,7 +1426,8 @@ mod tests {
         for drums in [true, false] {
             let mut lane = if drums { PatternLane::drums(DrumLayout::standard(), 7, 3) } else { PatternLane::bass(7, 3) };
             lane.set_form(Form::parse("A3 Ar2 A11").unwrap());
-            lane.rate = 1;
+            lane.rate = 0;
+            lane.set_param("density", 0.75);
             // Rendered in order (the span cached) or alone: the same bars.
             let ordered = render_all(&lane, 8);
             for b in [4u64, 3, 6, 4] {
@@ -1554,8 +1488,11 @@ mod tests {
         // B keeps the knob's end: its notes at Shape 0 nearer A's at Shape 0
         // than at Shape 1, and the other way round.
         let mean = |end: usize, l: usize| gates[end][l] / notes[end][l].max(1) as f32;
-        assert!((mean(0, 1) - mean(0, 0)).abs() < 0.5 * (mean(0, 1) - mean(1, 0)).abs(), "Shape 0 stays short for B: {gates:?} {notes:?}");
-        assert!((mean(1, 1) - mean(1, 0)).abs() < 0.5 * (mean(1, 1) - mean(0, 0)).abs(), "Shape 1 stays long for B: {gates:?} {notes:?}");
+        // (0.6: since 2026-10-21 short notes shorten too, so a Length step
+        // near 0 moves a note further; 0.7 since the fills come in runs,
+        // D56, B's moved Density fills more of its rests.)
+        assert!((mean(0, 1) - mean(0, 0)).abs() < 0.7 * (mean(0, 1) - mean(1, 0)).abs(), "Shape 0 stays short for B: {gates:?} {notes:?}");
+        assert!((mean(1, 1) - mean(1, 0)).abs() < 0.6 * (mean(1, 1) - mean(0, 0)).abs(), "Shape 1 stays long for B: {gates:?} {notes:?}");
     }
 
     #[test]
@@ -1582,7 +1519,7 @@ mod tests {
             let mut total = 0;
             for seed in 1..=6u32 {
                 let mut lane = PatternLane::bass(seed, seed);
-                lane.rate = 1;
+                lane.rate = 0;
                 lane.set_param("variation", variation);
                 lane.set_form(Form::parse(form).unwrap());
                 let bars = render_all(&lane, 8);
@@ -1593,7 +1530,7 @@ mod tests {
             }
             total
         };
-        for form in ["A4 Am4 A8", "A4 Ar4 A8", "A4 Ad4 A8", "A4 A?4 A8"] {
+        for form in ["A4 Am4 A8", "A4 Ar4 A8", "A4 Az4 A8", "A4 A?4 A8"] {
             let (little, full) = (moved(0.0, form), moved(1.0, form));
             assert!(little > 0 && full > little, "{form}: {little} at Variation 0, {full} at 1");
         }
@@ -1609,7 +1546,7 @@ mod tests {
             let mut lane = PatternLane::bass(seed, seed);
             lane.set_param("source", 1.0);
             lane.set_form(Form::parse("A16:8+2").unwrap());
-            lane.rate = 1;
+            lane.rate = 0;
             lane.phrase_bars = 64;
             // Blocks at their own speed play their window faster or slower.
             if lane.letter_rate(lane_index(Role::Bass), Letter::A) != 0 {
@@ -1649,7 +1586,7 @@ mod tests {
             let lane = |form: &str| {
                 let mut l = if drums { PatternLane::drums(DrumLayout::standard(), 7, 3) } else { PatternLane::bass(7, 3) };
                 l.set_form(Form::parse(form).unwrap());
-                l.rate = 1;
+                l.rate = 0;
                 l.phrase_bars = 64;
                 l
             };
@@ -1719,7 +1656,7 @@ mod tests {
     #[test]
     fn rendering_does_not_allocate() {
         let with_ops = |mut l: PatternLane| {
-            l.set_form(Form::parse("A3 Ar2 A2dq B?1 Bix4 C4").unwrap());
+            l.set_form(Form::parse("A3 Ar2 A2zq B?1 Bix4 C4").unwrap());
             l
         };
         let phrased = |mut l: PatternLane| {

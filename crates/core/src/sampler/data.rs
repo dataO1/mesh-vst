@@ -62,6 +62,8 @@ pub struct SampleData {
     /// entry `i` covers the fraction `i / n .. (i + 1) / n`. Empty: unity.
     /// A note streaming from a position takes that position's gain.
     pub level_gains: Vec<f32>,
+    /// What the library's scan heard in it (D53), when it came from there.
+    pub timbre: Option<crate::library::Timbre>,
 }
 
 /// Parts of a sample's level map.
@@ -92,7 +94,7 @@ impl SampleData {
         for i in 0..len {
             dst[PAD + i] = StereoSample::new(left[i], right[i]);
         }
-        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new(), level_gains: Vec::new() }
+        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new(), level_gains: Vec::new(), timbre: None }
     }
 
     /// Build from interleaved samples with 1 or 2 channels (extra channels ignored).
@@ -106,7 +108,7 @@ impl SampleData {
             let r = if channels > 1 { samples[i * channels + 1] } else { l };
             dst[PAD + i] = StereoSample::new(l, r);
         }
-        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new(), level_gains: Vec::new() }
+        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new(), level_gains: Vec::new(), timbre: None }
     }
 
     pub fn with_root_cents(mut self, cents: i16) -> Self {
@@ -172,6 +174,7 @@ impl SampleData {
             })
             .collect();
         out = out.with_slices(slices).with_level_gains(self.level_gains);
+        out.timbre = self.timbre;
         Ok(out)
     }
 

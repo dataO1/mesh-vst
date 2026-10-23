@@ -969,11 +969,10 @@ pub fn form_chord(master: u32, lane: u8, pos: &FormPos, letter_seed: u32, minor:
 
 // MUSICAL: first draft, tune by ear. Generator parameters a filler bar
 // pushes up (by name, added to the control value, clamped to 0..1).
-pub const FILLER_BOOSTS: [(&str, f32); 7] = [
+pub const FILLER_BOOSTS: [(&str, f32); 6] = [
     ("density", 0.15),
     ("mutate", 0.45),
     ("chop", 0.35),
-    ("variation", 0.5),
     ("complexity", 0.3),
     ("spread", 0.25),
     ("accent", 0.2),
@@ -988,7 +987,9 @@ pub const FILLER_BOOSTS: [(&str, f32); 7] = [
 pub const LETTER_OFFSETS: [(&str, f32); 13] = [
     ("density", 0.25),
     ("complexity", 0.6),
-    ("variation", 0.35),
+    // Variation plays as set (user, 2026-10-21); the slot keeps the seeded
+    // moves of the entries after it.
+    ("-", 0.35),
     ("slide", 0.55),
     ("spread", 0.55),
     ("accent", 0.3),
@@ -1096,20 +1097,20 @@ mod tests {
     #[test]
     fn operators_chain_in_any_order_with_the_length() {
         use crate::ops::Op;
-        let f = Form::parse("A3 A2r A2'r Ar2 A3rd B.5q Ba.5 A?1").unwrap();
+        let f = Form::parse("A3 A2r A2'r Ar2 A3rb B.5q Ba.5 A?1").unwrap();
         let ops: Vec<String> = f.pattern().iter().map(|s| s.ops.to_string()).collect();
-        assert_eq!(ops, ["", "r", "r", "r", "rd", "q", "a", "?"]);
+        assert_eq!(ops, ["", "r", "r", "r", "rb", "q", "a", "?"]);
         assert_eq!(f.pattern()[1].beats, 8, "A2r is two bars");
         assert!(f.pattern()[2].prime && f.pattern()[2].ops.contains(Op::Retrograde), "A2'r is primed and reversed");
         assert_eq!(f.pattern()[4].ops.get(0), Some(Op::Retrograde), "marks apply left to right");
         assert_eq!(f.pattern()[5].beats, 2);
         // Printed canonically (marks, then the length) and back.
-        assert_eq!(f.to_string(), "A3 Ar2 A'r2 Ar2 Ard3 Bq.5 Ba.5 A?1");
+        assert_eq!(f.to_string(), "A3 Ar2 A'r2 Ar2 Arb3 Bq.5 Ba.5 A?1");
         assert_eq!(Form::parse(&f.to_string()).unwrap(), f);
         // A position carries its segment's operators and where it sits.
         let p = f.pos(4);
         assert_eq!((p.ops.to_string(), p.beat_in_segment, p.segment_beats), ("r".to_string(), 4, 8));
-        for bad in ["A2r3", "Az2", "-2r", "Arrrrrrr1", "A1.5.5", "Ar"] {
+        for bad in ["A2r3", "Ay2", "-2r", "Arrrrrrr1", "A1.5.5", "Ar"] {
             let ok = Form::parse(bad).is_ok();
             assert_eq!(ok, bad == "Ar", "{bad}");
         }

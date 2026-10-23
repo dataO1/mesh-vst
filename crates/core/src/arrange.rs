@@ -73,13 +73,8 @@ pub struct FormSpec {
     pub seeds: FormSeeds,
     pub variation: u8,
     pub shape: u8,
-    /// The Contrast band: how often B's phrase is a step off A's (D49),
-    /// and how far the letters' rhythm operators part (D51).
+    /// The Contrast band: how often B's phrase is a step off A's (D49).
     pub contrast: u8,
-    /// The Density and Groove bands: how many rhythm operators the slots
-    /// get, and which (D51).
-    pub density: u8,
-    pub groove: u8,
     pub drums: bool,
 }
 
@@ -196,10 +191,10 @@ const PLANS: [Plan; 10] = [
     Plan {
         name: "two-step cells",
         sections: [
-            Sect { units: &["A A A Ay?", "A A B Ao?"], seam: "C" },
-            Sect { units: &["B B B By?", "B B A Ao?"], seam: "D" },
-            Sect { units: &["A Ao A AR?", "A Ao C B?"], seam: "Cx" },
-            Sect { units: &["A A B Ay?", "A A? B Ba"], seam: "D*" },
+            Sect { units: &["A A A Az?", "A A B Aj?"], seam: "C" },
+            Sect { units: &["B B B Bz?", "B B A Aj?"], seam: "D" },
+            Sect { units: &["A Aj A Ab?", "A Aj C B?"], seam: "Cx" },
+            Sect { units: &["A A B Az?", "A A? B Ba"], seam: "D*" },
         ],
         head: "C",
     },
@@ -207,7 +202,7 @@ const PLANS: [Plan; 10] = [
         name: "breakdown",
         sections: [
             Sect { units: &["A A A? Bq", "A A? A B"], seam: "C" },
-            Sect { units: &["Ch Dh", "Chl Dh", "Ch C?h Dhl"], seam: "Ax" },
+            Sect { units: &["Ch Dh", "ChF Dh", "Ch C?h DhF"], seam: "Ax" },
             Sect { units: &["A Aa A? Bi", "A A? Bi A"], seam: "C" },
             Sect { units: &["B Ba A Ai?", "B A? Bq A"], seam: "D*" },
         ],
@@ -224,22 +219,22 @@ const PLANS: [Plan; 10] = [
         head: "",
     },
     Plan {
-        name: "stabs and cells",
+        name: "cells and fragments",
         sections: [
-            Sect { units: &["As As As? Bs", "As As? As Bs"], seam: "C" },
-            Sect { units: &["As Aso As Asy?", "As Aso? Bs Ba"], seam: "Ce" },
-            Sect { units: &["Bs Bs Bsd? As", "Bs Bs? As Asd"], seam: "C*" },
-            Sect { units: &["As Aso Bs Asy?", "As Asx? As Asdy"], seam: "Dx" },
+            Sect { units: &["A A A? B", "A A? A B"], seam: "C" },
+            Sect { units: &["A Aj A Az?", "A Aj? B Ba"], seam: "CF" },
+            Sect { units: &["B B BF? A", "B B? A AF"], seam: "C*" },
+            Sect { units: &["A Aj B Az?", "A Ax? A AFz"], seam: "Dx" },
         ],
         head: "C",
     },
     Plan {
         name: "space",
         sections: [
-            Sect { units: &["An", "An Anl"], seam: "" },
-            Sect { units: &["An Anl An? Ana", "An An? Anl"], seam: "C" },
-            Sect { units: &["An Bnl An Bna?", "Bn An? Bnl"], seam: "D" },
-            Sect { units: &["An An? An Anq", "An Anm? An"], seam: "Cn" },
+            Sect { units: &["A", "A Ag"], seam: "" },
+            Sect { units: &["A Ag A? Aga", "A A? Ag"], seam: "C" },
+            Sect { units: &["A Bg A Ba?", "B A? Bg"], seam: "D" },
+            Sect { units: &["A A? A Aq", "A Am? A"], seam: "Cg" },
         ],
         head: "",
     },
@@ -248,18 +243,18 @@ const PLANS: [Plan; 10] = [
         sections: [
             Sect { units: &["A A A? Ba", "A A? A Ba"], seam: "C" },
             Sect { units: &["B B B? Aa", "B B A Am?"], seam: "D" },
-            Sect { units: &["Ar Ar Ar? Ai", "Ard Ard Ard? Aa", "Ai Ai Ai? Ar"], seam: "C*" },
-            Sect { units: &["Bi Bi Bri? Aa", "Ar Ar Aa? Bd"], seam: "D*" },
+            Sect { units: &["Ar Ar Ar? Ai", "Arb Arb Arb? Aa", "Ai Ai Ai? Ar"], seam: "C*" },
+            Sect { units: &["Bi Bi Bri? Aa", "Ar Ar Aa? Bb"], seam: "D*" },
         ],
         head: "",
     },
     Plan {
         name: "bounce",
         sections: [
-            Sect { units: &["A Ay A Au?", "A Ay B Ba"], seam: "C" },
-            Sect { units: &["A Ad A Auy?", "B Bd B Ba"], seam: "D" },
-            Sect { units: &["B By B Bu?", "A Ay C Aa"], seam: "C*" },
-            Sect { units: &["A Ay B Bd?", "A Ax A Aux?"], seam: "D*" },
+            Sect { units: &["A Az A Au?", "A Az B Ba"], seam: "C" },
+            Sect { units: &["A Aj A Auz?", "B Bj B Ba"], seam: "D" },
+            Sect { units: &["B Bz B Bu?", "A Az C Aa"], seam: "C*" },
+            Sect { units: &["A Az B Bj?", "A Ax A Aux?"], seam: "D*" },
         ],
         head: "C",
     },
@@ -300,10 +295,10 @@ const SEAM_DRAW: (f32, f32) = (0.35, 0.8);
 const SECOND_SEAM: f32 = 0.15;
 /// The seam kinds per section end (bars 16, 32, 48, 64).
 const SEAM_KINDS: [&[&str]; SECTIONS] = [
-    &["C", "C*", "Cx", "Ce", "Cd", "Cy", "Cn"],
-    &["C", "D", "C*", "Cx", "Dx", "Do"],
-    &["C", "C*", "Cx", "Ce", "Ch", "Cd"],
-    &["D*", "Dx", "D*x", "D", "Dd", "D*e"],
+    &["C", "C*", "Cx", "CF", "Cj", "Cz", "Cg"],
+    &["C", "D", "C*", "Cx", "Dx", "Dj"],
+    &["C", "C*", "Cx", "CF", "Ch", "Cj"],
+    &["D*", "Dx", "D*x", "D", "Dz", "D*F"],
 ];
 
 /// A plan token: a letter, its marks; `?` in `ops` is a slot.
@@ -356,93 +351,19 @@ fn tokens(unit: &str) -> ([Tok; MAX_UNIT], usize) {
     (out, n)
 }
 
-// MUSICAL: tune by ear (user, 2026-10-21: Density sets how many rhythm
-// operators the slots get, from almost none to many, the Groove biases them
-// straight .. funky; at low Contrast every letter makes the same rhythmic
-// choices, at high Contrast each moves away from A's lean and count in its
-// own seeded direction, B the most: the opposite lean in full). The chance a
-// slot plays a rhythm operator and a plain repeat takes one, at Density 0
-// and 1; what the second pass adds; how far B's lean goes past the middle
-// at least (its opposite side), how far B's count and the fills' lean and
-// count move at full Contrast.
-const RHYTHM_SLOT: (f32, f32) = (0.05, 0.85);
-const RHYTHM_PLAIN: (f32, f32) = (0.0, 0.3);
-const SECOND_RHYTHM: f32 = 0.15;
-/// The chance a plan's (or a recipe's) own rhythm mark on a main letter
-/// stays, at Density 0 and 1: low Density calms the plan's character too.
-const FIXED_RHYTHM_KEEP: (f32, f32) = (0.3, 1.0);
-const B_LEAN_MIN: f32 = 0.4;
-const B_COUNT: f32 = 0.4;
-const OTHER_LEAN: f32 = 0.3;
-const OTHER_COUNT: f32 = 0.3;
-
-/// Each letter's rhythm operators (D51): the chance a slot plays one, a
-/// plain repeat takes one, and the Groove lean of the pick, per letter A..D.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Rhythm {
-    slot: [f32; 4],
-    plain: [f32; 4],
-    lean: [f32; 4],
-    keep: [f32; 4],
-}
-
-impl Rhythm {
-    fn of(spec: &FormSpec, lane: u8) -> Self {
-        let (d, g, c) = (share(spec.density), share(spec.groove), share(spec.contrast));
-        let mut out = Self { slot: [0.0; 4], plain: [0.0; 4], lean: [0.0; 4], keep: [0.0; 4] };
-        for l in Letter::ALL {
-            let (count, lean) = letter_lean(l, d, g, c, spec.seeds.fill, lane);
-            let i = l.index() as usize;
-            out.slot[i] = lerp(RHYTHM_SLOT, count);
-            out.plain[i] = lerp(RHYTHM_PLAIN, count);
-            out.lean[i] = lean;
-            out.keep[i] = lerp(FIXED_RHYTHM_KEEP, count);
-        }
-        out
-    }
-
-    /// The second pass's: a little more of them.
-    fn second(&self) -> Self {
-        Self { slot: self.slot.map(|x| (x + SECOND_RHYTHM).min(1.0)), plain: self.plain.map(|x| (x + SECOND_RHYTHM / 2.0).min(1.0)), ..*self }
-    }
-}
-
-/// Letter `l`'s Density and Groove for its rhythm operators from the
-/// knobs' `d` and `g` at Contrast `c` (all 0..1): A plays the knobs; at
-/// Contrast 0 every letter does; towards 1 B leans to the other side of the
-/// Groove and moves its count away, C and D move both in seeded directions,
-/// less far.
-pub fn letter_lean(l: Letter, d: f32, g: f32, c: f32, seed: u32, lane: u8) -> (f32, f32) {
-    let dir = |k: u8| if rng::chance(rng::hash(seed, lane, l.index(), k, S_LEAN), 0.5) { 1.0 } else { -1.0 };
-    let away = |x: f32, k: u8| if x > 0.5 { -1.0 } else if x < 0.5 { 1.0 } else { dir(k) };
-    match l {
-        Letter::A => (d, g),
-        Letter::B => {
-            let side = away(g, 0);
-            let opposite = 0.5 + side * (g - 0.5).abs().max(B_LEAN_MIN);
-            ((d + c * B_COUNT * away(d, 1)).clamp(0.0, 1.0), (g + (opposite - g) * c).clamp(0.0, 1.0))
-        }
-        _ => ((d + c * OTHER_COUNT * dir(1)).clamp(0.0, 1.0), (g + c * OTHER_LEAN * dir(0)).clamp(0.0, 1.0)),
-    }
-}
-
 /// How a pass is built: the first as the plan says, the second through its
 /// recipe ([`Mods`] fields the recipe sets).
 #[derive(Debug, Clone, Copy, Default)]
 struct Mods {
     /// Seed of the slots and the extra fills.
     salt: u32,
+    /// Seed of which operator each letter plays per kind of place: the fill
+    /// seed, the same for both passes and every attempt (snapshotted).
+    snap: u32,
     /// Share of slots a melodic operator fills (Variation), chance of an
     /// extra fill.
     slot: f32,
     extra: f32,
-    /// Per letter (A..D): the chance a slot plays a rhythm operator and a
-    /// plain repeat takes one (Density), and the Groove lean of the pick
-    /// (D51).
-    rhythm: [f32; 4],
-    plain: [f32; 4],
-    lean: [f32; 4],
-    keep: [f32; 4],
     /// Chance a C or D seam draws its kind ([`SEAM_KINDS`]), and a minor
     /// seam plays at all.
     seam: f32,
@@ -501,9 +422,9 @@ const SECOND_EXTENT: (f32, f32) = (0.35, 1.0);
 const SECOND_SLOT: f32 = 0.25;
 const SECOND_EXTRA: f32 = 0.15;
 /// Re-cuts of a switch-up, new answers, pushes.
-const RECUTS: [Op; 5] = [Op::Retrograde, Op::Inversion, Op::Dotted, Op::Rotation, Op::RhythmRetrograde];
-const ANSWERS: [Op; 4] = [Op::Sequence, Op::Inversion, Op::Counter, Op::Passing];
-const PUSHES: [Op; 3] = [Op::DoubleTime, Op::Syncopate, Op::Passing];
+const RECUTS: [Op; 5] = [Op::Retrograde, Op::Inversion, Op::Reverse, Op::RetroInversion, Op::Displacement];
+const ANSWERS: [Op; 5] = [Op::Sequence, Op::Inversion, Op::Counter, Op::Passing, Op::CallResponse];
+const PUSHES: [Op; 3] = [Op::DoubleTime, Op::Passing, Op::Fragment];
 
 fn pick<T: Copy>(h: u64, from: &[T]) -> T {
     from[rng::below(h, from.len() as u32) as usize]
@@ -511,8 +432,8 @@ fn pick<T: Copy>(h: u64, from: &[T]) -> T {
 
 impl Mods {
     /// No recipe.
-    fn plain(salt: u32, slot: f32, extra: f32, seam: f32, minor: f32, rhythm: &Rhythm) -> Self {
-        Self { salt, slot, extra, seam, minor, rhythm: rhythm.slot, plain: rhythm.plain, lean: rhythm.lean, keep: rhythm.keep, recut_from: SECTIONS, swap_from: SECTIONS, answer_from: SECTIONS, ..Self::default() }
+    fn plain(salt: u32, slot: f32, extra: f32, seam: f32, minor: f32) -> Self {
+        Self { salt, slot, extra, seam, minor, recut_from: SECTIONS, swap_from: SECTIONS, answer_from: SECTIONS, ..Self::default() }
     }
 
     /// Apply `recipe` at extent `e` (0..1), seeded by `h`.
@@ -566,7 +487,7 @@ impl Mods {
             t.ops.push(op);
         }
         if self.thin_first && s == 0 {
-            t.ops.push(Op::Thin);
+            t.ops.push(Op::Truncation);
         }
         t
     }
@@ -688,13 +609,14 @@ impl FormBuilder {
         let (slot, extra) = (lerp(SLOT_FILL, v), lerp(EXTRA_FILL, v));
         let seam = lerp(SEAM_DRAW, v);
         let minor = lerp(MINOR_SEAM, v);
-        let rhythm = Rhythm::of(spec, lane);
-        let first = Mods::plain(salt(fill), slot, extra, seam, minor, &rhythm);
+        let mut first = Mods::plain(salt(fill), slot, extra, seam, minor);
+        first.snap = fill;
         let head = rng::chance(rng::hash(fill, lane, 0, 0, S_HEAD), HEAD_CHANCE).then_some(plan.head).and_then(tok);
         self.cycles[0] = build_pass(&mut self.first, plan, &units, &lengths, head, &first, lane);
         // The second pass: one recipe, a second one further up Variation.
         let sec = salt(spec.seeds.second);
-        let mut second = Mods::plain(sec, slot + SECOND_SLOT, extra + SECOND_EXTRA, (seam + SECOND_SEAM).min(1.0), (minor + SECOND_SEAM).min(1.0), &rhythm.second());
+        let mut second = Mods::plain(sec, slot + SECOND_SLOT, extra + SECOND_EXTRA, (seam + SECOND_SEAM).min(1.0), (minor + SECOND_SEAM).min(1.0));
+        second.snap = fill;
         let e = lerp(SECOND_EXTENT, v);
         let weights = RECIPES.map(|r| r.1);
         let a = rng::weighted_pick(rng::hash(sec, lane, 0, 0, S_RECIPE), &weights).unwrap_or(0);
@@ -1062,12 +984,10 @@ fn merge(out: &mut Vec<Segment>) {
     out.truncate(kept);
 }
 
-/// Fill the slots and keep the rules (music theory §5): a slot plays a
-/// rhythm operator by the letter's Density and Groove lean, else at
-/// Variation's chance a melodic one by its place (or none); a plain repeat
-/// may take a rhythm operator too; rhythm operators go first in every chain
-/// (D51); inside a section each cycle repeats the one before but for at most
-/// one change.
+/// Fill the slots and keep the rules (music theory §5): a slot plays at
+/// Variation's chance an operator by its place (or none); inside a section
+/// each cycle repeats the one before but for at most one change. (D57: the
+/// rhythm is the chain's; the form places no rhythm operators.)
 fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
     let mut starts = [0u16; MAX_PASS_SEGMENTS + 8];
     let mut at = 0u16;
@@ -1085,39 +1005,24 @@ fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
             repeat: i > 0 && out[i - 1].letter == out[i].letter,
             before_change: end % SECTION_BEATS == 0 || next.is_some_and(|x| x.letter.class() != out[i].letter.class()),
         };
-        let l = out[i].letter.index() as usize;
-        // The rhythm draws go by the place in the section, whatever the
-        // letter: at one lean and count the letters choose alike (D51).
-        let hr = rng::hash(m.salt, lane, (start / SECTION_BEATS) as u8, (start % SECTION_BEATS) as u8, S_RHYTHM);
-        let rhythm = |h: u64| ops::seeded_rhythm(h, m.lean[l], place);
         let h = rng::hash(m.salt, lane, (start / BEATS_PER_BAR) as u8, (start % 256) as u8, S_SLOT);
+        // Which operator is fixed by the seed (user, 2026-10-21: snapshotted,
+        // not drawn again per slot): per letter and kind of place. The knobs
+        // only decide how many of the slots play it.
+        let kind = place.before_change as u8 | (place.period_end as u8) << 1 | (place.repeat as u8) << 2;
+        let snap = rng::hash(m.snap, lane, 1 + out[i].letter.index(), kind, S_SNAP);
         let mut chain = OpChain::default();
-        if out[i].ops.is_empty() {
-            // A plain repeat of a main letter, drawn by its place in the
-            // cycle: every cycle of the section plays it alike.
-            let hp = rng::hash(m.salt, lane, (start / SECTION_BEATS) as u8, (start % CYCLE_BEATS) as u8, S_RHYTHM ^ 1);
-            if out[i].letter.class() == SeedClass::Main && rng::unit_f32(hp) < m.plain[l] {
-                chain.push(rhythm(rng::derive(hp, 1)));
+        for (k, op) in out[i].ops.iter().enumerate() {
+            if op != Op::Seeded {
+                chain.push(op);
+                continue;
             }
-        } else {
-            let main = out[i].letter.class() == SeedClass::Main;
-            for (k, op) in out[i].ops.iter().enumerate() {
-                if op != Op::Seeded {
-                    if !(main && op.is_rhythm()) || rng::unit_f32(rng::derive(hr, 32 + k as u32)) < m.keep[l] {
-                        chain.push(op);
-                    }
-                    continue;
-                }
-                let hk = rng::derive(hr, 16 + k as u32);
-                if rng::unit_f32(hk) < m.rhythm[l] {
-                    chain.push(rhythm(rng::derive(hk, 1)));
-                } else if rng::chance(rng::derive(h, k as u32), m.slot) {
-                    let push = rng::chance(rng::derive(h, 2 + 4 * k as u32), m.escalate);
-                    chain.push(if push { pick(rng::derive(h, 3 + 4 * k as u32), &PUSHES) } else { ops::seeded_melodic(rng::derive(h, 1 + 4 * k as u32), place) });
-                }
+            if rng::chance(rng::derive(h, k as u32), m.slot) {
+                let push = rng::chance(rng::derive(snap, 2 + 4 * k as u32), m.escalate);
+                chain.push(if push { pick(rng::derive(snap, 3 + 4 * k as u32), &PUSHES) } else { ops::seeded_melodic(rng::derive(snap, 1 + 4 * k as u32), place) });
             }
         }
-        out[i].ops = chain.rhythm_first();
+        out[i].ops = chain;
     }
     // One change per cycle against the one before it, in the section.
     let mut changed = [false; SECTIONS * WINDOWS];
@@ -1154,6 +1059,11 @@ fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
 // moves at full counter.
 const LAYER_COPY: f32 = 0.85;
 const COUNTER_MOVE: f32 = 0.8;
+// (user, 2026-10-21: Splice sounded like volume automation, it should change
+// the pattern.) Chance a 4-bar window plays the other main letter where the
+// host plays one (B against A, A against B), at full counter, and towards
+// the middle (half of it at relation 0.5).
+const COUNTER_SWAP: f32 = 0.7;
 /// Beats at a window's end a fill counts in, and a counter fill's length.
 const FILL_ZONE: u16 = 4;
 const COUNTER_FILL_BEATS: u16 = 2;
@@ -1229,6 +1139,25 @@ fn derive(out: &mut Vec<Segment>, host: &[Segment], own: &[Segment], relation: f
             continue;
         }
         let p = relation * COUNTER_MOVE;
+        if rng::chance(rng::derive(h, 6), relation * COUNTER_SWAP) {
+            // Answer the host: its A meets this lane's B and the other way
+            // round, each with its own phrase as the lane's form has it.
+            let phrase_of = |l: Letter| own.iter().find(|s| s.letter == l).map(|s| (s.phrase, s.offset));
+            for s in out[start..].iter_mut() {
+                let other = match s.letter {
+                    Letter::A => Letter::B,
+                    Letter::B => Letter::A,
+                    _ => continue,
+                };
+                if let Some((phrase, offset)) = phrase_of(other) {
+                    s.letter = other;
+                    if s.phrase > 0 && phrase > 0 {
+                        s.skip %= phrase;
+                        (s.phrase, s.offset) = (phrase, offset);
+                    }
+                }
+            }
+        }
         let ((host_fill, host_varied), (own_fill, own_varied)) = (window_shape(host, from), window_shape(own, from));
         let window = &mut out[start..];
         if host_fill && own_fill && rng::chance(rng::derive(h, 1), p) {
@@ -1287,8 +1216,7 @@ const S_ATTEMPT: u32 = 0xF8A;
 const S_FOLLOW: u32 = 0xF8B;
 const S_B_STEP: u32 = 0xF8C;
 const S_SEAM: u32 = 0xF8D;
-const S_RHYTHM: u32 = 0xF8E;
-const S_LEAN: u32 = 0xF8F;
+const S_SNAP: u32 = 0xF90;
 
 
 
@@ -1309,7 +1237,7 @@ mod tests {
     }
 
     fn spec(seed: u32, variation: u8, shape: u8) -> FormSpec {
-        FormSpec { seeds: FormSeeds::new(seed, seed.wrapping_mul(7).wrapping_add(1), seed ^ 0x55), variation, shape, contrast: 2, density: 2, groove: 2, drums: false }
+        FormSpec { seeds: FormSeeds::new(seed, seed.wrapping_mul(7).wrapping_add(1), seed ^ 0x55), variation, shape, contrast: 2, drums: false }
     }
 
     #[test]
@@ -1471,8 +1399,8 @@ mod tests {
             let mut n = 0;
             for seed in 0..200 {
                 let f = built(&spec(seed, variation, 2));
-                // The melodic variants and the fills (Density sets the rhythm ones, D51).
-                n += f.pattern().iter().chain(f.second_pass()).filter(|s| s.ops.iter().any(|o| !o.is_rhythm()) || s.letter.class() == SeedClass::Filler).count();
+                // The variants and the fills.
+                n += f.pattern().iter().chain(f.second_pass()).filter(|s| !s.ops.is_empty() || s.letter.class() == SeedClass::Filler).count();
             }
             n
         };
@@ -1480,112 +1408,14 @@ mod tests {
         assert!(low > 0 && high as f32 > 1.15 * low as f32, "variants and fills: {low} at Variation 0, {high} at 1");
     }
 
-    /// The rhythm operators of the first pass of `spec`'s form, per letter.
-    fn rhythm_ops(spec: &FormSpec) -> [usize; 4] {
-        let mut n = [0usize; 4];
-        for s in built(spec).pattern() {
-            n[s.letter.index() as usize] += s.beats as usize * s.ops.iter().filter(|o| o.is_rhythm()).count();
-        }
-        n
-    }
-
-    fn rhythm_spec(seed: u32, density: u8, groove: u8, contrast: u8, variation: u8) -> FormSpec {
-        FormSpec { density, groove, contrast, ..spec(seed, variation, 2) }
-    }
-
     #[test]
-    fn density_sets_how_many_rhythm_operators_and_variation_does_not() {
-        let total = |density: u8, variation: u8| (0..200).map(|seed| rhythm_ops(&rhythm_spec(seed, density, 2, 0, variation)).iter().sum::<usize>()).sum::<usize>();
-        let by_density: Vec<usize> = (0..BANDS).map(|d| total(d, 2)).collect();
-        assert!(by_density.windows(2).all(|w| w[1] > w[0]), "{by_density:?}");
-        // (The plans' own marks keep some at Density 0.)
-        assert!(by_density[4] > 5 * by_density[0].max(1), "few .. many: {by_density:?}");
-        let (low, high) = (total(3, 0), total(3, BANDS - 1));
-        let diff = low.abs_diff(high) as f32 / low.max(high) as f32;
-        assert!(diff < 0.15, "Variation leaves the count: {low} vs {high}");
-    }
-
-    #[test]
-    fn the_groove_biases_the_letters_rhythm_operators() {
-        let mix = |groove: u8| {
-            let (mut straight, mut funky) = (0usize, 0usize);
-            for seed in 0..200 {
-                for s in built(&rhythm_spec(seed, 4, groove, 0, 2)).pattern() {
-                    for o in s.ops.iter() {
-                        match o {
-                            Op::DoubleTime | Op::HalfTime => straight += 1,
-                            Op::Syncopate | Op::Dotted | Op::Triplets | Op::Rotation => funky += 1,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            (straight, funky)
-        };
-        let (low, high) = (mix(0), mix(BANDS - 1));
-        assert!(low.0 > 2 * low.1 && high.1 > 2 * high.0, "low Groove {low:?}, high {high:?}");
-    }
-
-    #[test]
-    fn rhythm_operators_come_first_and_from_bar_one() {
-        let mut opening = 0;
-        for seed in 0..200 {
-            let f = built(&rhythm_spec(seed, 4, 2, 2, 4));
-            for pass in [f.pattern(), f.second_pass()] {
-                for s in pass {
-                    let ops: Vec<Op> = s.ops.iter().collect();
-                    let first_melodic = ops.iter().position(|o| !o.is_rhythm()).unwrap_or(ops.len());
-                    assert!(ops[first_melodic..].iter().all(|o| !o.is_rhythm()), "seed {seed}: {} rhythm first", s.ops);
-                }
-            }
-            // No opening rule: the first 8 bars may carry operators.
-            opening += (0..32u64).any(|b| !f.pos_at(b).ops.is_empty()) as usize;
-        }
-        assert!(opening > 100, "{opening} of 200 forms vary their first 8 bars");
-    }
-
-    /// The share of rhythm picks per letter that are funky, and the
-    /// rhythm-op count per letter, over many seeds.
-    fn letter_rhythm(contrast: u8) -> ([f32; 4], [usize; 4]) {
-        let (mut funky, mut all, mut count) = ([0usize; 4], [0usize; 4], [0usize; 4]);
-        for seed in 0..300 {
-            let f = built(&rhythm_spec(seed, 4, 0, contrast, 2));
-            for s in f.pattern() {
-                let l = s.letter.index() as usize;
-                for o in s.ops.iter().filter(|o| o.is_rhythm()) {
-                    all[l] += 1;
-                    funky[l] += matches!(o, Op::Syncopate | Op::Dotted | Op::Triplets | Op::Rotation) as usize;
-                }
-                count[l] += s.beats as usize * s.ops.iter().filter(|o| o.is_rhythm()).count();
-            }
-        }
-        (std::array::from_fn(|l| funky[l] as f32 / all[l].max(1) as f32), count)
-    }
-
-    #[test]
-    fn contrast_parts_the_letters_rhythm_and_b_leans_opposite() {
-        // The leans themselves: equal at Contrast 0, apart towards 1, B the
-        // other side of the Groove in full.
-        for seed in 0..50u32 {
-            for (d, g) in [(0.2, 0.2), (0.5, 0.5), (0.9, 0.75)] {
-                for l in Letter::ALL {
-                    assert_eq!(letter_lean(l, d, g, 0.0, seed, 0), (d, g));
-                }
-                let (_, b) = letter_lean(Letter::B, d, g, 1.0, seed, 0);
-                assert!((b - 0.5) * (g - 0.5) <= 0.0 && (b - 0.5).abs() >= B_LEAN_MIN - 1e-6, "B leans opposite: {g} -> {b}");
-                let apart = |c: f32| Letter::ALL.iter().map(|&l| {
-                    let (x, y) = letter_lean(l, d, g, c, seed, 0);
-                    (x - d).abs() + (y - g).abs()
-                }).sum::<f32>();
-                assert!(apart(0.5) > 0.0 && apart(1.0) > apart(0.5));
-            }
-        }
-        // In built forms: at a straight Groove B turns funky with Contrast.
-        let (at0, _) = letter_rhythm(0);
-        let (at4, _) = letter_rhythm(BANDS - 1);
-        let (a, b) = (Letter::A.index() as usize, Letter::B.index() as usize);
-        assert!((at0[a] - at0[b]).abs() < 0.15, "Contrast 0: A and B pick alike: {at0:?}");
-        assert!(at4[b] > at4[a] + 0.3, "full Contrast: B leans funky against a straight A: {at4:?}");
+    fn forms_may_vary_from_bar_one() {
+        // No opening rule: the first 8 bars may carry operators.
+        let opening = (0..200).filter(|&seed| {
+            let f = built(&spec(seed, 4, 2));
+            (0..32u64).any(|b| !f.pos_at(b).ops.is_empty())
+        }).count();
+        assert!(opening > 60, "{opening} of 200 forms vary their first 8 bars");
     }
 
     /// Beats where the two passes of `f` differ (letter, marks or phrase).
@@ -1639,6 +1469,63 @@ mod tests {
         reps.sort_by(f32::total_cmp);
         assert!(broken <= 6, "{broken} of 600 forms break a rule after {MAX_ATTEMPTS} attempts ({again} built again)");
         assert!(reps[300] > 0.5 && reps[300] < 0.9, "median repetition {}", reps[300]);
+    }
+
+    #[test]
+    fn a_letter_plays_one_operator_per_kind_of_place() {
+        // User, 2026-10-21: snapshotted randomness: the seed fixes each
+        // letter's operator, Variation only how many slots play it.
+        let mut seg = Segment::new(Letter::A, 4, 0);
+        seg.ops.push(Op::Seeded);
+        let played = |seed: u32, slot: f32| {
+            let mut pass: Vec<Segment> = (0..PASS_BEATS / 4).map(|k| Segment { letter: if k % 8 < 4 { Letter::A } else { Letter::B }, ..seg }).collect();
+            let mut m = Mods::plain(seed, slot, 0.0, 0.0, 0.0);
+            m.snap = seed;
+            resolve(&mut pass, &[CYCLE_BEATS; SECTIONS], &m, 0);
+            pass.iter().map(|s| (s.letter, s.ops.iter().next())).collect::<Vec<_>>()
+        };
+        for seed in 0..40 {
+            let (low, high) = (played(seed, 0.3), played(seed, 0.8));
+            // Raising Variation adds slots and keeps the ones played.
+            for (a, b) in low.iter().zip(&high) {
+                if a.1.is_some() {
+                    assert_eq!(a, b, "seed {seed}");
+                }
+            }
+            // Per letter few operators (one per kind of place).
+            for l in [Letter::A, Letter::B] {
+                let mut ops: Vec<Op> = high.iter().filter(|(x, o)| *x == l && o.is_some()).filter_map(|(_, o)| *o).collect();
+                ops.sort_by_key(|o| o.as_char());
+                ops.dedup();
+                assert!(ops.len() <= 4, "seed {seed} {l:?}: {ops:?}");
+            }
+            assert!(high.iter().filter(|x| x.1.is_some()).count() > low.iter().filter(|x| x.1.is_some()).count());
+        }
+    }
+
+    #[test]
+    fn a_counter_follower_with_the_hosts_seeds_answers_its_letters() {
+        // User, 2026-10-21: two instances on the same seeds; Splice must
+        // change the pattern, not only thin it.
+        let mut b = FormBuilder::new();
+        let (mut host, mut out) = (Form::generated(), Form::generated());
+        let (mut swapped, mut mains) = ([0usize; 3], 0usize);
+        for seed in 0..60 {
+            b.build(&spec(seed, 2, 2), &mut host);
+            let own = host.clone();
+            for (k, relation) in [0.0f32, 0.5, 1.0].into_iter().enumerate() {
+                b.follow(&host, &own, relation, seed, false, &mut out);
+                for beat in 0..2 * PASS_BEATS as u64 {
+                    let (x, y) = (out.pos_varied_at(beat, 0, 0).letter, host.pos_varied_at(beat, 0, 0).letter);
+                    if matches!(y, Letter::A | Letter::B) {
+                        mains += (k == 0) as usize;
+                        swapped[k] += (matches!(x, Letter::A | Letter::B) && x != y) as usize;
+                    }
+                }
+            }
+        }
+        assert_eq!(swapped[0], 0, "the middle plays its own form");
+        assert!(swapped[1] > mains / 8 && swapped[2] > swapped[1] + mains / 8, "{swapped:?} of {mains}");
     }
 
     #[test]

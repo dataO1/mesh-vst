@@ -51,6 +51,14 @@ pub struct Features {
     pub body: f32,
     /// Spectral flatness 0..1 (noise near 1).
     pub flat: f32,
+    /// The power-weighted centroid above 130 Hz (Hz), and the share of the
+    /// power above 130 Hz that lies above 1.5 kHz.
+    pub centroid: f32,
+    pub bright: f32,
+    /// The share of all the power below 130 Hz, and of the power above
+    /// 130 Hz that lies above 1 kHz.
+    pub sub: f32,
+    pub over_1k: f32,
     /// Seconds from the peak to −30 dB.
     pub decay: f32,
     pub onsets: u32,
@@ -245,6 +253,13 @@ pub fn analyse(x0: &[f32], sr: u32, dur: f32) -> Features {
     f.low = pw[..k150].iter().sum::<f32>() / total;
     f.hi = pw[k6k..].iter().sum::<f32>() / total;
     f.body = pw[k150..k800].iter().sum::<f32>() / total;
+    let k130 = (130.0 / bin) as usize;
+    let k1500 = ((1500.0 / bin) as usize).min(n / 2);
+    let upper: f32 = pw[k130..].iter().sum::<f32>().max(1e-20);
+    f.centroid = pw[k130..].iter().enumerate().map(|(i, p)| (k130 + i) as f32 * bin * p).sum::<f32>() / upper;
+    f.bright = pw[k1500..].iter().sum::<f32>() / upper;
+    f.sub = pw[..k130].iter().sum::<f32>() / total;
+    f.over_1k = pw[((1000.0 / bin) as usize).min(n / 2)..].iter().sum::<f32>() / upper;
     let (a, b) = ((100.0 / bin) as usize, ((16000.0 / bin) as usize).min(n / 2));
     let band = &mag[a..b];
     let log_mean = band.iter().map(|v| (v + 1e-12).ln()).sum::<f32>() / band.len() as f32;

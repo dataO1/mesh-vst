@@ -1,7 +1,7 @@
 //! Print generated forms (D48), one per seed, to read them.
 //!
 //! ```text
-//! cargo run -p mesh-vst-core --example forms -- [first seed] [count] [variation 0..1] [shape 0..1] [stats] [density 0..1] [groove 0..1] [contrast 0..1]
+//! cargo run -p mesh-vst-core --example forms -- [first seed] [count] [variation 0..1] [shape 0..1] [stats] [contrast 0..1]
 //! ```
 
 use mesh_vst_core::arrange::{band, FormBuilder, FormSeeds, FormSpec};
@@ -13,12 +13,12 @@ fn main() {
     let (first, count) = (num(0, 1.0) as u32, num(1, 8.0) as u32);
     let (variation, shape) = (band(num(2, 0.5)), band(num(3, 0.5)));
     let stats = args.get(4).is_some_and(|a| a != "-");
-    let (density, groove, contrast) = (band(num(5, 0.5)), band(num(6, 0.5)), band(num(7, 0.5)));
+    let contrast = band(num(5, 0.5));
     let mut builder = FormBuilder::new();
     let mut form = Form::generated();
     let (mut reps, mut broken, mut retried) = (Vec::new(), 0, 0);
     for seed in first..first + count {
-        let spec = FormSpec { seeds: FormSeeds::new(seed, seed, seed), variation, shape, contrast, density, groove, drums: false };
+        let spec = FormSpec { seeds: FormSeeds::new(seed, seed, seed), variation, shape, contrast, drums: false };
         builder.build(&spec, &mut form);
         let (b, attempt) = builder.broken();
         reps.push(builder.repetition());

@@ -16,7 +16,6 @@ pub mod drums;
 pub mod fixed;
 pub mod idiom;
 pub mod layout;
-pub mod motif;
 pub mod recipe;
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -81,9 +80,24 @@ pub struct BarCtx<'a> {
 
 /// One lane's pattern generator.
 pub trait LaneGenerator: Send {
-    /// Render one bar into `out` (cleared by the caller). Must be
-    /// deterministic in `ctx` and leave events sorted by tick.
+    /// R1 (D57): render one bar's skeleton into `out` (cleared by the
+    /// caller): the drums' whole bar, a pitched lane's rhythm on its base
+    /// note. Must be deterministic in `ctx` and leave events sorted by tick.
     fn render_bar(&self, ctx: &BarCtx, out: &mut BarEvents);
+
+    /// R5 (D57): Density's fill of the rests, on `finest` (the grid the
+    /// speed allows). The drums fill in their skeleton.
+    fn fill(&self, _ctx: &BarCtx, _out: &mut BarEvents, _finest: u16) {}
+
+    /// R6 (D57): every note's length (`finest` the grid the speed allows).
+    fn lengths(&self, _ctx: &BarCtx, _out: &mut BarEvents, _finest: u16) {}
+
+    /// R8 (D57): the pitches of the finished rhythm.
+    fn melody(&self, _ctx: &BarCtx, _out: &mut BarEvents) {}
+
+    /// R11 (D57): velocities, slides, the filter, the attack, the start
+    /// position, loops.
+    fn expression(&self, _ctx: &BarCtx, _out: &mut BarEvents) {}
 
     /// Parameter names; index = position in `BarCtx::params`.
     fn param_names(&self) -> &'static [&'static str];
@@ -92,12 +106,6 @@ pub trait LaneGenerator: Send {
     /// [`DrumVoice`](layout::DrumVoice)); the pads flip them. Other lanes: all.
     fn voice_mask(&self, _ctx: &BarCtx) -> u8 {
         0xFF
-    }
-
-    /// Motif mode: the onsets the clip this seed picks has in each bar of the
-    /// phrase, so the lead lane can interlock with it. `None` without clips.
-    fn motif_phrase(&self, _seed: u32, _lane: u8) -> Option<[u16; 4]> {
-        None
     }
 
     /// Clip mode (D50): the length in beats of the clip the letter of `ctx`

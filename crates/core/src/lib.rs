@@ -5,8 +5,11 @@
 //! (`mesh-core/src/live`), relicensed under GPL-3.0-or-later by their author.
 
 pub mod calibrate;
+pub(crate) mod chain;
 pub mod clips;
+pub(crate) mod cluster;
 pub mod contrast;
+pub(crate) mod dsp;
 pub mod error;
 pub mod event;
 pub mod arrange;
@@ -22,8 +25,10 @@ pub mod library;
 pub mod loader;
 pub mod loudness;
 pub mod macros;
+pub mod mbdist;
 pub mod modout;
 pub mod motif;
+pub mod neuro;
 pub mod pattern;
 pub mod player;
 pub mod rng;

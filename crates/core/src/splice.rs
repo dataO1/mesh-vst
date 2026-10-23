@@ -53,7 +53,8 @@ pub struct Occupancy {
     pub flags: u8,
     /// The form's Contrast band (D49).
     pub form_contrast: u8,
-    /// The form's Density and Groove bands (low and high nibble, D51).
+    /// Reserved (the form's Density and Groove bands before D57: the form
+    /// no longer reads them).
     pub form_rhythm: u8,
     pub _pad: [u8; 3],
 }
@@ -92,7 +93,6 @@ impl Occupancy {
         self.form_bands = spec.variation & 0xF | (spec.shape & 0xF) << 4;
         self.form_drums = spec.drums as u8;
         self.form_contrast = spec.contrast;
-        self.form_rhythm = spec.density & 0xF | (spec.groove & 0xF) << 4;
         self.flags |= FORMED;
     }
 
@@ -104,8 +104,6 @@ impl Occupancy {
             variation: self.form_bands & 0xF,
             shape: self.form_bands >> 4,
             contrast: self.form_contrast,
-            density: self.form_rhythm & 0xF,
-            groove: self.form_rhythm >> 4,
             drums: self.form_drums != 0,
         }
     }
