@@ -1301,13 +1301,37 @@ pub fn held_length(base: f32, moved: f32) -> f32 {
 // held: the 16ths kept their whole length.) Share of its length a note up
 // to a stab long keeps at Length 0 (all of it at the middle).
 const STAB_KEEP: f32 = 0.35;
+// MUSICAL: tune by ear (user, 2026-10-24: at Shape 0 the stabs were far
+// too short, the top right). How much of a note's shortening a Length of
+// 0 still leaves undone: 0 shortens all the way, 1 not at all.
+const SHORTEN_FLOOR: f32 = 0.4;
+
+/// How far a Length below the middle shortens, 0 (most) .. 1 (none),
+/// without the floor and with it.
+fn shortening(length: f32) -> (f32, f32) {
+    let k = length.clamp(0.0, 0.5) * 2.0;
+    (k, SHORTEN_FLOOR + (1.0 - SHORTEN_FLOOR) * k)
+}
+
+/// The share of a stab a Length keeps: [`STAB_KEEP`] at full shortening.
+fn stab_keep(k: f32) -> f32 {
+    STAB_KEEP + (1.0 - STAB_KEEP) * k
+}
+
+/// How much shorter the sampler's pitch envelope reads a stab at `length`
+/// than it plays: as long as it played before the floor, so the pitch move
+/// stays as it was (user, 2026-10-24: it is right at Shape 0).
+pub(crate) fn pitch_env_time(length: f32) -> f32 {
+    let (raw, k) = shortening(length);
+    stab_keep(raw) / stab_keep(k)
+}
 
 /// A gate at a Length below the middle: towards a stab. The part over a
-/// stab goes first, a note up to a stab long shortens to [`STAB_KEEP`].
+/// stab goes first, a note up to a stab long shortens to [`stab_keep`].
 fn shortened(gate: u16, length: f32) -> u16 {
-    let k = length.clamp(0.0, 0.5) * 2.0;
+    let k = shortening(length).1;
     let stab = gate.min(STAB_TICKS);
-    let short = (stab as f32 * (STAB_KEEP + (1.0 - STAB_KEEP) * k)).max(GATE_MIN_TICKS.min(stab as f32));
+    let short = (stab as f32 * stab_keep(k)).max(GATE_MIN_TICKS.min(stab as f32));
     short as u16 + ((gate - stab) as f32 * k) as u16
 }
 
@@ -1843,6 +1867,19 @@ mod tests {
         let slides: Vec<usize> = (0..300).map(|seed| bar(&g, seed, 0, &p, &EMPTY).iter().filter(|e| e.flags & flags::TIE != 0).count()).collect();
         // Some seeds slide a lot, many barely.
         assert!(slides.iter().max().unwrap() >= &3 && slides.iter().filter(|&&s| s == 0).count() > 50);
+    }
+
+    #[test]
+    fn shortening_has_a_floor_and_the_pitch_envelope_reads_the_old_length() {
+        // The middle plays as written, its pitch envelope as played.
+        assert_eq!(shortened(96, 0.5), 96);
+        assert_eq!(pitch_env_time(0.5), 1.0);
+        // Length 0: a dotted 16th stab keeps 61 % (was 35 %), its part over
+        // a stab 40 % (was none).
+        assert_eq!(shortened(36, 0.0), 21);
+        assert_eq!(shortened(96, 0.0), 45);
+        // The pitch envelope reads the stab as long as before the floor.
+        assert!((36.0 * stab_keep(SHORTEN_FLOOR) * pitch_env_time(0.0) - 36.0 * STAB_KEEP).abs() < 1e-3);
     }
 
     #[test]

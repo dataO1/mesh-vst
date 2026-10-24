@@ -502,7 +502,8 @@ drive external effects.
 - **D53** **Neuro** (2026-10-22, fourth draft). One automatable slider on the bass's right
   column, 0 % no processing (bit-exact) .. 100 % a heavy resampling-style chain. `neuro.rs`,
   first on the bass lane's output; the bass then runs mono lows, Squash and **Heat last**
-  (the drums keep Heat before Squash; the bass calibration follows the new order). The
+  (the drums keep Heat before Squash; the bass calibration follows the new order; D59 puts
+  the bass's Squash after Heat again). The
   unison detune is in the sampler, before all of it.
   - **Split:** below 130 Hz the sub passes clean; the band above runs the chain and is
     level-matched back to its own loudness (K-weighted, 0.1 .. 3×), so the slider changes the
@@ -763,6 +764,28 @@ drive external effects.
   intermodulate in the drive (+13 dB off-harmonic on a three-note chord), the moving bells
   are direct-form biquads (TPT filters would modulate cleaner), the comb and phaser tune to
   the played key, which a mudpie's pitch may not be.
+- **D59** **The bass's held notes and order** (2026-10-24, user: held and middle-long notes
+  lacked punch, their release faded away too long; the Squash belongs after Heat).
+  - **Release curve:** the sampler's release takes a shape (`release_curve`): 0 the
+    exponential one (even in dB, to −60 dB), above 1 the level falls as 1 − xⁿ to silence.
+    The bass uses n = 3: −1.2 dB at half the release, −6 dB at 80 %, then gone. Its release
+    is shorter to match: the mudpie's designed one a 16th (was 3/32), a dotted 32nd at full
+    Shape (was a quarter), the seeded spread at most a quarter (was a half).
+  - **Attack curve:** the attack takes a shape too (`attack_curve`): 0 the quarter sine,
+    above 1 the level rises as 1 − (1 − x)ⁿ. The bass uses n = 3: −6 dB at a fifth of the
+    attack, −1.2 dB at half (the sine: −10 and −3 dB); the attack times stay (D52).
+  - **Held punch:** held (non-stab) pitched notes take the stab drive at 0.4 of full (about
+    8 dB, mostly taken back at the output) and half of that as the gain kick at their start,
+    scaled by Accent like the stabs; their envelopes' pitch and cutoff stay as they were.
+    Held notes keep half the mod envelope's cutoff sweep in the sustain (was 35 %).
+  - **Shape 0 longer:** the shortening below Length's middle keeps a floor of 40 % undone
+    (user: at Shape 0 the stabs were far too short, the top right). At Shape 0 a dotted-16th
+    stab plays 26 ticks (was 20), a quarter 61 (was 38); the middle and top are unchanged.
+    Only the note length moves: the stab pitch envelope reads the note as long as it was
+    before the floor (`pitch_env_time`), and Shape's other parts (expression, stab share,
+    filter bite, punch, release, attack) keep their mapping.
+  - **Order:** the bass now runs Heat, then the Squash last, as the drums do (D53 had Heat
+    last); the calibration follows.
 - **Cost** (2026-10-23, clap-validator's parameter fuzz ran 48 s against its 45 s limit):
   the multiband distortion measures a pass's makeup again only when its drive moves 0.1 dB,
   the Squash makes its band settings only when the amount or the tempo changes, and the
@@ -957,7 +980,7 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | *Permute* (parameter, no knob since D49) | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
 | **Variation** | how far the operators go and how many slots play one; the mix of the Groove's moves (one way per letter at 0, each note its own at 1) and where a subdivision's window sits (D57); how many long notes loop (D43); scales the seeded accents, stab drive and filter sweep; how far B, C and D move Morph off A's (D52); Variation itself plays as set | rewrites, fills, ghost notes; scales the seeded accents and velocity range; the operators as on the bass |
 | **Groove** | how often and how far notes move off the grid (pushes, pulls, 64th steps; rare and mild at the middle, often and up to an 8th at the top) and their lengths nudge, and how often notes recurse (a subdivision with the skeleton's own pattern, or a doubling; about 1 in 10 at the middle, 1 in 3 at the top, D57); the lane's own times in triplets, straight or dotted (D45) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts; rolls and flams (D57, rarer than the bass's recursion); the lane's own times in triplets, straight or dotted (D45) |
-| **Shape** | stabby to sustained: the attack (5 ms .. 100 ms, D52), length (short stabs at 0, as written in the middle, held at full; Density's splits and fills then play as short subdivided hits at low Shape, 2026-10-21), expression, filter bite, the release (the designed one up to a quarter; held notes sustain at −1 dB, 2026-10-20); at full every note holds into the next (legato, no stabs) except the figures (held fill runs), which keep their lengths; stabs come in runs (D57), a held note's start or end sometimes a stab | tight to open: choke (at full Shape a retrigger fades over about 400 ms), loop hold, decay (it shortens every voice, the kick too, and lengthens none); the attack stays instant at every setting; a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to a dotted 8th, the hats and cymbals half as long and a little weaker, the kick a faint dotted 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
+| **Shape** | stabby to sustained: the attack (5 ms .. 100 ms, D52), length (short stabs at 0, shortened at most 60 % of the way since D59, as written in the middle, held at full; Density's splits and fills then play as short subdivided hits at low Shape, 2026-10-21), expression, filter bite, the release (a 1/64 at 0, the designed 16th in the middle, a dotted 32nd at full, on a curve that holds the level and falls fast at the end, D59; held notes sustain at −1 dB, 2026-10-20, with a share of the stab drive); at full every note holds into the next (legato, no stabs) except the figures (held fill runs), which keep their lengths; stabs come in runs (D57), a held note's start or end sometimes a stab | tight to open: choke (at full Shape a retrigger fades over about 400 ms), loop hold, decay (it shortens every voice, the kick too, and lengthens none); the attack stays instant at every setting; a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to a dotted 8th, the hats and cymbals half as long and a little weaker, the kick a faint dotted 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style; a ring modulator above 400 Hz (the lows stay clean) fades in from a fifth to at most 30 %, its seeded carrier rising an octave and turning from sine to square |
 | **Spread** | width: octave lifts, jump size, notes above the home root spread in stereo (the sub stays centred), deeper filter LFO and envelope | — |
 | **Slide** | how often notes slide (up to 45 % of eligible notes) and the glide time, 30 ms to 250 ms; also the glide of the full-Shape legato; liquid: up to 35 % more held notes tie, filter glide 4 to 160 ms, vibrato on held notes | — |

@@ -121,9 +121,9 @@ fn render_lufs(
         } else {
             player.process(&mut buf[..n], &transport);
             if post {
-                // The bass's order (D53): Squash, then Heat last.
-                squash.process(&mut buf[..n], settings.squash, false, crate::tempo::stretch(BPM));
+                // Heat, then the Squash last, as on the drums (D59).
                 heat.process(&mut buf[..n], heat_amount, 0.5, false);
+                squash.process(&mut buf[..n], settings.squash, false, crate::tempo::stretch(BPM));
             }
         }
         out.extend_from_slice(&buf[..n]);

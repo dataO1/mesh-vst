@@ -27,8 +27,12 @@ const PUNCH_SAT_BACK: f32 = 0.8;
 /// The mod envelope runs this much slower at full punch (user, 2026-10-18:
 /// the filter move more pronounced, so only slightly slower).
 const PUNCH_ENV_STRETCH: f32 = 0.3;
-/// Share of the mod envelope's cutoff sweep a held (sustained) note keeps.
-const HELD_CUTOFF_SUSTAIN: f32 = 0.35;
+/// Share of the mod envelope's cutoff sweep a held (sustained) note keeps
+/// (user, 2026-10-24: the held notes' tail sounded weak).
+const HELD_CUTOFF_SUSTAIN: f32 = 0.5;
+/// A held note's gain kick, as a share of its accent (its drive takes the
+/// accent whole).
+const HELD_KICK: f32 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
@@ -75,6 +79,8 @@ pub(crate) struct VoiceInit {
     pub sustain: f32,
     /// Stab accent of this note (0 = none).
     pub punch: f32,
+    /// Held-note accent of this note (0 = none): drive and a smaller kick.
+    pub body: f32,
     /// Pitch envelope: rise in semitones and fall time in seconds.
     pub pitch_env: Option<(f32, f32)>,
     /// Loop points (frames, absolute) for a looping voice; None = the slot.
@@ -148,6 +154,8 @@ pub(crate) struct VoiceState {
     sat: f32,
     /// Stab accent of the note (from its `STAB` flag).
     punch: f32,
+    /// Held-note accent of the note.
+    body: f32,
     /// Output gain taken back after the saturation.
     sat_back: f32,
     /// Mod envelope value 0..1 and the cutoff shift (octaves) of the mod
@@ -173,9 +181,17 @@ pub(crate) struct VoiceState {
     /// rounded attack that eases into the top).
     attack_phase: f32,
     attack_inc: f32,
+    /// A curved attack (`attack_curve` above 1): its power.
+    attack_pow: f32,
     decay_coef: f32,
     sustain: f32,
     release_coef: f32,
+    /// A curved release (`release_curve` above 1): its power, progress
+    /// 0..1, step per sample and the level it falls from.
+    release_pow: f32,
+    release_phase: f32,
+    release_inc: f32,
+    release_from: f32,
 
     /// Pitch envelope offset in semitones, its peak, rise per sample and
     /// fall coefficient. `pe_rising` until the peak; off at 0.
@@ -230,6 +246,7 @@ impl Default for VoiceState {
             mod_gain: 1.0,
             sat: 1.0,
             punch: 0.0,
+            body: 0.0,
             sat_back: 1.0,
             menv: 0.0,
             note_cutoff_oct: 0.0,
@@ -248,9 +265,14 @@ impl Default for VoiceState {
             level: 0.0,
             attack_phase: 0.0,
             attack_inc: 1.0,
+            attack_pow: 0.0,
             decay_coef: 0.0,
             sustain: 1.0,
             release_coef: 0.0,
+            release_pow: 0.0,
+            release_phase: 0.0,
+            release_inc: 0.0,
+            release_from: 0.0,
             pe: 0.0,
             pe_peak: 0.0,
             pe_inc: 0.0,
@@ -315,6 +337,7 @@ impl VoiceState {
             decay_coef: exp_coef(v.decay, ts),
             sustain: v.sustain,
             punch: v.punch,
+            body: v.body,
             gain: v.gain,
             pan_offset: v.pan_offset,
             detune_cents: v.detune_cents,
@@ -359,9 +382,11 @@ impl VoiceState {
         let mut cut_cents = ZoneMod::sum(&self.zone_mods, &m.cc, ZoneTarget::Cutoff);
         let mut gain = m.gain * ZoneMod::gain(&self.zone_mods, &m.cc);
         // Stab accent: a gain kick fading over the first tens of ms.
+        // A held note: the drive and a smaller kick, its envelopes as they are.
         let punch = self.punch;
-        if punch > 0.0 {
-            gain *= 1.0 + PUNCH_GAIN * punch * (-self.t / PUNCH_SECS).exp();
+        let kick = punch.max(HELD_KICK * self.body);
+        if kick > 0.0 {
+            gain *= 1.0 + PUNCH_GAIN * kick * (-self.t / PUNCH_SECS).exp();
         }
         if env.is_on() {
             // Stabs: the mod envelope runs slower, so the filter falls less
@@ -384,7 +409,8 @@ impl VoiceState {
         self.note_cutoff_oct = cut_cents / 1200.0;
         self.mod_pf = ((cents / 1200.0) as f64).exp2();
         self.mod_gain = gain;
-        self.sat = if punch > 0.0 { 10f32.powf(PUNCH_SAT_DB * punch / 20.0) } else { 1.0 };
+        let drive = punch.max(self.body);
+        self.sat = if drive > 0.0 { 10f32.powf(PUNCH_SAT_DB * drive / 20.0) } else { 1.0 };
         self.sat_back = self.sat.powf(-PUNCH_SAT_BACK);
         self.t += frames as f32 / ts;
         if p.cutoff_glide > 0.0 && frames > 0 {
@@ -411,12 +437,17 @@ impl VoiceState {
         self.op_a = 1.0 - (-2.0 * PI * fc / sr).exp();
 
         self.release_coef = exp_coef(p.release, ts);
+        self.release_pow = p.release_curve;
+        self.attack_pow = p.attack_curve;
+        self.release_inc = 1.0 / (p.release * ts).max(1.0);
     }
 
     /// Enter the release stage.
     pub fn release(&mut self) {
         self.held = false;
         self.stage = Stage::Release;
+        self.release_from = self.level;
+        self.release_phase = 0.0;
         if self.loop_sustain {
             self.looping = false;
         }
@@ -553,7 +584,11 @@ impl VoiceState {
                         self.level = 1.0;
                         self.stage = Stage::Decay;
                     } else {
-                        self.level = (self.attack_phase * std::f32::consts::FRAC_PI_2).sin();
+                        self.level = if self.attack_pow > 1.0 {
+                            1.0 - (1.0 - self.attack_phase).powf(self.attack_pow)
+                        } else {
+                            (self.attack_phase * std::f32::consts::FRAC_PI_2).sin()
+                        };
                     }
                 }
                 Stage::Decay => {
@@ -564,6 +599,10 @@ impl VoiceState {
                     }
                 }
                 Stage::Sustain => {}
+                Stage::Release if self.release_pow > 1.0 => {
+                    self.release_phase = (self.release_phase + self.release_inc).min(1.0);
+                    self.level = self.release_from * (1.0 - self.release_phase.powf(self.release_pow));
+                }
                 Stage::Release => self.level *= self.release_coef,
             }
 

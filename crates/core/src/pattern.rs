@@ -1490,9 +1490,10 @@ mod tests {
         let mean = |end: usize, l: usize| gates[end][l] / notes[end][l].max(1) as f32;
         // (0.6: since 2026-10-21 short notes shorten too, so a Length step
         // near 0 moves a note further; 0.7 since the fills come in runs,
-        // D56, B's moved Density fills more of its rests.)
+        // D56, B's moved Density fills more of its rests; 0.75 for Shape 1
+        // since the shortening's floor, 2026-10-24, narrowed the range.)
         assert!((mean(0, 1) - mean(0, 0)).abs() < 0.7 * (mean(0, 1) - mean(1, 0)).abs(), "Shape 0 stays short for B: {gates:?} {notes:?}");
-        assert!((mean(1, 1) - mean(1, 0)).abs() < 0.6 * (mean(1, 1) - mean(0, 0)).abs(), "Shape 1 stays long for B: {gates:?} {notes:?}");
+        assert!((mean(1, 1) - mean(1, 0)).abs() < 0.75 * (mean(1, 1) - mean(0, 0)).abs(), "Shape 1 stays long for B: {gates:?} {notes:?}");
     }
 
     #[test]

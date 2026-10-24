@@ -581,18 +581,12 @@ impl MeshVst {
             }
             0.5
         };
-        // The drums: Heat, then the squash last. The bass (D53): the squash,
-        // then Heat behind everything else.
-        if drums {
-            self.heat.process(buf, self.resolved.heat, tone, drums);
-        }
+        // Both lanes: Heat, then the Squash last (D59).
+        self.heat.process(buf, self.resolved.heat, tone, drums);
         if self.params.mono_lows.value() {
             self.mono.process(buf);
         }
         self.squash.process(buf, self.params.squash.value(), drums, mesh_vst_core::tempo::stretch(transport.bpm));
-        if !drums {
-            self.heat.process(buf, self.resolved.heat, tone, drums);
-        }
         self.meter.process(buf);
         // Splice: the sidechain's level per 16th of the song.
         if self.ui.host.load(std::sync::atomic::Ordering::Relaxed) == link::SIDECHAIN {

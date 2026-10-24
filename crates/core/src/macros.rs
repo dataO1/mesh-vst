@@ -318,9 +318,9 @@ fn seeded_voice(p: &mut LaneSamplerParams, sound_seed: u32) {
 }
 
 // MUSICAL: tune by ear (user, 2026-10-20). The seeded release's spread in
-// octaves and the longest release (a half note).
+// octaves and the longest release (a quarter note, 2026-10-24).
 const RELEASE_SPREAD: f32 = 0.3;
-const RELEASE_MAX: f32 = note(1.0 / 2.0);
+const RELEASE_MAX: f32 = note(1.0 / 4.0);
 
 // MUSICAL: first draft, tune by ear (user: Spread and Slide change the
 // sound, not only the line).
@@ -463,6 +463,7 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
     // starts where 30 % used to (user: longer stabs, fewer, some held notes).
     let shape = lerp(SHAPE_FLOOR, 1.0, v.shape);
     lane.set_param("length", shape_length(v.shape));
+    p.pitch_env_time = crate::generator::bass::pitch_env_time(shape_length(v.shape));
     lane.set_param("expression", lerp(1.0, 0.15, shape));
     lane.set_param("stabs", lerp(1.0, 0.0, shape));
     character(p, shape);
@@ -472,6 +473,9 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
     p.accent_gain = BASS_ACCENT_GAIN;
     p.modulation.env.to_cutoff = lerp(2400.0, 6000.0, accent);
     p.punch *= lerp(0.6, 1.4, accent);
+    p.held_punch = HELD_PUNCH * lerp(0.6, 1.4, accent);
+    p.release_curve = RELEASE_CURVE;
+    p.attack_curve = ATTACK_CURVE;
     p.morph = v.morph;
 }
 
@@ -483,8 +487,20 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
 const BASS_ACCENT_GAIN: f32 = 1.06;
 /// Sustain level of held notes (−1 dB).
 const HELD_SUSTAIN: f32 = 0.89;
-/// Release at full Shape (from the designed one at the bottom).
-const HELD_RELEASE: f32 = note(1.0 / 4.0);
+/// Release at full Shape (from the designed one at the bottom; user,
+/// 2026-10-24: a quarter faded away too long).
+const HELD_RELEASE: f32 = note(3.0 / 32.0);
+/// The release's curve (`release_curve`; user, 2026-10-24: the tail
+/// floated away): the level holds and falls fast at the end, −1 dB at half
+/// the release, −6 dB at 80 %.
+const RELEASE_CURVE: f32 = 3.0;
+/// The attack's curve (`attack_curve`; user, 2026-10-24: more aggressive):
+/// −6 dB at a fifth of the attack, −1.2 dB at half (the quarter sine was at
+/// −10 and −3 dB).
+const ATTACK_CURVE: f32 = 3.0;
+/// Accent of held notes (user, 2026-10-24: a bit more punch): about 8 dB of
+/// the stab drive through the note and a small kick at its start.
+const HELD_PUNCH: f32 = 0.4;
 /// Release at Shape 0 (user, 2026-10-21: at low Shape and full Density the
 /// release rang over every 16th, the line sounded held).
 const STAB_RELEASE: f32 = note(1.0 / 64.0);
@@ -523,7 +539,7 @@ pub fn mudpie_params() -> LaneSamplerParams {
         attack: note(1.0 / 512.0),
         decay: note(3.0 / 4.0),
         sustain: 0.89,
-        release: note(3.0 / 32.0),
+        release: note(1.0 / 16.0),
         cutoff_glide: note(3.0 / 128.0),
         ..LaneSamplerParams::default()
     };

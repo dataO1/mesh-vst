@@ -29,14 +29,20 @@ pub struct LaneSamplerParams {
     pub cutoff_hz: f32,
     /// Filter resonance 0..1 (0 = Butterworth, 1 = near self-oscillation).
     pub resonance: f32,
-    /// Amp envelope attack in seconds (linear).
+    /// Amp envelope attack in seconds.
     pub attack: f32,
+    /// Attack shape: 0 a quarter sine (easing into the top), above 1 the
+    /// power of a curve that rises fast and eases in (1 − (1 − x)^n).
+    pub attack_curve: f32,
     /// Amp envelope decay in seconds to −60 dB of the distance to sustain.
     pub decay: f32,
     /// Sustain level 0..1.
     pub sustain: f32,
-    /// Release in seconds to −60 dB.
+    /// Release in seconds: to −60 dB, or with a `release_curve` to silence.
     pub release: f32,
+    /// Release shape: 0 exponential (even in dB), above 1 the power of a
+    /// curve that holds the level and falls fast at its end (1 − x^n).
+    pub release_curve: f32,
     /// Velocity → gain exponent: gain = (vel / 127) ^ curve.
     pub velocity_curve: f32,
     /// Linear gain multiplier for `flags::ACCENT` events.
@@ -68,6 +74,12 @@ pub struct LaneSamplerParams {
     /// Stab accent 0..1 (the Character macro's stabby half): a gain kick at
     /// each note start and a deeper mod-envelope pitch move.
     pub punch: f32,
+    /// Accent of held (non-stab) pitched notes 0..1: the punch's saturation
+    /// through the note and a smaller gain kick at its start.
+    pub held_punch: f32,
+    /// Scale of the note length the stab pitch envelope reads (1 = as
+    /// played).
+    pub pitch_env_time: f32,
     /// Unison of pitched notes (D38).
     pub unison: super::unison::Unison,
     /// How hard a new hit cuts its choke group, 0..1 (D27).
@@ -350,6 +362,7 @@ impl Default for LaneSamplerParams {
             // MUSICAL: 0.5 ms keeps drum transients intact but declicks
             // mid-waveform `start` offsets.
             attack: 0.0005,
+            attack_curve: 0.0,
             // MUSICAL: only audible when sustain < 1 or an event sets `decay`.
             decay: 0.3,
             // MUSICAL: full sustain so one-shots and slices play their whole
@@ -357,6 +370,7 @@ impl Default for LaneSamplerParams {
             sustain: 1.0,
             // MUSICAL: short release, tight for drums and plucked bass.
             release: 0.04,
+            release_curve: 0.0,
             // MUSICAL: 1.5 puts a 35 % ghost velocity at about −14 dB (A5 tiers).
             velocity_curve: 1.5,
             // MUSICAL: accent = +3 dB.
@@ -372,6 +386,8 @@ impl Default for LaneSamplerParams {
             designed_res: 0.0,
             morph: -1.0,
             punch: 0.0,
+            held_punch: 0.0,
+            pitch_env_time: 1.0,
             unison: super::unison::Unison::default(),
             choke_amount: 1.0,
             feel: 1.0,

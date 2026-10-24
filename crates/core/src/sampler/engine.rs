@@ -669,13 +669,14 @@ impl Sampler {
             // Stabs only (user, 2026-10-21: every 8th got the blip and the
             // full Density line sounded staccato).
             pitch_env: if slot.pitched && ev.kind == EventKind::NoteOn && ev.has(flags::STAB) {
-                pitch_env(gate_ticks * self.spt / self.ts as f64)
+                pitch_env(gate_ticks * self.spt / self.ts as f64 * p.pitch_env_time as f64)
             } else {
                 None
             },
             decay,
             sustain,
             punch: if stab { p.punch } else { 0.0 },
+            body: if !stab && pitched && held { p.held_punch } else { 0.0 },
             loop_range: slot.loop_range,
             loop_sustain: slot.loop_sustain,
             section,

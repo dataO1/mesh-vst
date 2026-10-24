@@ -209,6 +209,35 @@ fn gate_releases_on_exact_sample() {
 }
 
 #[test]
+fn a_curved_release_holds_its_level_then_falls_to_silence() {
+    let mut s = sampler(vec![(0, SlotDef::whole(dc(1.0, 96_000)))], 4);
+    // 0.1 s release at 48 kHz: 4800 samples, from sample 2400.
+    s.set_params(LaneSamplerParams { release: 0.1, release_curve: 3.0, ..flat_params() });
+    s.handle_event(&LiveEvent { gate: 24, ..trig(0) }, 0);
+    let out = render(&mut s, 12_000, 100.0);
+    let at = |share: f32| out[2400 + (4800.0 * share) as usize].left;
+    // 1 − x³: −1.2 dB at half, −6 dB at 80 %, silent at the end.
+    assert!((at(0.5) - 0.875).abs() < 0.01, "{}", at(0.5));
+    assert!((at(0.8) - 0.488).abs() < 0.01, "{}", at(0.8));
+    assert!(at(1.0).abs() < 1e-3);
+    assert_eq!(s.voices_active(), 0);
+}
+
+#[test]
+fn a_curved_attack_rises_fast_and_eases_in() {
+    let mut s = sampler(vec![(0, SlotDef::whole(dc(1.0, 96_000)))], 4);
+    // 0.1 s attack at 48 kHz: 4800 samples.
+    s.set_params(LaneSamplerParams { attack: 0.1, attack_curve: 3.0, ..flat_params() });
+    s.handle_event(&trig(0), 0);
+    let out = render(&mut s, 6000, 100.0);
+    let at = |share: f32| out[(4800.0 * share) as usize].left;
+    // 1 − (1 − x)³: −6 dB at a fifth, −1.2 dB at half.
+    assert!((at(0.2) - 0.488).abs() < 0.01, "{}", at(0.2));
+    assert!((at(0.5) - 0.875).abs() < 0.01, "{}", at(0.5));
+    assert!(at(1.0) > 0.999);
+}
+
+#[test]
 fn gate_follows_tempo_change_between_blocks() {
     let mut s = sampler(vec![(0, SlotDef::whole(dc(1.0, 96_000)))], 4);
     s.handle_event(&LiveEvent { gate: 24, ..trig(0) }, 0);
