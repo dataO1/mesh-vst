@@ -76,6 +76,9 @@ pub struct BarCtx<'a> {
     /// Bar of the letter's material: of its clip in clip mode (D50), which
     /// plays bar `material_bar % clip bars`.
     pub material_bar: u16,
+    /// The pattern the user edited for this letter (D60): it is the
+    /// skeleton, bar `material_bar` of its looping window.
+    pub user: Option<&'a crate::slots::UserPattern>,
 }
 
 /// One lane's pattern generator.
@@ -110,6 +113,12 @@ pub trait LaneGenerator: Send {
 
     /// Clip mode (D50): the length in beats of the clip the letter of `ctx`
     /// plays (its material, longer than a bar). `None` when it generates.
+    /// The key a pitched lane's rows count from (D60: the user's pattern
+    /// and the editor's source; 0 for the drums).
+    fn home_key(&self, _ctx: &BarCtx) -> i32 {
+        0
+    }
+
     fn material_beats(&self, _ctx: &BarCtx) -> Option<u32> {
         None
     }

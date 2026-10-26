@@ -27,7 +27,7 @@ pub const MAX_FORM_BARS: u16 = 64;
 pub const FORM_CHANGE_BARS: u64 = 4;
 
 /// A seed letter of a form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Letter {
     A,
     B,
@@ -123,12 +123,16 @@ pub struct Segment {
     /// `^2`: the segment enters its phrase this many beats in (a fill took
     /// its head).
     pub skip: u8,
+    /// Which of the letter's two patterns plays (D60): 0 its own, 1 its
+    /// second (another seed, or another clip pick): `A"`. A generated form's
+    /// second motive plays it (D61).
+    pub variant: u8,
 }
 
 impl Segment {
     /// A plain segment of `letter`, `beats` long, from written segment `source`.
     pub fn new(letter: Letter, beats: u16, source: u8) -> Self {
-        Self { letter, play: Play::All, prime: false, swap: false, ops: OpChain::default(), beats, source, phrase: 0, offset: 0, skip: 0 }
+        Self { letter, play: Play::All, prime: false, swap: false, ops: OpChain::default(), beats, source, phrase: 0, offset: 0, skip: 0, variant: 0 }
     }
 
     /// Bars the segment touches, rounded up.
@@ -160,7 +164,13 @@ pub struct Form {
     second: Vec<Segment>,
     /// Beats of one pass.
     beats: u16,
+    /// A generated form's cycle length in beats per 16-bar section of
+    /// both passes (D61); 0 where it has none.
+    cycles: [u16; 2 * PASS_SECTIONS],
 }
+
+/// 16-bar sections of a pass.
+pub const PASS_SECTIONS: usize = (FORM_BARS / SECTION_BARS) as usize;
 
 /// Segments a generated pass holds at most (one per beat).
 pub const MAX_PASS_SEGMENTS: usize = (FORM_BARS * BEATS_PER_BAR) as usize;
@@ -169,7 +179,7 @@ pub const MAX_PASS_SEGMENTS: usize = (FORM_BARS * BEATS_PER_BAR) as usize;
 pub enum FormError {
     #[error("empty form")]
     Empty,
-    #[error("bad segment '{0}' (expected a letter A-D, optional ' and *, operators (r i t c u w q a R o d e y h x l s n p m ?) and a length in bars in quarters, in any order, like A7, B'4, C*.5, A2r or Ar2; -8 rests, ~A8 plays only in the drums' breaks; a | starts the synth lanes' form)")]
+    #[error("bad segment '{0}' (expected a letter A-D, optional \" ' and *, operators (r i t c u w q a R o d e y h x l s n p m ?) and a length in bars in quarters, in any order, like A7, B'4, C*.5, A2r or Ar2; -8 rests, ~A8 plays only in the drums' breaks; a | starts the synth lanes' form)")]
     Segment(String),
     #[error("form is {0} bars, at most {MAX_FORM_BARS} allowed")]
     TooLong(u32),
@@ -248,7 +258,7 @@ impl Form {
             };
             // Marks and the length in any order (`A'7`, `A2r`, `Ar2`), the
             // length one run of digits.
-            let (mut prime, mut swap, mut ops) = (false, false, OpChain::default());
+            let (mut prime, mut swap, mut ops, mut variant) = (false, false, OpChain::default(), 0u8);
             let (mut count, mut counted) = (String::new(), false);
             // The phrase (`:8`), its offset (`+2`) and skip (`^2`), in beats
             // (D48): a mark, then its digits.
@@ -276,6 +286,7 @@ impl Form {
                 counted |= !count.is_empty();
                 match ch {
                     '\'' | '′' => prime = true,
+                    '"' | '″' => variant = 1,
                     '*' => swap = true,
                     ':' | '+' | '^' => {
                         let f = [':', '+', '^'].iter().position(|c| *c == ch).unwrap_or(0);
@@ -313,13 +324,13 @@ impl Form {
                 return Err(FormError::TooLong(total.div_ceil(BEATS_PER_BAR as u32)));
             }
             let source = pattern.len().min(NO_SOURCE as usize - 1) as u8;
-            pattern.push(Segment { letter, play, prime, swap, ops, beats: beats as u16, source, phrase: phrase as u8, offset: offset as u8, skip: skip as u8 });
+            pattern.push(Segment { letter, play, prime, swap, ops, beats: beats as u16, source, phrase: phrase as u8, offset: offset as u8, skip: skip as u8, variant });
         }
         if pattern.is_empty() {
             return Err(FormError::Empty);
         }
         let segments = expand(&pattern, total as u16);
-        Ok(Self { pattern, lead: None, segments, second: Vec::new(), beats: FORM_BARS * BEATS_PER_BAR })
+        Ok(Self { pattern, lead: None, segments, second: Vec::new(), beats: FORM_BARS * BEATS_PER_BAR, cycles: [0; 2 * PASS_SECTIONS] })
     }
 
     /// An empty generated form (one bar of A) with room for two passes, to
@@ -334,14 +345,21 @@ impl Form {
 
     /// One bar of A again. RT-safe.
     pub fn set_single(&mut self) {
-        let seg = Segment::new(Letter::A, BEATS_PER_BAR, 0);
+        self.set_one(Segment::new(Letter::A, BEATS_PER_BAR, 0));
+    }
+
+    /// Play `seg` alone, over and over (a DAW note's pattern, D60). RT-safe
+    /// on a form from [`Self::generated`].
+    pub fn set_one(&mut self, seg: Segment) {
+        let seg = Segment { beats: seg.beats.max(1), ..seg };
         self.pattern.clear();
         self.pattern.push(seg);
         self.segments.clear();
         self.segments.push(seg);
         self.second.clear();
         self.lead = None;
-        self.beats = BEATS_PER_BAR;
+        self.beats = seg.beats;
+        self.cycles = [0; 2 * PASS_SECTIONS];
     }
 
     /// Play `first` and then `second`, each a full pass. RT-safe on a form
@@ -357,6 +375,21 @@ impl Form {
         self.second.extend_from_slice(&second[..second.len().min(n)]);
         self.lead = None;
         self.beats = FORM_BARS * BEATS_PER_BAR;
+        self.cycles = [0; 2 * PASS_SECTIONS];
+    }
+
+    /// Set the cycle length in beats of each 16-bar section of the two
+    /// passes (D61), as the builder laid them.
+    pub fn set_cycles(&mut self, cycles: [[u16; PASS_SECTIONS]; 2]) {
+        for (p, pass) in cycles.iter().enumerate() {
+            self.cycles[p * PASS_SECTIONS..(p + 1) * PASS_SECTIONS].copy_from_slice(pass);
+        }
+    }
+
+    /// The cycle length in beats at beat `beat` of the two passes (0: none).
+    pub fn cycle_at(&self, beat: u64) -> u16 {
+        let section = (beat / (SECTION_BARS * BEATS_PER_BAR) as u64) as usize;
+        self.cycles[section % self.cycles.len()]
     }
 
     /// The second pass as built (empty: the first varied).
@@ -367,7 +400,7 @@ impl Form {
     /// One bar of A forever (a style without forms).
     pub fn single() -> Self {
         let seg = Segment::new(Letter::A, BEATS_PER_BAR, 0);
-        Self { pattern: vec![seg], lead: None, segments: vec![seg], second: Vec::new(), beats: BEATS_PER_BAR }
+        Self { pattern: vec![seg], lead: None, segments: vec![seg], second: Vec::new(), beats: BEATS_PER_BAR, cycles: [0; 2 * PASS_SECTIONS] }
     }
 
     /// The form a lane plays: synth lanes (lead, extra) play the `|` part when
@@ -405,6 +438,11 @@ impl Form {
     }
 
     /// Where global beat `beat` falls in the form's first pass.
+    /// Beats of one pass.
+    pub fn beats(&self) -> u16 {
+        self.beats
+    }
+
     pub fn pos_at(&self, beat: u64) -> FormPos {
         pos_in(&self.segments, self.beats, beat)
     }
@@ -437,6 +475,7 @@ fn pos_in(segments: &[Segment], beats: u16, beat: u64) -> FormPos {
                     phrase: seg.phrase,
                     offset: seg.offset,
                     skip: seg.skip,
+                    variant: seg.variant,
                     beat_in_segment: at - start,
                     segment_beats: seg.beats,
                     start_beat: start,
@@ -675,10 +714,11 @@ fn fmt_segments(segments: &[Segment], f: &mut fmt::Formatter<'_>) -> fmt::Result
                 f.write_str(" ")?;
             }
             let (prime, swap, ops) = (if s.prime { "'" } else { "" }, if s.swap { "*" } else { "" }, s.ops);
+            let second = if s.variant > 0 && s.letter.class() == SeedClass::Main { "\"" } else { "" };
             match s.play {
                 Play::Rest => write!(f, "-{}", fmt_beats(s.beats))?,
-                Play::Breaks => write!(f, "~{}{prime}{swap}{ops}{}", s.letter.as_char(), fmt_beats(s.beats))?,
-                Play::All => write!(f, "{}{prime}{swap}{ops}{}", s.letter.as_char(), fmt_beats(s.beats))?,
+                Play::Breaks => write!(f, "~{}{second}{prime}{swap}{ops}{}", s.letter.as_char(), fmt_beats(s.beats))?,
+                Play::All => write!(f, "{}{second}{prime}{swap}{ops}{}", s.letter.as_char(), fmt_beats(s.beats))?,
             }
             if s.phrase > 0 && s.play != Play::Rest {
                 write!(f, ":{}", s.phrase)?;
@@ -714,6 +754,8 @@ pub struct FormPos {
     pub phrase: u8,
     pub offset: u8,
     pub skip: u8,
+    /// Which of the letter's patterns plays ([`Segment::variant`]).
+    pub variant: u8,
     /// Beats from the segment's start to here, and the segment's length.
     pub beat_in_segment: u16,
     pub segment_beats: u16,
@@ -750,6 +792,7 @@ impl Default for FormPos {
             phrase: 0,
             offset: 0,
             skip: 0,
+            variant: 0,
             beat_in_segment: 0,
             segment_beats: BEATS_PER_BAR,
             start_beat: 0,
@@ -769,6 +812,7 @@ impl Default for FormPos {
 // RNG streams (form level).
 const S_LETTER: u32 = 0xF00;
 const S_PRIME: u32 = 0xF01;
+const S_VARIANT: u32 = 0xF02;
 const S_FEEL_SWING: u32 = 0xF10;
 const S_FEEL_SWING_AMT: u32 = 0xF11;
 const S_FEEL_TRIPLET: u32 = 0xF12;
@@ -789,6 +833,15 @@ pub fn letter_seed(master: u32, lane: u8, letter: Letter) -> u32 {
     match letter {
         Letter::A => master,
         _ => rng::hash(master, lane, letter.index(), 0, S_LETTER) as u32,
+    }
+}
+
+/// Seed of pattern `variant` of a letter whose seed is `seed` (D60): the
+/// letter's own for 0, another for the second.
+pub fn variant_seed(seed: u32, lane: u8, variant: u8) -> u32 {
+    match variant {
+        0 => seed,
+        v => rng::hash(seed, lane, v, 0, S_VARIANT) as u32,
     }
 }
 

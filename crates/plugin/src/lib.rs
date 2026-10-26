@@ -20,13 +20,15 @@ use nice_plug::prelude::*;
 
 pub mod builtin;
 pub mod editor;
+pub mod history;
 pub mod params;
+pub mod patterns;
 pub mod ui;
 pub mod link;
 pub mod visual;
 pub mod worker;
 
-use params::{BassSource, MeshParams, Mode, NewRootMode, PhaseMode, UnisonSpread, BEND_RANGES, SEEDED_BEND_BASS, SEEDED_BEND_DRUMS};
+use params::{BassSource, FormSource, MeshParams, Mode, NewRootMode, PhaseMode, UnisonSpread, BEND_RANGES, SEEDED_BEND_BASS, SEEDED_BEND_DRUMS};
 use worker::{Garbage, Ready, Request, Worker};
 
 /// Tempo when the host gives none.
@@ -79,6 +81,9 @@ struct Settings {
     new_root: NewRoot,
     /// Channel or MPE pressure, in 1/64 steps (it drives the stab drive).
     pressure: u8,
+    /// D60: the DAW's notes play the form; semitones on the root.
+    external: bool,
+    transpose: i8,
 }
 
 /// What the loudness calibration depends on: the samples, seeds, form and
@@ -153,6 +158,9 @@ pub struct MeshVst {
     since_redraw: usize,
     /// Wait for the worker's kits in `process` ([`SYNC_LOAD_ENV`]).
     sync_load: bool,
+    /// The user's patterns the lanes play (D60), drums and bass; a lane the
+    /// worker builds gets them too.
+    books: Option<[Arc<mesh_vst_core::slots::PatternBook>; 2]>,
 }
 
 
@@ -193,20 +201,20 @@ impl Default for MeshVst {
             audio_tx: None,
             since_redraw: 0,
             sync_load: std::env::var_os(SYNC_LOAD_ENV).is_some(),
+            books: None,
         }
     }
 }
 
-impl MeshVst {
-    fn settings(&self) -> Settings {
-        let p = &self.params;
-        let permute = p.permute.value();
-        let (minor, mode) = p.scale.value().family_mode();
-        Settings {
-            lane: LaneSettings {
+/// The lane settings the parameters give (the mod wheel pushes Permute up,
+/// D24; `pins` the phrase pins). The editor builds its own lane from them.
+pub(crate) fn lane_settings(p: &MeshParams, pins: [Option<u32>; 4], mod_wheel: f32) -> LaneSettings {
+    let permute = p.permute.value();
+    let (_, mode) = p.scale.value().family_mode();
+    LaneSettings {
             knobs: Knobs {
                 density: p.density.value(),
-                permute: permute + self.mod_wheel * (1.0 - permute),
+                permute: permute + mod_wheel * (1.0 - permute),
                 variation: p.variation.value(),
                 swing: p.swing.value(),
                 shape: p.shape.value(),
@@ -222,7 +230,7 @@ impl MeshVst {
                 phrase_seed: p.phrase_seed.value() as u32,
                 fill_seed: p.fill_seed.value() as u32,
                 second_seed: p.second_seed.value() as u32,
-                pins: self.ui.phrase_pins(),
+                pins,
             }),
             rate: p.rate.value().exponent(),
             mode,
@@ -246,8 +254,18 @@ impl MeshVst {
             clips: p.bass_source.value() == BassSource::Clips,
             // In 5 % steps: a move recalibrates the bass in the background.
             squash: (p.squash.value() * 20.0).round() / 20.0,
-            },
+    }
+}
+
+impl MeshVst {
+    fn settings(&self) -> Settings {
+        let p = &self.params;
+        let (minor, _) = p.scale.value().family_mode();
+        Settings {
+            lane: lane_settings(p, self.ui.phrase_pins(), self.mod_wheel),
             minor,
+            external: p.form_source.value() == FormSource::External,
+            transpose: p.transpose.value().clamp(-params::TRANSPOSE_MAX, params::TRANSPOSE_MAX) as i8,
             phase: match p.phase.value() {
                 PhaseMode::Continuous => Phase::Continuous,
                 PhaseMode::Retrigger => Phase::Retrigger,
@@ -274,6 +292,9 @@ impl MeshVst {
         while let Ok(ready) = w.ready.pop() {
             match ready {
                 Ready::Drums { mut lane, bank, loop_bpm, gain, settings, generation } => {
+                    if let Some(book) = self.books.as_ref().map(|b| b[0].clone()) {
+                        let _ = w.garbage.push(Garbage::Book(lane.set_patterns(book)));
+                    }
                     if let Some(l) = self.drums.as_mut() {
                         l.player.swap_lane(&mut lane);
                         l.player.sampler_mut().set_bank(bank);
@@ -289,6 +310,17 @@ impl MeshVst {
                         a.set_bank(bank);
                         let ev = LiveEvent { kind: EventKind::Trigger, target: 0, vel: 110, ..Default::default() };
                         a.handle_event(&ev, 0);
+                    }
+                }
+                Ready::Patterns { drums, bass } => {
+                    for (lane, book) in [(self.drums.as_mut(), &drums), (self.bass.as_mut(), &bass)] {
+                        if let Some(l) = lane {
+                            let _ = w.garbage.push(Garbage::Book(l.player.lane_mut().set_patterns(book.clone())));
+                        }
+                    }
+                    if let Some([d, b]) = self.books.replace([drums, bass]) {
+                        let _ = w.garbage.push(Garbage::Book(d));
+                        let _ = w.garbage.push(Garbage::Book(b));
                     }
                 }
                 Ready::Bass { bank, gain, settings, generation } => {
@@ -358,6 +390,9 @@ impl MeshVst {
         let p = &lane.player;
         self.ui.root.store(p.gate_key().unwrap_or(255), Relaxed);
         self.ui.gated.store(p.is_gated(), Relaxed);
+        let (slot, op) = p.lane().playing_slot().filter(|_| p.is_external()).map_or((255, 100), |(s, o)| (s.index() as u8, o.velocity().unwrap_or(100)));
+        self.ui.playing_slot.store(slot, Relaxed);
+        self.ui.playing_op.store(op, Relaxed);
         let step = p.position().filter(|_| playing || self.free_running);
         self.ui.step.store(step.map_or(u32::MAX, |(_, s)| s), Relaxed);
         if let Some((bar, rendered)) = p.rendered() {
@@ -455,6 +490,8 @@ impl MeshVst {
         let Some(lane) = self.lane_mut(mode) else { return };
         lane.player.minor = s.minor;
         lane.player.phase = s.phase;
+        lane.player.transpose = s.transpose;
+        lane.player.set_external(s.external);
         lane.player.new_root = s.new_root;
         lane.player.lane_mut().phrase_bars = s.phrase_bars;
         lane.player.sampler_mut().set_params(sp);
@@ -736,6 +773,12 @@ impl Plugin for MeshVst {
         self.link = link::Link::open(self.ui.link_id.load(std::sync::atomic::Ordering::Relaxed)).ok();
 
         let (layout, bank) = builtin::drum_kit(sr).build();
+        if let Ok(mut l) = self.ui.drum_layout.lock() {
+            *l = Some(layout);
+        }
+        // The patterns the lanes start with (the worker sends changes).
+        let books = self.params.patterns.lock().map(|b| b.clone()).unwrap_or_default();
+        self.books = Some([Arc::new(books.drums), Arc::new(books.bass)]);
         let mut sampler = Sampler::new(sr, DRUM_VOICES);
         sampler.set_bank(basedrop::Shared::new(&gc_handle(), bank));
         self.drums = Some(Lane { player: Player::new(PatternLane::drums(layout, 1, 1), sampler), base: LaneSamplerParams { gain: START_DRUM_GAIN, ..macros::drum_params() }, loaded: None, requested: None });
@@ -743,6 +786,13 @@ impl Plugin for MeshVst {
         let mut sampler = Sampler::new(sr, BASS_VOICES);
         sampler.set_bank(basedrop::Shared::new(&gc_handle(), mudpie_bank(share(builtin::mudpie(sr)))));
         self.bass = Some(Lane { player: Player::new(PatternLane::bass_with_clips(1, 1, worker::bass_clips()), sampler), base: LaneSamplerParams { gain: START_BASS_GAIN, ..macros::mudpie_params() }, loaded: None, requested: None });
+        if let Some([d, b]) = self.books.clone() {
+            for (lane, book) in [(self.drums.as_mut(), d), (self.bass.as_mut(), b)] {
+                if let Some(l) = lane {
+                    let _ = l.player.lane_mut().set_patterns(book);
+                }
+            }
+        }
         self.applied = None;
         // The editor's visual reads the output through a ring (half a second).
         let (tx, rx) = rtrb::RingBuffer::new(sr as usize / 2);
@@ -752,7 +802,7 @@ impl Plugin for MeshVst {
         }
         self.ui.sample_rate.store(sr, std::sync::atomic::Ordering::Relaxed);
         // The built-in sounds play until the library kit is loaded.
-        self.worker = Some(Worker::spawn(sr, self.params.kit.clone(), self.ui.clone()));
+        self.worker = Some(Worker::spawn(sr, self.params.kit.clone(), self.ui.clone(), self.params.patterns.clone()));
         self.audition = Some(Sampler::new(sr, 8));
         self.abuf = vec![StereoSample::silence(); config.max_buffer_size as usize];
         // Demo for screenshots and checks: hold a note from the start.

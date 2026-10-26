@@ -54,6 +54,24 @@ const FILL_RATE_UP: f32 = 0.75;
 const B_CONTOUR: f32 = 0.5;
 const B_REGISTER: f32 = 0.35;
 
+// MUSICAL: tune by ear (user, 2026-10-26: A and B hardly told apart, B
+// does not pick another style). The drums' B plays another of the styles
+// (seeded, at any Contrast), D from B as well; the styles there are.
+const STYLES: usize = crate::generator::drums::DEFAULT_ARCHETYPE_ORDER.len();
+const S_STYLE: u32 = 0xD4D;
+
+/// Letter `letter`'s drum `style` value (0..1 over the styles) for A's
+/// `style`: A and C play it, B and D another one.
+pub fn letter_style(style: f32, pattern_seed: u32, lane: u8, letter: Letter) -> f32 {
+    if !matches!(letter, Letter::B | Letter::D) {
+        return style;
+    }
+    let last = (STYLES - 1) as f32;
+    let own = (style.clamp(0.0, 1.0) * last).round() as usize;
+    let step = 1 + rng::below(rng::hash(letter_seed(pattern_seed, lane, Letter::B), lane, 0, 0, S_STYLE), STYLES as u32 - 1) as usize;
+    ((own + step) % STYLES) as f32 / last
+}
+
 const S_RATE_STEP: u32 = 0xD49;
 const S_RATE_DIR: u32 = 0xD4A;
 const S_CONTOUR: u32 = 0xD4B;
@@ -63,11 +81,31 @@ fn lerp((a, b): (f32, f32), t: f32) -> f32 {
     a + (b - a) * t
 }
 
+// MUSICAL: tune by ear (user, 2026-10-26: at full Contrast and the lowest
+// Shape not enough stabby against sustained, at the top no stabs at all:
+// it should scale against the centre). The parameters B mirrors through the
+// centre (stabby A, sustained B and the other way round), and the least it
+// moves them at full Contrast (from the centre itself).
+const MIRRORED: [&str; 1] = ["length"];
+const MIRROR_MIN: f32 = 0.5;
+
+/// B's value of a mirrored parameter at `base`: towards and through the
+/// centre, to the mirror image at full Contrast (`1 - base`), at least
+/// [`MIRROR_MIN`] away; from the centre itself in its seeded direction `m`.
+fn mirrored(base: f32, m: f32, c: f32) -> f32 {
+    let off = 0.5 - base;
+    let dir = if off.abs() < 1e-3 { m.signum() } else { off.signum() };
+    (base + dir * c * (2.0 * off.abs()).max(MIRROR_MIN)).clamp(0.0, 1.0)
+}
+
 /// B's value of entry `k` at knob value `base`: A's, moved by Contrast in
 /// B's seeded direction (inward at an end, and less), or wrapped.
 fn answer(k: usize, base: f32, b_seed: u32, lane: u8, contrast: f32, wrap: bool) -> f32 {
     let m = letter_move(b_seed, lane, k);
     let c = contrast.clamp(0.0, 1.0);
+    if MIRRORED.contains(&LETTER_OFFSETS[k].0) {
+        return mirrored(base, m, c);
+    }
     if wrap {
         return base + c * B_MORPH / LETTER_OFFSETS[k].1 * m;
     }
@@ -118,6 +156,14 @@ pub fn letter_params(
         }
         let floor = if base > 0.0 { LETTER_FLOOR.min(base) } else { 0.0 };
         *p = v.clamp(floor, 1.0);
+    }
+    // The bass's share of stabs goes with the length: B (and D, from it)
+    // mirror it through the centre (D62).
+    if matches!(letter, Letter::B | Letter::D) {
+        if let Some(p) = names.iter().position(|n| *n == "stabs").and_then(|i| out.get_mut(i)) {
+            let k = LETTER_OFFSETS.iter().position(|(n, _)| *n == "length").unwrap_or(0);
+            *p = mirrored(*p, -letter_move(letter_seed(pattern_seed, lane, Letter::B), lane, k), contrast.clamp(0.0, 1.0));
+        }
     }
     let boost = match letter {
         Letter::C => C_BOOST,
@@ -188,6 +234,25 @@ pub fn answer_line(pattern_seed: u32, lane: u8, contrast: f32) -> (bool, bool) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_drums_b_plays_another_style() {
+        let last = (STYLES - 1) as f32;
+        let mut seen = std::collections::BTreeSet::new();
+        for seed in 0..200 {
+            for own in 0..STYLES {
+                let a = own as f32 / last;
+                let b = letter_style(a, seed, 1, Letter::B);
+                let k = (b * last).round();
+                assert!((b * last - k).abs() < 1e-5 && k as usize != own, "seed {seed}: {a} -> {b}");
+                assert_eq!(letter_style(a, seed, 1, Letter::D), b, "D from B");
+                assert_eq!(letter_style(a, seed, 1, Letter::A), a);
+                assert_eq!(letter_style(a, seed, 1, Letter::C), a);
+                seen.insert(k as usize);
+            }
+        }
+        assert_eq!(seen.len(), STYLES);
+    }
+
     const NAMES: [&str; 12] =
         ["density", "complexity", "variation", "kick_mode", "register", "slide", "accent", "spread", "length", "expression", "stabs", "syncopation"];
 
@@ -236,7 +301,8 @@ mod tests {
             }
         }
         for (i, name) in NAMES.iter().enumerate() {
-            let moved = LETTER_OFFSETS.iter().any(|(n, _)| n == name);
+            // The stab share moves with the length (D62).
+            let moved = LETTER_OFFSETS.iter().any(|(n, _)| n == name) || *name == "stabs";
             let a = per_axis[i];
             if moved {
                 assert!(a[0] == 0.0 && a[1] > 0.0 && a[2] > a[1] * 1.5, "{name}: {a:?}");
@@ -250,22 +316,27 @@ mod tests {
     }
 
     #[test]
-    fn at_a_knobs_end_both_letters_keep_its_character() {
+    fn b_mirrors_the_length_through_the_centre() {
+        // User, 2026-10-26: at full Contrast stabby against sustained at
+        // either end of Shape, scaled against the centre.
         let k = NAMES.iter().position(|n| *n == "length").unwrap();
-        let (mut low, mut high) = (0.0f32, 1.0f32);
+        let (mut low, mut high) = (1.0f32, 0.0f32);
         let (mut either_way_low, mut either_way_high) = (0, 0);
         for seed in 0..400 {
             let b0 = letter_params(&NAMES, &knobs(0.0), seed, 1, Letter::B, false, 1.0)[k];
             let b1 = letter_params(&NAMES, &knobs(1.0), seed, 1, Letter::B, false, 1.0)[k];
-            low = low.max(b0);
-            high = high.min(b1);
+            low = low.min(b0);
+            high = high.max(b1);
             let mid = letter_params(&NAMES, &knobs(0.5), seed, 1, Letter::B, false, 1.0)[k];
             either_way_low += (mid < 0.5) as u32;
             either_way_high += (mid > 0.5) as u32;
         }
-        // Shape 0: B is longer than A but still short; Shape 1 the other way.
-        assert!(low > 0.0 && low <= 0.2, "{low}");
-        assert!(high < 1.0 && high >= 0.8, "{high}");
+        // Shape 0: B holds; Shape 1: B is stabby, at full Contrast.
+        assert!(low > 0.99, "{low}");
+        assert!(high <= LETTER_FLOOR + 1e-6, "{high}");
+        // Half Contrast: half way.
+        let half = letter_params(&NAMES, &knobs(0.0), 1, 1, Letter::B, false, 0.5)[k];
+        assert!((half - 0.5).abs() < 0.01, "{half}");
         // In the middle the seed decides which letter is the long one.
         assert!(either_way_low > 100 && either_way_high > 100, "{either_way_low} {either_way_high}");
     }

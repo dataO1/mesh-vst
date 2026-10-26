@@ -51,6 +51,13 @@ pub struct UiShared {
     /// The pinned phrases' seeds ([`UiState::phrase_pins`]): 0 = none, else
     /// `1 << 32 | seed`.
     pub phrase_pins: [AtomicU64; 4],
+    /// D60: the drum kit's layout the lane plays (the editor's rows), the
+    /// slot a DAW note plays (255 = none) and the velocity of its operator.
+    pub drum_layout: std::sync::Mutex<Option<mesh_vst_core::generator::DrumLayout>>,
+    pub playing_slot: AtomicU8,
+    pub playing_op: AtomicU8,
+    /// Undo and redo (D26), kept while the editor is closed.
+    pub history: std::sync::Mutex<crate::history::History>,
 }
 
 
@@ -82,6 +89,10 @@ impl Default for UiShared {
             host: AtomicU64::new(0),
             host_bands: std::array::from_fn(|_| AtomicU8::new(0)),
             phrase_pins: std::array::from_fn(|_| AtomicU64::new(0)),
+            drum_layout: std::sync::Mutex::new(None),
+            playing_slot: AtomicU8::new(255),
+            playing_op: AtomicU8::new(100),
+            history: std::sync::Mutex::new(crate::history::History::default()),
         }
     }
 }

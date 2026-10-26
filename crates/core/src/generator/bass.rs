@@ -396,6 +396,36 @@ impl BassGenerator {
         self.clips.pick(ctx.letter, ctx.seed, ctx.lane)
     }
 
+    /// Whether the line's pitches are written: a clip, or the user's
+    /// pattern (D60).
+    fn fixed(&self, ctx: &BarCtx) -> bool {
+        ctx.user.is_some() || self.clip(ctx).is_some()
+    }
+
+    /// The user's pattern as the skeleton (D60): bar `material_bar` of its
+    /// looping window, each row that many semitones over the home root (so
+    /// it moves with the key), the pitches fixed like a clip's.
+    fn user_skeleton(&self, ctx: &BarCtx, pattern: &crate::slots::UserPattern, out: &mut BarEvents) {
+        let home = Self::home(ctx);
+        let mut id = 0u16;
+        pattern.bar_notes(ctx.material_bar as u32, |tick, gate, n| {
+            id += 1;
+            let key = (home + n.row as i32).clamp(1, 127) as u8;
+            let gate = gate.clamp(1, u16::MAX as u32) as u16;
+            let mut ev = note(tick, key, n.vel, gate, id);
+            ev.step = ((tick + TICKS_PER_STEP / 2) / TICKS_PER_STEP).min(STEPS_PER_BAR as u16 - 1) as u8;
+            ev.origin = origin::SKELETON | origin::FIXED;
+            if n.vel >= CLIP_ACCENT_VEL {
+                ev.flags |= flags::ACCENT;
+            }
+            if gate < CLIP_SHORT_TICKS {
+                ev.flags |= flags::STAB;
+            }
+            out.push(ev);
+        });
+        out.sort();
+    }
+
     /// Event `cutoff` of a note on `step`, `above` semitones over the root.
     fn cutoff(&self, ctx: &BarCtx, step: u8, above: i32, accented: bool) -> i8 {
         let base = rng::range_f32(rng::hash(ctx.seed, ctx.lane, 0, 0, S_FILTER), FILTER_BASE.0, FILTER_BASE.1);
@@ -636,6 +666,9 @@ const VEL_ACCENT_CLIP: u8 = super::blocks::VEL_ACCENT;
 impl LaneGenerator for BassGenerator {
     /// R1: the skeleton (see the module docs).
     fn render_bar(&self, ctx: &BarCtx, out: &mut BarEvents) {
+        if let Some(user) = ctx.user {
+            return self.user_skeleton(ctx, user, out);
+        }
         if param(ctx, P_DENSITY) <= 0.0 {
             return;
         }
@@ -725,7 +758,7 @@ impl LaneGenerator for BassGenerator {
 
     /// R8: the pitches (see the module docs).
     fn melody(&self, ctx: &BarCtx, out: &mut BarEvents) {
-        if self.clip(ctx).is_some() {
+        if self.fixed(ctx) {
             clip_melody(ctx, out);
         } else {
             self.walk(ctx, out);
@@ -738,7 +771,7 @@ impl LaneGenerator for BassGenerator {
         let persona = if self.rules.persona { Persona::new(ctx) } else { Persona::PLAIN };
         let variation = param(ctx, P_VARIATION);
         let window = vel_window(variation);
-        let clip = self.clip(ctx).is_some();
+        let clip = self.fixed(ctx);
         let root_key = ctx.harmony.resolve(0, Self::octave(ctx)) as i32;
         let attack = shape_attack(crate::macros::length_knob(param(ctx, P_LENGTH)));
         let expression = param(ctx, P_EXPRESSION);
@@ -793,7 +826,14 @@ impl LaneGenerator for BassGenerator {
         &PARAM_NAMES
     }
 
+    fn home_key(&self, ctx: &BarCtx) -> i32 {
+        Self::home(ctx)
+    }
+
     fn material_beats(&self, ctx: &BarCtx) -> Option<u32> {
+        if ctx.user.is_some() {
+            return None;
+        }
         self.clip(ctx).map(|c| c.beats as u32)
     }
 

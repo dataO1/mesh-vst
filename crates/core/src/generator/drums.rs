@@ -1217,6 +1217,18 @@ impl DrumGenerator {
 
 impl LaneGenerator for DrumGenerator {
     fn render_bar(&self, ctx: &BarCtx, out: &mut BarEvents) {
+        // The user's pattern (D60): its hits as written.
+        if let Some(user) = ctx.user {
+            user.bar_notes(ctx.material_bar as u32, |tick, gate, n| {
+                let mut ev = trigger(tick, n.row.clamp(0, u8::MAX as i16) as u8, n.vel);
+                ev.gate = if n.len == 0 { 0 } else { gate.clamp(1, u16::MAX as u32) as u16 };
+                ev.start = n.start;
+                ev.choke = n.choke;
+                out.push(ev);
+            });
+            out.sort();
+            return;
+        }
         let p = Params::read(ctx);
         let (a, b, t) = self.select(p.style, ctx.half_time);
         if (if t < 0.5 { a } else { b }).buildup {

@@ -19,6 +19,14 @@ pub enum BassSource {
     Generated,
 }
 
+/// Who plays the form (D60): the lane's own, or the DAW's notes (a key per
+/// pattern, the velocity its operator).
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormSource {
+    Internal,
+    External,
+}
+
 /// Where pattern bar 0 is (D8).
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseMode {
@@ -171,6 +179,9 @@ pub enum UnisonSpread {
     Stacked,
     Random,
 }
+/// Widest transpose either way, in semitones (two octaves).
+pub const TRANSPOSE_MAX: i32 = 24;
+
 /// Highest seed value.
 pub const MAX_SEED: i32 = 9999;
 
@@ -261,6 +272,12 @@ pub struct MeshParams {
     pub unison_mode: EnumParam<UnisonSpread>,
     #[id = "gain"]
     pub gain: FloatParam,
+    /// D60: the lane's own form or the DAW's notes.
+    #[id = "form_source"]
+    pub form_source: EnumParam<FormSource>,
+    /// D60: semitones on the root.
+    #[id = "transpose"]
+    pub transpose: IntParam,
 
     /// The samples the project plays (D18).
     #[persist = "kit"]
@@ -268,6 +285,9 @@ pub struct MeshParams {
     /// Seed locks (D20).
     #[persist = "ui"]
     pub ui: std::sync::Arc<std::sync::Mutex<crate::ui::UiState>>,
+    /// The patterns the user edited (D60).
+    #[persist = "patterns"]
+    pub patterns: std::sync::Arc<std::sync::Mutex<crate::patterns::PatternBooks>>,
 }
 
 /// Set to anything: a new instance starts at fixed defaults (seed 1, knobs
@@ -380,8 +400,11 @@ impl Default for MeshParams {
             .with_unit(" dB")
             .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
             .with_string_to_value(formatters::s2v_f32_gain_to_db()),
+            form_source: EnumParam::new("Form source", FormSource::Internal),
+            transpose: IntParam::new("Transpose", 0, IntRange::Linear { min: -TRANSPOSE_MAX, max: TRANSPOSE_MAX }).with_unit(" st"),
             kit: Default::default(),
             ui: Default::default(),
+            patterns: Default::default(),
         }
     }
 }

@@ -150,6 +150,9 @@ pub struct OpChain {
 }
 
 impl OpChain {
+    /// No operators.
+    pub const EMPTY: OpChain = OpChain { ops: [0; MAX_OPS], len: 0 };
+
     /// Append `op`; `false` when the chain is full.
     pub fn push(&mut self, op: Op) -> bool {
         if self.len as usize >= MAX_OPS {
@@ -367,6 +370,9 @@ const ENDING_NOTES_MAX: f32 = 3.0;
 const PASSING_SHARE: (f32, f32) = (0.2, 1.0);
 const NEIGHBOUR_SHARE: (f32, f32) = (0.2, 0.6);
 const TRUNCATE_SHARE: (f32, f32) = (0.25, 0.5);
+/// The longest rest truncation leaves (D61: a cycle's part runs to 60
+/// beats; a share of it would silence bars).
+const TRUNCATE_MAX: u32 = 2 * BEAT;
 const HEMIOLA_CELL: u32 = 6 * STEP;
 const FRAGMENT: u32 = BEAT;
 /// Mutation: the share of the notes changed in full (at least one).
@@ -665,7 +671,8 @@ fn apply_one(op: Op, k: u8, notes: &mut Vec<SpanNote>, ctx: &OpCtx) {
         Op::Hemiola => repeat_cell(notes, ctx, HEMIOLA_CELL),
         Op::Fragment => repeat_cell(notes, ctx, FRAGMENT),
         Op::Truncation => {
-            let cut = (ctx.ticks as f32 * (1.0 - lerp(TRUNCATE_SHARE, a))) as u32 / STEP * STEP;
+            let rest = ((ctx.ticks as f32 * lerp(TRUNCATE_SHARE, a)) as u32).min(TRUNCATE_MAX);
+            let cut = ctx.ticks.saturating_sub(rest) / STEP * STEP;
             notes.retain(|n| !is_note(n) || n.at < cut);
             for n in notes.iter_mut().filter(|n| is_note(n) && n.ev.gate > 0) {
                 n.ev.gate = n.ev.gate.min((cut.saturating_sub(n.at)).max(1).min(u16::MAX as u32) as u16);

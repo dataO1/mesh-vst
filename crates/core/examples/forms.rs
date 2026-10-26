@@ -27,7 +27,7 @@ fn main() {
         if stats {
             continue;
         }
-        println!("seed {seed} ({}, second: {:?}, repetition {:.2}, broken {b:#b}, attempt {attempt}):", builder.plan_name(), builder.recipe_names(), builder.repetition());
+        println!("seed {seed} ({}, motives {:?} bars, cycles {:?}, second: {:?}, repetition {:.2}, broken {b:#b}, attempt {attempt}):", builder.plan_name(), builder.motive_bars(), builder.cycle_beats(), builder.recipe_names(), builder.repetition());
         let text = form.to_string();
         let (a, b) = text.split_once(" // ").unwrap_or((&text, ""));
         println!("  1: {a}\n  2: {b}");

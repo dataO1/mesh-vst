@@ -16,9 +16,13 @@ use crate::key::MusicalKey;
 use crate::pattern::{FormFollow, PatternLane, RenderedBar, Scratch};
 use crate::role::Role;
 use crate::sampler::Sampler;
+use crate::slots::{Slot, VelOp};
 use crate::splice::{self, Occupancy};
 use crate::types::StereoSample;
 use crate::{TICKS_PER_BAR, TICKS_PER_STEP};
+
+/// The root a DAW form note plays before the transpose (F1, D60).
+pub const EXT_ROOT: u8 = 29;
 
 /// Event ticks per quarter note.
 pub const TICKS_PER_BEAT: f64 = TICKS_PER_BAR as f64 / 4.0;
@@ -57,7 +61,11 @@ pub enum Phase {
 
 #[derive(Debug, Clone, Copy)]
 struct Gate {
+    /// The note holding the gate.
     key: u8,
+    /// The key the root comes from before the transpose: the held note, or
+    /// [`EXT_ROOT`] for a DAW form note.
+    base: u8,
     /// Velocity scale 0..1.
     vel: f32,
     /// Pattern bar 0, in song ticks.
@@ -75,6 +83,11 @@ pub struct Player {
     pub new_root: NewRoot,
     /// Scale family of the root: minor or major.
     pub minor: bool,
+    /// Semitones on the root (D60), automatable.
+    pub transpose: i8,
+    /// The DAW plays the form (D60): a note picks a slot by its key and an
+    /// operator by its velocity, and plays it from its start.
+    external: bool,
     gate: Option<Gate>,
     /// Song tick the last block ended at.
     until: Option<f64>,
@@ -110,7 +123,9 @@ pub const HOST_BARS: usize = 4;
 pub const MAX_FIRED: usize = 512;
 
 impl Player {
-    pub fn new(lane: PatternLane, mut sampler: Sampler) -> Self {
+    pub fn new(mut lane: PatternLane, mut sampler: Sampler) -> Self {
+        // A new form waits for the next 16-bar section (D61).
+        lane.defer_forms = true;
         let sample_rate = sampler.sample_rate() as f64;
         // Drums: each tail group on its own bus ([`crate::tail::VoiceTails`]);
         // without a bus buffer they all play on the main output.
@@ -124,6 +139,8 @@ impl Player {
             phase: Phase::default(),
             new_root: NewRoot::default(),
             minor: true,
+            transpose: 0,
+            external: false,
             gate: None,
             until: None,
             bar: RenderedBar::default(),
@@ -175,9 +192,39 @@ impl Player {
         self.cached.map(|(bar, _, _, _)| (bar, &self.bar))
     }
 
+    /// Play the DAW's form notes (D60) or the lane's own form. Going back
+    /// to the lane's own form closes a form note's gate. RT-safe.
+    pub fn set_external(&mut self, on: bool) {
+        if on == self.external {
+            return;
+        }
+        self.external = on;
+        if !on {
+            self.lane_mut().play_slot(None);
+            self.gate = None;
+        }
+    }
+
+    pub fn is_external(&self) -> bool {
+        self.external
+    }
+
     /// A note starts at song tick `tick` with velocity 0..1. The newest held
-    /// note wins (D10).
+    /// note wins (D10). In the external mode a note on a slot's key plays
+    /// that slot from its start, its velocity the operator (D60); other keys
+    /// do nothing.
     pub fn note_on(&mut self, key: u8, vel: f32, tick: f64) {
+        if self.external {
+            let Some(slot) = Slot::of_key(key) else { return };
+            let op = VelOp::of_velocity(((vel.clamp(0.0, 1.0) * 127.0).round() as u8).max(1));
+            self.lane_mut().play_slot(Some((slot, op)));
+            if !self.is_gated() {
+                self.sampler.reset_round_robin();
+                self.until = self.until.map(|u| u.min(tick));
+            }
+            self.gate = Some(Gate { key, base: EXT_ROOT, vel: 1.0, origin: tick, close_at: f64::INFINITY });
+            return;
+        }
         let origin = match (self.phase, self.gate) {
             (Phase::Continuous, _) => 0.0,
             // Legato into a new note keeps the running pattern.
@@ -196,7 +243,12 @@ impl Player {
         if changed && self.new_root == NewRoot::Retrigger && self.lane.role() != Role::Drums {
             self.sampler.handle_event(&LiveEvent { kind: EventKind::Choke, ..Default::default() }, 0);
         }
-        self.gate = Some(Gate { key, vel: vel.clamp(0.0, 1.0), origin, close_at: f64::INFINITY });
+        self.gate = Some(Gate { key, base: key, vel: vel.clamp(0.0, 1.0), origin, close_at: f64::INFINITY });
+    }
+
+    /// The root key gate `g` plays: its base with the transpose.
+    fn root_of(&self, g: &Gate) -> u8 {
+        (g.base as i32 + self.transpose as i32).clamp(0, 127) as u8
     }
 
     /// The held note `key` ends at song tick `tick`: the gate closes on the
@@ -209,9 +261,9 @@ impl Player {
         }
     }
 
-    /// The held note's key.
+    /// The root key playing (the held note's, or the form's, transposed).
     pub fn gate_key(&self) -> Option<u8> {
-        self.gate.filter(|g| g.close_at.is_infinite()).map(|g| g.key)
+        self.gate.filter(|g| g.close_at.is_infinite()).map(|g| self.root_of(&g))
     }
 
     /// The events the last block fired, with their frame offsets.
@@ -334,7 +386,8 @@ impl Player {
         let Some(gate) = self.gate.filter(|g| g.close_at.is_infinite()) else {
             return Occupancy { song_bar, ..Occupancy::default() };
         };
-        let key = MusicalKey::new(gate.key % 12, self.minor);
+        let root = self.root_of(&gate);
+        let key = MusicalKey::new(root % 12, self.minor);
         let want = (song_bar, self.version, key.root);
         if let Some(p) = self.published.iter().find(|p| (p.0, p.1, p.2) == want) {
             return p.3;
@@ -343,7 +396,7 @@ impl Player {
         let start = song_bar as f64 * bar_ticks;
         let mut occ = [0.0f32; crate::STEPS_PER_BAR];
         let pitched = self.lane.role() != Role::Drums;
-        let shift = if pitched { gate.key as i32 - home_root(key) } else { 0 };
+        let shift = if pitched { root as i32 - home_root(key) } else { 0 };
         let (mut keys, mut lens, mut onsets) = ([0u8; crate::STEPS_PER_BAR], [0u8; crate::STEPS_PER_BAR], 0u16);
         // The pattern bars under this song bar (two when the origin is off the bar line).
         let first = ((start - gate.origin) / bar_ticks).floor();
@@ -442,10 +495,14 @@ impl Player {
         let bar_ticks = TICKS_PER_BAR as f64;
         let first = ((from - gate.origin) / bar_ticks).floor().max(0.0) as u64;
         let last = ((to - gate.origin) / bar_ticks).floor().max(0.0) as u64;
-        let key = MusicalKey::new(gate.key % 12, self.minor);
+        let root = self.root_of(&gate);
+        let key = MusicalKey::new(root % 12, self.minor);
         // Pitched lanes play in the held note's octave (D7).
-        let octave_shift = if self.lane.role() == Role::Drums { 0 } else { gate.key as i32 - home_root(key) };
+        let octave_shift = if self.lane.role() == Role::Drums { 0 } else { root as i32 - home_root(key) };
         for bar in first..=last {
+            if self.lane.advance_form(bar, self.external) {
+                self.version = self.version.wrapping_add(1);
+            }
             // Splice: the host's hits, line and form position under this bar.
             let stamp = self.prepare(gate.origin, bar, octave_shift);
             let want = (bar, self.version, key.root, stamp);
@@ -924,6 +981,50 @@ mod tests {
     }
 
     #[test]
+    fn the_external_mode_plays_a_slot_from_its_note() {
+        let ext = |seed: u32| {
+            let mut p = bass_player(seed);
+            p.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(3).spec(false, 0.5, 0.5, 0.5));
+            p.set_external(true);
+            p
+        };
+        // Every press of A1 plays the same from its start.
+        let a = presses(&mut ext(6), Slot::from_index(0).key(), &[0.0, 16.0]);
+        assert!(!a[0].is_empty());
+        let n = a[0].len().min(a[1].len());
+        assert_eq!(a[0][..n], a[1][..n]);
+        // A key off the slots plays nothing.
+        assert!(presses(&mut ext(6), 50, &[0.0])[0].is_empty());
+        // The key picks the slot, the velocity the operator.
+        let mut p = ext(6);
+        p.note_on(Slot::from_index(2).key(), 15.0 / 127.0, 0.0);
+        assert_eq!(p.lane().playing_slot(), Some((Slot::from_index(2), VelOp::Op(crate::ops::Op::Retrograde))));
+        // Back to the lane's own form.
+        p.set_external(false);
+        assert_eq!(p.lane().playing_slot(), None);
+        assert!(!p.is_gated());
+    }
+
+    #[test]
+    fn transpose_moves_the_root() {
+        let keys = |l: &Vec<(i64, u8, u8, u8)>| l.iter().filter(|e| e.2 != 0).map(|e| e.2 as i32).collect::<Vec<_>>();
+        let base = presses(&mut bass_player(6), 29, &[0.0]);
+        let mut p = bass_player(6);
+        p.transpose = 12;
+        let up = presses(&mut p, 29, &[0.0]);
+        let (lo, hi) = (keys(&base[0]), keys(&up[0]));
+        assert!(!lo.is_empty() && lo.len() == hi.len());
+        assert!(lo.iter().zip(&hi).all(|(a, b)| b - a == 12), "{lo:?} {hi:?}");
+        // The DAW's form plays on F1, transposed.
+        let mut e = bass_player(6);
+        e.set_external(true);
+        e.transpose = 2;
+        presses(&mut e, Slot::from_index(0).key(), &[0.0]);
+        e.note_on(Slot::from_index(0).key(), 1.0, 0.0);
+        assert_eq!(e.gate_key(), Some(EXT_ROOT + 2));
+    }
+
+    #[test]
     fn processing_does_not_allocate() {
         let mut p = drum_player(5);
         p.note_on(36, 0.8, 0.0);
@@ -937,6 +1038,28 @@ mod tests {
         });
         assert_eq!(allocs, 0);
         let _ = DrumLayout::standard();
+        // The DAW's form notes, a user pattern among them.
+        for mut p in [drum_player(5), bass_player(5)] {
+            let drums = p.lane().role() == Role::Drums;
+            p.lane_mut().set_form_spec(crate::macros::FormSettings::seeded(3).spec(drums, 0.5, 0.5, 0.5));
+            let src = p.lane().slot_source(Slot::from_index(0), MusicalKey::new(5, true));
+            let mut book = crate::slots::PatternBook::default();
+            book.slots[0] = Some(src);
+            let _old = p.lane_mut().set_patterns(std::sync::Arc::new(book));
+            p.set_external(true);
+            p.note_on(Slot::from_index(0).key(), 1.0, 0.0);
+            p.process(&mut buf, &Transport { playing: true, beat: 0.0, bpm: 174.0 });
+            let (_, allocs) = crate::test_support::count_allocs(|| {
+                for i in 1..400 {
+                    let beat = i as f64 * 256.0 * 174.0 / 60.0 / SR as f64;
+                    if i % 50 == 0 {
+                        p.note_on(Slot::from_index(i / 50 % 8).key(), (i % 127) as f32 / 127.0, beat * TICKS_PER_BEAT);
+                    }
+                    p.process(&mut buf, &Transport { playing: true, beat, bpm: 174.0 });
+                }
+            });
+            assert_eq!(allocs, 0, "{:?}", p.lane().role());
+        }
     }
 }
 

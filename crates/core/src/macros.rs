@@ -433,8 +433,9 @@ const SHAPE_FLOOR: f32 = 0.3;
 
 // MUSICAL: tune by ear (user, 2026-10-21: at low Shape and high Density the
 // hits still sounded held, not short or subdivided). The bass's note Length
-// at Shape 0, its middle and full: short stabs .. as written .. held.
-const SHAPE_LENGTH: (f32, f32, f32) = (0.15, 0.5, 1.0);
+// at Shape 0, its middle and full: short stabs .. as written .. held
+// (user, 2026-10-26: 0 too short, where 40 % was is right: 0.43).
+const SHAPE_LENGTH: (f32, f32, f32) = (0.43, 0.5, 1.0);
 
 /// The bass's note Length at Shape knob `k`.
 fn shape_length(k: f32) -> f32 {
@@ -467,6 +468,9 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
     lane.set_param("expression", lerp(1.0, 0.15, shape));
     lane.set_param("stabs", lerp(1.0, 0.0, shape));
     character(p, shape);
+    // The stabs' decay: twice the designed one at Shape 0, as designed at
+    // the top (user, 2026-10-26: at the lowest Shape the notes faded away).
+    p.decay *= lerp(STAB_DECAY_STRETCH, 1.0, v.shape);
     p.release = shape_release(p, v.shape);
     // Accent also deepens the filter sweep and the stab punch; its level
     // stays near the others (the dynamics live in the velocity window).
@@ -501,6 +505,9 @@ const ATTACK_CURVE: f32 = 3.0;
 /// Accent of held notes (user, 2026-10-24: a bit more punch): about 8 dB of
 /// the stab drive through the note and a small kick at its start.
 const HELD_PUNCH: f32 = 0.4;
+/// How much longer the decay is at Shape 0 than at the top (stabs decay
+/// through it, sustain 0).
+const STAB_DECAY_STRETCH: f32 = 2.0;
 /// Release at Shape 0 (user, 2026-10-21: at low Shape and full Density the
 /// release rang over every 16th, the line sounded held).
 const STAB_RELEASE: f32 = note(1.0 / 64.0);
@@ -632,7 +639,8 @@ mod style_tests {
         let (mut held, mut notes) = (0, 0);
         for seed in 1..=40 {
             let mut lane = PatternLane::bass(seed, seed);
-            let s = LaneSettings { knobs: Knobs { shape: 1.0, ..Knobs::CENTERED }, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+            // At Contrast 0: above it B mirrors the Shape into stabs (D62).
+            let s = LaneSettings { knobs: Knobs { shape: 1.0, ..Knobs::CENTERED }, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.0, unison: Default::default(), clips: false, squash: 0.0 };
             configure(&mut lane, mudpie_params(), &s);
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
             for b in 0..8 {
@@ -726,14 +734,31 @@ mod style_tests {
     }
 
     #[test]
+    fn the_stabs_decay_twice_as_long_at_the_lowest_shape() {
+        let decay = |shape: f32| {
+            let mut lane = PatternLane::bass(4, 4);
+            let mut p = mudpie_params();
+            seeded_voice(&mut p, 4);
+            apply_bass(&Knobs { shape, ..Knobs::CENTERED }, 0.5, &mut lane, &mut p);
+            p.decay
+        };
+        assert!((decay(0.0) / decay(1.0) - STAB_DECAY_STRETCH).abs() < 1e-3, "{} vs {}", decay(0.0), decay(1.0));
+    }
+
+    #[test]
     fn shape_moves_little_per_note_at_low_variation_and_much_at_full() {
         use crate::event::EventKind;
+        // At Contrast 0, so the letters' own Shapes (B mirrors it, D62) stay
+        // out of it: what Variation moves per note.
         let widest = |variation: f32| {
-            let knobs = Knobs { variation, ..Knobs::CENTERED };
+            // In Shape's upper half: its lower half spans only 0.43 .. 0.5 of
+            // the Length (D62), so a note's small move there reads as a big
+            // one on the knob.
+            let knobs = Knobs { variation, shape: 0.75, ..Knobs::CENTERED };
             let mut widest = 0.0f32;
             for seed in 1..=10 {
                 let mut lane = PatternLane::bass(seed, seed);
-                let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+                let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.0, unison: Default::default(), clips: false, squash: 0.0 };
                 configure(&mut lane, mudpie_params(), &s);
                 let centres = Centers::of(Role::Bass, seed, seed);
                 let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
@@ -778,7 +803,8 @@ mod style_tests {
             (density / n as f32, spread / n as f32)
         };
         let (low, high) = (spread(0.0), spread(1.0));
-        assert!(high.1 > 2.0 * low.1, "Spread moves {} at Variation 0, {} at 1", low.1, high.1);
+        // (D61: 1.96 on the cycle forms' notes.)
+        assert!(high.1 > 1.8 * low.1, "Spread moves {} at Variation 0, {} at 1", low.1, high.1);
         // The pattern knobs move as the form says, whatever Variation.
         assert!(high.0 < 1.5 * low.0 && low.0 < 1.5 * high.0, "Density moves {} at Variation 0, {} at 1", low.0, high.0);
     }
@@ -995,8 +1021,9 @@ mod style_tests {
     #[test]
     fn clip_forms_repeat_their_4_bar_blocks_like_the_references() {
         let (median, reps) = rep4_median(true);
-        // As the generated forms: a little above the references' 0.63.
-        assert!((0.33..=0.75).contains(&median), "median rep4 {median:.2} ({reps:?})");
+        // As the generated forms: above the references' 0.63 (D61: the
+        // cycles repeat, the slots vary them).
+        assert!((0.33..=0.85).contains(&median), "median rep4 {median:.2} ({reps:?})");
     }
 
     #[test]
@@ -1005,8 +1032,9 @@ mod style_tests {
         reps.sort_by(f32::total_cmp);
         // The references repeat 0.33 .. 0.63 in pitch (music theory §6.3);
         // phrases that start on a note at an even beat (or the letter's
-        // start) repeat a little more (user, 2026-10-21: less hectic).
-        assert!((0.33..=0.75).contains(&reps[15]), "median rep4 {:.2} ({reps:?})", reps[15]);
+        // start) repeat a little more (user, 2026-10-21: less hectic), the
+        // cycles more again (D61, user 2026-10-26: A and B repeat).
+        assert!((0.33..=0.85).contains(&reps[15]), "median rep4 {:.2} ({reps:?})", reps[15]);
     }
 }
 

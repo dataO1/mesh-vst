@@ -227,6 +227,7 @@ mod tests {
             host: crate::splice::HostLine::default(),
             letter: 0,
             material_bar: 0,
+            user: None,
         };
         let mut out = BarEvents::default();
         pattern.render_bar(&ctx, &mut out);

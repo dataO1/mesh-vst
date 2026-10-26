@@ -385,13 +385,11 @@ fn level_gains(left: &[f32], right: &[f32], rate: f64) -> Vec<f32> {
     (0..LEVEL_PARTS)
         .map(|i| {
             let a = i * n / LEVEL_PARTS;
-            // Past the end the note wraps to the start, as the stream does.
-            let local = if a + window <= n {
-                power(a, a + window)
-            } else {
-                (power(a, n) * (n - a) as f32 + power(0, a + window - n) * (a + window - n) as f32) / window as f32
-            }
-            .sqrt();
+            // Near the end only what is left: a note replays its stretch
+            // there and never reaches the start (D61: a wrapped window rated
+            // a faded tail by the loud start, and B's bars from it were
+            // 25 dB down).
+            let local = power(a, (a + window).min(n)).sqrt();
             if local <= 0.0 { 1.0 } else { (overall / local).clamp(1.0 / max, max) }
         })
         .collect()
@@ -413,6 +411,20 @@ mod tests {
                 })
             })
             .collect()
+    }
+
+    #[test]
+    fn the_level_map_rates_the_tail_by_itself() {
+        // 1.6 s loud, then 0.4 s 20 dB down: the last parts are brought up,
+        // not rated by the loud start the window used to wrap into.
+        let rate = 48_000.0;
+        let n = (2.0 * rate) as usize;
+        let tail = (1.6 * rate) as usize;
+        let l: Vec<f32> = (0..n).map(|i| (i as f32 * 0.05).sin() * if i < tail { 1.0 } else { 0.1 }).collect();
+        let g = level_gains(&l, &l, rate);
+        let max = 10f32.powf(LEVEL_MAX_DB / 20.0);
+        assert!(g[LEVEL_PARTS - 1] > 0.9 * max, "the tail: {}", g[LEVEL_PARTS - 1]);
+        assert!(g[LEVEL_PARTS / 4] < 1.0, "the loud start: {}", g[LEVEL_PARTS / 4]);
     }
 
     #[test]

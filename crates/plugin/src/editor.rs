@@ -15,15 +15,24 @@ use mesh_vst_core::STEPS_PER_BAR;
 use nice_plug::editor::dpi::LogicalSize;
 use nice_plug::prelude::*;
 use nice_plug_iced::iced::widget::canvas::{self, Frame, Geometry};
-use nice_plug_iced::iced::widget::{button, canvas as canvas_widget, column, container, pick_list, row, scrollable, slider, text, Space};
+use nice_plug_iced::iced::widget::{button, canvas as canvas_widget, column, container, pick_list, row, scrollable, text, Space};
 use nice_plug_iced::iced::{
-    self, border, event, mouse, window, Alignment, Background, Border, Color, Element, Font, Length, Point, Rectangle, Renderer, Size,
+    self, event, mouse, window, Alignment, Background, Border, Color, Element, Font, Length, Point, Rectangle, Renderer, Size,
     Subscription, Theme,
 };
 use nice_plug_iced::{application, create_iced_editor, IcedEditor, IcedEditorState, IcedNiceContext, IcedNiceSettings, PersistentState};
 use serde::{Deserialize, Serialize};
 
-use crate::params::{BassSource, DrumStyle, MeshParams, Mode, NewRootMode, Phrase, PhaseMode, Rate, Scale, Tail, UnisonSpread, BEND_RANGES};
+use crate::params::{BassSource, DrumStyle, FormSource, MeshParams, Mode, NewRootMode, Phrase, PhaseMode, Rate, Scale, Tail, UnisonSpread, BEND_RANGES};
+use mesh_vst_core::slots::{PatternBook, Slot as PSlot, UserPattern, VelOp, SLOTS};
+
+mod form_strip;
+mod pattern_view;
+mod unison;
+mod widgets;
+
+use pattern_view::{Edit, Feel};
+use widgets::{chip_fill, chip_sm};
 use mesh_vst_core::modout::{Source, CHANNELS as MOD_CHANNELS};
 use crate::ui::{UiShared, UiState, ROWS};
 use crate::worker::{self, FileRef, KitState};
@@ -55,8 +64,45 @@ const DRUM_SLOTS: [(Slot, &str); 8] = [
     (Slot::Perc, "PERC"),
     (Slot::Break, "BREAK"),
 ];
-/// Footer height, for finding the slot a file is dropped on.
-const FOOTER_H: f32 = 118.0;
+/// Footer height, for finding the slot a file is dropped on, and the form
+/// strip's at its top.
+const FOOTER_H: f32 = 124.0;
+const STRIP_H: f32 = 26.0;
+/// The pattern editor's snaps: divisions of a bar.
+const SNAPS: [u8; 4] = [4, 8, 16, 32];
+
+/// What the middle shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Middle {
+    #[default]
+    Visual,
+    Edit,
+}
+
+/// What the editor shows of the lane (D60), built from the parameters as
+/// they are: the selected slot's pattern, the form. Built again when they
+/// change.
+struct Preview {
+    key: PreviewKey,
+    source: UserPattern,
+    books: PatternBook,
+    form: Vec<mesh_vst_core::midi::FormNote>,
+    form_beats: u32,
+    /// Where the form's cycles start (beats, D61).
+    cycles: Vec<u32>,
+    /// The root the pattern's rows count from (a MIDI note).
+    root: u8,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PreviewKey {
+    values: Vec<u32>,
+    pins: [Option<u32>; 4],
+    books: crate::patterns::PatternBooks,
+    layout: Option<mesh_vst_core::generator::DrumLayout>,
+    slot: usize,
+    root: u8,
+}
 
 /// A saved pair of seeds (D22).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,12 +188,6 @@ impl Knob {
     }
 }
 
-/// One undo step: every parameter's value and the pinned files (D26).
-#[derive(Clone)]
-struct Snapshot {
-    values: Vec<(ParamPtr, f32)>,
-    pins: (std::collections::BTreeMap<Slot, FileRef>, Option<FileRef>, std::collections::BTreeMap<Slot, FileRef>),
-}
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -178,6 +218,19 @@ pub enum Message {
     Favorite(Favorite),
     Undo,
     Redo,
+    /// A control is about to change (its press): the state goes on the undo stack.
+    Grab,
+    /// D60: the middle's view, the editor's slot, grid, pattern changes.
+    Middle(Middle),
+    SelectSlot(usize),
+    Snap(u8),
+    Feel(Feel),
+    RerollSlot,
+    ResetSlot,
+    PatternEdit(Edit),
+    FormSource(FormSource),
+    ExportForm,
+    Transpose(i32),
     ToggleLibrary,
     LowPower,
     RollSlot(Slot),
@@ -214,9 +267,15 @@ pub struct Gui {
     folder_input: String,
     pool: Pool,
     favorites: Vec<Favorite>,
-    undo: Vec<Snapshot>,
-    redo: Vec<Snapshot>,
     grabbed: Option<Knob>,
+    /// D60: the middle's view, the slot the editor shows, its grid, the
+    /// bass clips the preview lane plays, the preview.
+    middle: Middle,
+    slot: usize,
+    snap: u8,
+    feel: Feel,
+    clips: Arc<mesh_vst_core::clips::ClipSet>,
+    preview: Option<Preview>,
     cursor: Point,
     size: Size,
     dragging: bool,
@@ -274,9 +333,13 @@ impl Gui {
             folder_input: String::new(),
             pool: Pool::Kick,
             favorites: load_favorites(),
-            undo: Vec::new(),
-            redo: Vec::new(),
             grabbed: None,
+            middle: if view == "edit" { Middle::Edit } else { Middle::Visual },
+            slot: 0,
+            snap: 16,
+            feel: Feel::Straight,
+            clips: worker::bass_clips(),
+            preview: None,
             cursor: Point::ORIGIN,
             size: Size::new(WINDOW.width, WINDOW.height),
             dragging: demo_drag,
@@ -327,44 +390,56 @@ impl Gui {
         }
     }
 
-    fn snapshot(&self) -> Snapshot {
+    /// Everything undo brings back (D26, D60).
+    fn snapshot(&self) -> crate::history::Snapshot {
         let values = self
             .params()
             .param_map()
             .into_iter()
             // SAFETY: the pointers come from the live params object.
-            .map(|(_, ptr, _)| (ptr, unsafe { ptr.unmodulated_normalized_value() }))
+            .map(|(id, ptr, _)| (id, unsafe { ptr.unmodulated_normalized_value() }))
             .collect();
         let kit = self.kit();
         let pins = match kit.lock() {
             Ok(k) => (k.pins.clone(), k.mudpie_pin.clone(), k.rolled.clone()),
             Err(_) => Default::default(),
         };
-        Snapshot { values, pins }
+        let played = self.data.params.ui.lock().map(|u| crate::history::Played::of(&u)).unwrap_or_default();
+        let patterns = self.data.params.patterns.lock().map(|b| b.clone()).unwrap_or_default();
+        crate::history::Snapshot { values, pins, played, patterns }
     }
 
-    /// Remember the state before a change (mouse release, a button).
+    /// Remember the state before a change (a press, a button).
     fn record(&mut self) {
         let s = self.snapshot();
-        self.undo.push(s);
-        if self.undo.len() > 200 {
-            self.undo.remove(0);
+        if let Ok(mut h) = self.data.shared.history.lock() {
+            h.record(s);
         }
-        self.redo.clear();
     }
 
-    fn restore(&mut self, s: &Snapshot) {
+    fn restore(&mut self, s: &crate::history::Snapshot) {
         let ctx = self.ctx.nice_context.clone();
-        for (ptr, v) in &s.values {
-            // SAFETY: as above.
+        for (id, ptr, _) in self.params().param_map() {
+            let Some((_, v)) = s.values.iter().find(|(i, _)| *i == id) else { continue };
+            // SAFETY: the pointers come from the live params object.
             unsafe {
                 if (ptr.unmodulated_normalized_value() - v).abs() > f32::EPSILON {
-                    ctx.raw_begin_set_parameter(*ptr);
-                    ctx.raw_set_parameter_normalized(*ptr, *v);
-                    ctx.raw_end_set_parameter(*ptr);
+                    ctx.raw_begin_set_parameter(ptr);
+                    ctx.raw_set_parameter_normalized(ptr, *v);
+                    ctx.raw_end_set_parameter(ptr);
                 }
             }
         }
+        if let Ok(mut u) = self.data.params.ui.lock() {
+            s.played.apply(&mut u);
+            self.data.shared.load_phrase_pins(&u);
+            self.data.shared.load_mod_map(&u);
+            self.data.shared.host.store(u.host.unwrap_or(0), Ordering::Relaxed);
+        }
+        if let Ok(mut b) = self.data.params.patterns.lock() {
+            *b = s.patterns.clone();
+        }
+        self.preview = None;
         let kit = self.kit();
         let mut changed = false;
         if let Ok(mut k) = kit.lock() {
@@ -631,6 +706,7 @@ impl Gui {
                 self.set_int(p, v);
             }
             Message::PinPhrase(i) => {
+                self.record();
                 let letter = mesh_vst_core::form::Letter::ALL[i.min(3)];
                 let seed = self.form_settings().phrase_of(letter);
                 if let Ok(mut u) = self.data.params.ui.lock() {
@@ -662,17 +738,69 @@ impl Gui {
                 self.set_int(&params.pattern_seed, f.pattern_seed);
             }
             Message::Undo => {
-                if let Some(s) = self.undo.pop() {
-                    let now = self.snapshot();
-                    self.redo.push(now);
+                let now = self.snapshot();
+                let back = self.data.shared.history.lock().ok().and_then(|mut h| h.undo(now));
+                if let Some(s) = back {
                     self.restore(&s);
                 }
             }
             Message::Redo => {
-                if let Some(s) = self.redo.pop() {
-                    let now = self.snapshot();
-                    self.undo.push(now);
+                let now = self.snapshot();
+                let forth = self.data.shared.history.lock().ok().and_then(|mut h| h.redo(now));
+                if let Some(s) = forth {
                     self.restore(&s);
+                }
+            }
+            Message::Grab => self.record(),
+            Message::Middle(m) => self.middle = m,
+            Message::SelectSlot(i) => {
+                self.slot = i % SLOTS;
+                self.middle = Middle::Edit;
+            }
+            Message::Snap(d) => self.snap = d,
+            Message::Feel(f) => self.feel = if self.feel == f { Feel::Straight } else { f },
+            Message::RerollSlot => {
+                self.record();
+                let r = (self.next_rand() as u32).max(1);
+                let (mode, slot) = (self.params().mode.value(), self.slot);
+                if let Ok(mut b) = self.data.params.patterns.lock() {
+                    let book = b.of_mut(mode);
+                    book.rerolls[slot] = r;
+                    book.slots[slot] = None;
+                }
+            }
+            Message::ResetSlot => {
+                self.record();
+                let (mode, slot) = (self.params().mode.value(), self.slot);
+                if let Ok(mut b) = self.data.params.patterns.lock() {
+                    let book = b.of_mut(mode);
+                    book.rerolls[slot] = 0;
+                    book.slots[slot] = None;
+                }
+            }
+            Message::PatternEdit(edit) => {
+                // The edit applies to what the editor shows: the user's
+                // pattern, or the seed's source it becomes.
+                let Some(mut pattern) = self.preview.as_ref().filter(|p| p.key.slot == self.slot).map(|p| p.source.clone()) else { return };
+                self.record();
+                edit.apply(&mut pattern);
+                let (mode, slot) = (self.params().mode.value(), self.slot);
+                if let Ok(mut b) = self.data.params.patterns.lock() {
+                    b.of_mut(mode).slots[slot] = Some(pattern);
+                }
+                self.refresh_preview();
+            }
+            Message::FormSource(f) => {
+                self.record();
+                let params = self.data.params.clone();
+                self.set_enum(&params.form_source, f);
+            }
+            Message::ExportForm => self.export_form(),
+            Message::Transpose(v) => {
+                let params = self.data.params.clone();
+                if v != params.transpose.value() {
+                    self.record();
+                    self.set_int(&params.transpose, v);
                 }
             }
             Message::ToggleLibrary => {
@@ -756,6 +884,7 @@ impl Gui {
                 self.set_int(&params.bend_range, b.0);
             }
             Message::ModSource(ch, s) => {
+                self.record();
                 let drums = self.params().mode.value() == Mode::Drums;
                 if let Ok(mut u) = self.data.params.ui.lock() {
                     let (map, default) = if drums {
@@ -821,6 +950,7 @@ impl Gui {
                 setter.end_set_parameter(&params.mono_lows);
             }
             Message::Host(h) => {
+                self.record();
                 let id = match h {
                     HostItem::None => 0,
                     HostItem::Sidechain => crate::link::SIDECHAIN,
@@ -850,9 +980,72 @@ impl Gui {
         }
     }
 
+    /// What the preview is built from now (D60).
+    fn preview_key(&self) -> PreviewKey {
+        let p = self.params();
+        let values = p.param_map().into_iter().map(|(_, ptr, _)| unsafe { ptr.unmodulated_normalized_value() }.to_bits()).collect();
+        let root = match self.data.shared.root.load(Ordering::Relaxed) {
+            255 => (mesh_vst_core::player::EXT_ROOT as i32 + p.transpose.value()).clamp(0, 127) as u8,
+            r => r,
+        };
+        PreviewKey {
+            values,
+            pins: self.data.shared.phrase_pins(),
+            books: self.data.params.patterns.lock().map(|b| b.clone()).unwrap_or_default(),
+            layout: self.data.shared.drum_layout.lock().ok().and_then(|l| *l),
+            slot: self.slot,
+            root,
+        }
+    }
+
+    /// Build the preview again when what it is built from changed.
+    fn refresh_preview(&mut self) {
+        let key = self.preview_key();
+        if self.preview.as_ref().is_some_and(|p| p.key == key) {
+            return;
+        }
+        let p = self.params();
+        let mode = p.mode.value();
+        let lane = crate::patterns::preview_lane(mode, p, key.pins, key.layout, &self.clips);
+        let source = lane.slot_source(PSlot::from_index(key.slot), crate::patterns::key_of(p, key.root));
+        let form = mesh_vst_core::midi::form_notes(&lane);
+        let form_beats = 2 * lane.form().beats() as u32;
+        let cycles = crate::patterns::cycle_starts(lane.form());
+        let books = lane.patterns().clone();
+        let root = key.root;
+        self.preview = Some(Preview { key, source, books, form, form_beats, cycles, root });
+    }
+
+    /// Write the lane's own form as a MIDI file and let the DAW play it
+    /// (D60): the external mode, transposed so it plays on the root heard.
+    fn export_form(&mut self) {
+        let p = self.data.params.clone();
+        let mode = p.mode.value();
+        let layout = self.data.shared.drum_layout.lock().ok().and_then(|l| *l);
+        let lane = crate::patterns::preview_lane(mode, &p, self.data.shared.phrase_pins(), layout, &self.clips);
+        let name = format!("{} {:04}-{:04} form", if mode == Mode::Drums { "drums" } else { "bass" }, p.sound_seed.value(), p.pattern_seed.value());
+        let bpm = f32::from_bits(self.data.shared.bpm.load(Ordering::Relaxed)) as f64;
+        match crate::patterns::export_form(&lane, &name, bpm) {
+            Ok(path) => {
+                self.record();
+                let was_external = p.form_source.value() == FormSource::External;
+                self.set_enum(&p.form_source, FormSource::External);
+                // The form plays on F1 transposed: on the root heard now.
+                let root = self.data.shared.root.load(Ordering::Relaxed);
+                if root != 255 && !was_external {
+                    let t = (root as i32 - mesh_vst_core::player::EXT_ROOT as i32).clamp(-crate::params::TRANSPOSE_MAX, crate::params::TRANSPOSE_MAX);
+                    self.set_int(&p.transpose, t);
+                }
+                self.toast = format!("form written: {} · the DAW plays it now (FORM ext)", path.display());
+            }
+            Err(e) => self.toast = format!("could not write the form: {e}"),
+        }
+    }
+
     /// Advance the visual: read the output, decay the slot envelopes, light
     /// the slots that hit on a new step.
     fn animate(&mut self) {
+        self.refresh_preview();
         // Splice: the other instances, once a second.
         if self.peers_at.elapsed().as_millis() > 1000 {
             self.peers_at = std::time::Instant::now();
@@ -1028,50 +1221,55 @@ impl Gui {
         let drums = p.mode.value() == Mode::Drums;
         let locks = self.locks();
         let shared = &self.data.shared;
+        let (can_undo, can_redo) = shared.history.lock().map_or((false, false), |h| (h.can_undo(), h.can_redo()));
 
         // Top bar.
         let split = self.analyser.as_ref().map_or(0.0, |a| 1.5 * a.env() + 6.0 * a.punch());
         let root = shared.root.load(Ordering::Relaxed);
         let key = if root == 255 { "—".to_string() } else { note_name(root) };
         let bpm = f32::from_bits(shared.bpm.load(Ordering::Relaxed));
-        let mode_button = |m: Mode, label: &'static str| {
-            let on = p.mode.value() == m;
-            button(text(label).font(DATA_FONT).size(13)).on_press(Message::Mode(m)).padding([6, 10]).style(move |_, s| btn(on, s))
-        };
         let seed_box = |label: &'static str, v: i32, roll: Message, lock: Message, locked: bool| {
             row![
                 column![small(label), ghost(format!("{v:04}"), 16.0, DATA_FONT, INK, split)].spacing(2),
-                button(text("roll").font(DATA_FONT).size(12)).on_press(roll).padding([6, 8]).style(|_, s| btn(false, s)),
-                button(text(if locked { "locked" } else { "lock" }).font(DATA_FONT).size(12))
-                    .on_press(lock)
-                    .padding([6, 8])
-                    .style(move |_, s| btn(locked, s)),
+                chip_sm("roll", false, Some(roll)),
+                chip_sm(if locked { "locked" } else { "lock" }, locked, Some(lock)),
             ]
             .spacing(6)
             .align_y(Alignment::Center)
         };
+        let transpose = canvas_widget(widgets::ValueBox {
+            value: p.transpose.value(),
+            range: (-crate::params::TRANSPOSE_MAX, crate::params::TRANSPOSE_MAX),
+            reset: 0,
+            unit: " st",
+            on_change: Message::Transpose,
+            on_release: Message::Poll,
+        })
+        .width(74)
+        .height(26);
         let top = row![
             ghost("mesh//vst".into(), 15.0, DISPLAY_FONT, DIM, split),
-            row![mode_button(Mode::Drums, "DRUMS"), mode_button(Mode::Bass, "BASS")],
-            column![small("KEY · from note"), row![ghost(key, 16.0, DATA_FONT, INK, split), pick_w(Scale::variants_list(), p.scale.value(), Message::Scale, 104.0)].spacing(6).align_y(Alignment::Center)].spacing(2),
-            column![small("HOST"), text(format!("{bpm:.1} bpm")).font(DATA_FONT).size(16).color(INK)].spacing(2),
+            row![chip_sm("drums", drums, Some(Message::Mode(Mode::Drums))), chip_sm("bass", !drums, Some(Message::Mode(Mode::Bass)))].spacing(2),
+            column![small("KEY"), row![ghost(key, 16.0, DATA_FONT, INK, split), pick_w(Scale::variants_list(), p.scale.value(), Message::Scale, 92.0)].spacing(6).align_y(Alignment::Center)].spacing(2),
+            column![small("TRANSPOSE"), transpose].spacing(2),
+            column![small("HOST"), text(format!("{bpm:.1}")).font(DATA_FONT).size(15).color(INK)].spacing(2),
             seed_box("SOUND", p.sound_seed.value(), Message::RollSound, Message::LockSound, locks.sound_locked),
             seed_box("PATTERN", p.pattern_seed.value(), Message::RollPattern, Message::LockPattern, locks.pattern_locked),
-            button(text("★").font(DATA_FONT).size(14)).on_press(Message::SaveFavorite).padding([6, 8]).style(|_, s| btn(false, s)),
-            pick_list(self.favorites.clone(), None::<Favorite>, Message::Favorite).placeholder("favs").text_size(12).font(DATA_FONT).width(70).style(|_, _| pick_style()),
+            chip_sm("★", false, Some(Message::SaveFavorite)),
+            pick_list(self.favorites.clone(), None::<Favorite>, Message::Favorite).placeholder("favs").text_size(12).font(DATA_FONT).width(62).style(|_, _| pick_style()),
             Space::new().width(Length::Fill),
-            button(text("undo").font(DATA_FONT).size(12)).on_press_maybe((!self.undo.is_empty()).then_some(Message::Undo)).padding([6, 8]).style(|_, s| btn(false, s)),
-            button(text("redo").font(DATA_FONT).size(12)).on_press_maybe((!self.redo.is_empty()).then_some(Message::Redo)).padding([6, 8]).style(|_, s| btn(false, s)),
-            button(text("LIBRARY").font(DATA_FONT).size(12)).on_press(Message::ToggleLibrary).padding([6, 10]).style(move |_, s| btn(self.show_library, s)),
-            button(text("SET").font(DATA_FONT).size(12)).on_press(Message::ToggleSettings).padding([6, 10]).style(move |_, s| btn(self.show_settings, s)),
+            chip_sm("undo", false, can_undo.then_some(Message::Undo)),
+            chip_sm("redo", false, can_redo.then_some(Message::Redo)),
+            chip_sm("library", self.show_library, Some(Message::ToggleLibrary)),
+            chip_sm("set", self.show_settings, Some(Message::ToggleSettings)),
         ]
-        .spacing(8)
+        .spacing(6)
         .align_y(Alignment::Center)
         .padding([0, 12]);
         let top = container(top).height(60).center_y(60).width(Length::Fill).style(|_| bar_style());
 
         // Left: the pattern knobs and settings.
-        let mut left = column![small("PATTERN")].spacing(12);
+        let mut left = column![small("PATTERN")].spacing(9);
         for k in [Knob::Density, Knob::Contrast, Knob::Variation, Knob::Groove] {
             left = left.push(knob(p, k, self.hit_marker(k)));
         }
@@ -1081,10 +1279,10 @@ impl Gui {
         left = left.push(column![
             small("PHASE"),
             row![
-                toggle("CONTINUOUS", p.phase.value() == PhaseMode::Continuous, Message::Phase(PhaseMode::Continuous)),
-                toggle("RETRIGGER", p.phase.value() == PhaseMode::Retrigger, Message::Phase(PhaseMode::Retrigger)),
+                chip_sm("continuous", p.phase.value() == PhaseMode::Continuous, Some(Message::Phase(PhaseMode::Continuous))),
+                chip_sm("retrigger", p.phase.value() == PhaseMode::Retrigger, Some(Message::Phase(PhaseMode::Retrigger))),
             ]
-            .spacing(6)
+            .spacing(4)
         ].spacing(6));
         // The form (D48): its seeds, the phrase pins, what it plays.
         let form = self.form_settings();
@@ -1092,16 +1290,15 @@ impl Gui {
             row![
                 text(label).font(DATA_FONT).size(11).color(DIM).width(34),
                 text(format!("{v:04}")).font(DATA_FONT).size(13).color(INK).width(38),
-                button(text("roll").font(DATA_FONT).size(11)).on_press(roll).padding([3, 6]).style(|_, s| btn(false, s)),
+                chip_sm("roll", false, Some(roll)),
             ]
             .spacing(4)
             .align_y(Alignment::Center)
         };
         // The phrases with their pins, then the fill plan and the second pass.
-        let mut phrases = row![seed("phr", p.phrase_seed.value(), Message::RollPhrases), Space::new().width(Length::Fill)].spacing(4).align_y(Alignment::Center);
+        let mut phrases = row![seed("phr", p.phrase_seed.value(), Message::RollPhrases), Space::new().width(Length::Fill)].spacing(3).align_y(Alignment::Center);
         for (i, l) in ["A", "B", "C", "D"].into_iter().enumerate() {
-            let on = form.pins[i].is_some();
-            phrases = phrases.push(button(text(l).font(DATA_FONT).size(11)).on_press(Message::PinPhrase(i)).padding([3, 6]).style(move |_, s| btn(on, s)));
+            phrases = phrases.push(chip_sm(l, form.pins[i].is_some(), Some(Message::PinPhrase(i))));
         }
         let (plan, recipes) = form_summary(&form, drums, [p.variation.value(), p.shape.value(), p.contrast.value()]);
         left = left.push(
@@ -1112,12 +1309,10 @@ impl Gui {
             ]
             .spacing(6),
         );
-
-
         let left = container(left).width(260);
 
-        // Right: the mode's knobs.
-        let mut right = column![small(if drums { "KIT" } else { "MUDPIE VOICE" })].spacing(12);
+        // Right: the mode's knobs, then who plays the form, Splice and (bass) the unison.
+        let mut right = column![small(if drums { "KIT" } else { "MUDPIE VOICE" })].spacing(9);
         if drums {
             right = right.push(column![small("STYLE"), pick(DrumStyle::variants_list(), p.style.value(), Message::Style)].spacing(6));
             right = right.push(knob(p, Knob::Shape, self.hit_marker(Knob::Shape)));
@@ -1125,11 +1320,11 @@ impl Gui {
             let tail = p.tail.value();
             right = right.push(
                 row![
-                    toggle("VOC", tail == Tail::Vocoder, Message::Tail(Tail::Vocoder)),
-                    toggle("SPEC", tail == Tail::Spectral, Message::Tail(Tail::Spectral)),
-                    toggle("NOISE", tail == Tail::Noise, Message::Tail(Tail::Noise)),
+                    chip_sm("voc", tail == Tail::Vocoder, Some(Message::Tail(Tail::Vocoder))),
+                    chip_sm("spec", tail == Tail::Spectral, Some(Message::Tail(Tail::Spectral))),
+                    chip_sm("noise", tail == Tail::Noise, Some(Message::Tail(Tail::Noise))),
                 ]
-                .spacing(6),
+                .spacing(4),
             );
             for k in [Knob::Morph, Knob::Tone, Knob::Heat] {
                 right = right.push(knob(p, k, self.hit_marker(k)));
@@ -1145,10 +1340,10 @@ impl Gui {
                     column![
                         small("SOURCE"),
                         row![
-                            toggle("CLIPS", source == BassSource::Clips, Message::BassSource(BassSource::Clips)),
-                            toggle("GEN", source == BassSource::Generated, Message::BassSource(BassSource::Generated)),
+                            chip_sm("clips", source == BassSource::Clips, Some(Message::BassSource(BassSource::Clips))),
+                            chip_sm("gen", source == BassSource::Generated, Some(Message::BassSource(BassSource::Generated))),
                         ]
-                        .spacing(6),
+                        .spacing(4),
                     ]
                     .spacing(6),
                 ]
@@ -1156,110 +1351,113 @@ impl Gui {
             );
         }
         right = right.push(Space::new().height(Length::Fill));
-        right = right.push(self.splice_view(p));
-        right = right.push(column![small("VISUAL"), row![toggle("FIELD", !locks.low_power, Message::LowPower), toggle("STEPS", locks.low_power, Message::LowPower)].spacing(6)].spacing(6));
+        let external = p.form_source.value() == FormSource::External;
+        let form_box = column![
+            small("FORM"),
+            row![
+                chip_sm("int", !external, Some(Message::FormSource(FormSource::Internal))),
+                chip_sm("ext", external, Some(Message::FormSource(FormSource::External))),
+                chip_sm(".mid ↓", false, Some(Message::ExportForm)),
+            ]
+            .spacing(3),
+            self.splice_view(p),
+        ]
+        .spacing(5);
+        let bottom: Element<Message> = if drums {
+            form_box.into()
+        } else {
+            let pad = canvas_widget(unison::UnisonPad { voices: p.unison_voices.value(), detune: p.unison_detune.value(), width: p.unison_width.value() }).width(112).height(112);
+            row![container(form_box).width(Length::Fill), pad].spacing(10).align_y(Alignment::End).into()
+        };
+        right = right.push(bottom);
         let right = container(right).width(260).height(Length::Fill);
 
-        // Middle: the point field, or the step view in low-power mode.
-        let view: Element<Message> = if locks.low_power {
-            canvas_widget(StepView {
-                hits: shared.hits(),
-                step: shared.step.load(Ordering::Relaxed),
-                drums,
-                letter: shared.letter.load(Ordering::Relaxed),
-            })
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-        } else {
-            iced_widget::shader(crate::visual::Field { frame: self.visual_frame(drums) }).width(Length::Fill).height(Length::Fill).into()
+        // Middle: the visual or the pattern editor.
+        let tab = |label: &'static str, view: Middle| {
+            let on = self.middle == view;
+            button(text(label).font(DATA_FONT).size(12).color(if on { ACCENT } else { DIM }))
+                .on_press(Message::Middle(view))
+                .padding([2, 2])
+                .style(move |_, _| button::Style {
+                    background: None,
+                    border: Border { color: if on { ACCENT } else { Color::TRANSPARENT }, width: 0.0, radius: 0.0.into() },
+                    ..Default::default()
+                })
         };
-        let view: Element<Message> = if self.dragging && drums {
-            iced::widget::stack![view, canvas_widget(SubgridLabels { hover: None }).width(Length::Fill).height(Length::Fill)].into()
+        let underline = |view: Middle| container(Space::new().height(2)).width(Length::Fill).style(move |_| container::Style { background: Some(Background::Color(if self.middle == view { ACCENT } else { Color::TRANSPARENT })), ..Default::default() });
+        let tabs = row![
+            column![tab("VISUAL", Middle::Visual), underline(Middle::Visual)].width(64),
+            column![tab("EDIT", Middle::Edit), underline(Middle::Edit)].width(48),
+            Space::new().width(Length::Fill),
+        ]
+        .spacing(16)
+        .align_y(Alignment::End);
+        let tabs: Element<Message> = if self.middle == Middle::Visual {
+            row![tabs, chip_sm("field", !locks.low_power, Some(Message::LowPower)), chip_sm("steps", locks.low_power, Some(Message::LowPower))].spacing(3).align_y(Alignment::Center).into()
         } else {
-            view
+            tabs.into()
         };
-        let middle = container(view).width(Length::Fill).height(Length::Fill).padding([8, 0]);
+        let content: Element<Message> = match self.middle {
+            Middle::Visual => {
+                let view: Element<Message> = if locks.low_power {
+                    canvas_widget(StepView { hits: shared.hits(), step: shared.step.load(Ordering::Relaxed), drums, letter: shared.letter.load(Ordering::Relaxed) })
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into()
+                } else {
+                    iced_widget::shader(crate::visual::Field { frame: self.visual_frame(drums) }).width(Length::Fill).height(Length::Fill).into()
+                };
+                if self.dragging && drums {
+                    iced::widget::stack![view, canvas_widget(SubgridLabels { hover: None }).width(Length::Fill).height(Length::Fill)].into()
+                } else {
+                    view
+                }
+            }
+            Middle::Edit => self.pattern_editor(drums),
+        };
+        let middle = container(column![tabs, content].spacing(8)).width(Length::Fill).height(Length::Fill);
 
-        let body = row![left, middle, right].spacing(28).padding([18, 24]).height(Length::Fill);
+        let body = row![left, middle, right].spacing(28).padding([16, 24]).height(Length::Fill);
 
-        // Footer: the sound slots.
+        // Footer: what plays, then the sound slots.
         let kit_lock = self.kit();
         let kit = match kit_lock.lock() {
             Ok(k) => k.clone(),
             Err(_) => KitState::default(),
         };
-        let footer: Element<Message> = if drums {
+        let cards: Element<Message> = if drums {
             let mut r = row![].spacing(8);
             for (slot, name) in DRUM_SLOTS {
                 let pinned = kit.pins.get(&slot);
                 let is_pinned = pinned.is_some();
                 let own = pinned.or_else(|| kit.rolled.get(&slot));
                 let file = own.or_else(|| kit.drums.get(&slot)).map_or(if kit.drums.is_empty() { "built-in".to_string() } else { "—".to_string() }, |f| file_name(std::path::Path::new(&f.path)));
-                let mut buttons = row![button(text("roll").font(DATA_FONT).size(11)).on_press(Message::RollSlot(slot)).padding([3, 6]).style(|_, s| btn(false, s))].spacing(4);
+                let mut buttons = row![chip_sm("roll", false, Some(Message::RollSlot(slot)))].spacing(3);
                 if own.is_some() {
-                    buttons = buttons.push(button(text("seed").font(DATA_FONT).size(11)).on_press(Message::ClearSlot(slot)).padding([3, 6]).style(|_, s| btn(false, s)));
+                    buttons = buttons.push(chip_sm("seed", false, Some(Message::ClearSlot(slot))));
                 }
-                let card = column![
-                    row![
-                        small(name),
-                        Space::new().width(Length::Fill),
-                        // Pin: the sound roll leaves this slot alone.
-                        button(text("pin").font(DATA_FONT).size(10)).on_press(Message::PinSlot(slot)).padding([1, 4]).style(move |_, s| btn(is_pinned, s)),
-                    ]
-                    .align_y(Alignment::Center),
-                    text(file).font(DATA_FONT).size(12).color(INK).wrapping(iced::widget::text::Wrapping::None),
-                    Space::new().height(Length::Fill),
-                    buttons,
-                ]
-                .spacing(4);
-                r = r.push(container(card).padding(8).width(Length::Fill).height(Length::Fill).style(|_| card_style()));
+                buttons = buttons.push(Space::new().width(Length::Fill));
+                // Pin: the sound roll leaves this slot alone.
+                buttons = buttons.push(chip_sm("pin", is_pinned, Some(Message::PinSlot(slot))));
+                let card = column![small(name), text(file).font(DATA_FONT).size(12).color(INK).wrapping(iced::widget::text::Wrapping::None), Space::new().height(Length::Fill), buttons].spacing(3);
+                r = r.push(container(card).padding(6).width(Length::Fill).height(Length::Fill).clip(true).style(|_| card_style()));
             }
             r.into()
         } else {
             let file = kit.mudpie_pin.as_ref().or(kit.mudpie.as_ref()).map_or("built-in mudpie".to_string(), |f| file_name(std::path::Path::new(&f.path)));
-            let card = column![
-                row![small("MUDPIE · drop a file anywhere"), Space::new().width(Length::Fill), small(if kit.mudpie_pin.is_some() { "pinned" } else { "seed" })],
-                text(file).font(DATA_FONT).size(14).color(INK),
-                button(text("roll").font(DATA_FONT).size(11)).on_press(Message::RollMudpie).padding([3, 6]).style(|_, s| btn(false, s)),
-            ]
-            .spacing(6);
-            // Unison limits and mode (D38), bottom right.
-            let voices = p.unison_voices.value();
-            let detune = p.unison_detune.value();
-            let width = p.unison_width.value();
-            let unison = column![
-                small("UNISON · the seed picks each note within these"),
-                row![
-                    text(format!("voices {voices}")).font(DATA_FONT).size(12).color(INK).width(80),
-                    slider(1..=8, voices, Message::UnisonVoices).height(16).style(|_, _| slider_style()),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-                row![
-                    text(format!("detune {detune:.0} ct")).font(DATA_FONT).size(12).color(INK).width(80),
-                    slider(0.0..=60.0, detune, Message::UnisonDetune).on_release(Message::UnisonDetuneReleased).step(0.5_f32).height(16).style(|_, _| slider_style()),
-                    pick(UnisonSpread::variants_list(), p.unison_mode.value(), Message::UnisonMode),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-                row![
-                    text(format!("width {:.0} %", width * 100.0)).font(DATA_FONT).size(12).color(INK).width(80),
-                    slider(0.0..=1.0, width, Message::UnisonWidth).on_release(Message::UnisonDetuneReleased).step(0.01_f32).height(16).style(|_, _| slider_style()),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            ]
-            .spacing(4);
-            row![
-                container(card).padding(10).width(360).height(Length::Fill).style(|_| card_style()),
+            let card = row![
+                column![small("MUDPIE · drop a file anywhere"), text(file).font(DATA_FONT).size(14).color(INK)].spacing(4),
                 Space::new().width(Length::Fill),
-                container(unison).padding(10).width(420).height(Length::Fill).style(|_| card_style()),
+                small(if kit.mudpie_pin.is_some() { "pinned" } else { "seed" }),
+                chip_sm("roll", false, Some(Message::RollMudpie)),
             ]
-            .into()
+            .spacing(10)
+            .align_y(Alignment::Center);
+            row![container(card).padding(8).width(480).height(Length::Fill).style(|_| card_style()), Space::new().width(Length::Fill), container(text(self.toast.clone()).font(DATA_FONT).size(12).color(DIM)).center_y(Length::Fill)].spacing(12).into()
         };
-        let toast = text(self.toast.clone()).font(DATA_FONT).size(12).color(DIM);
-        let footer = container(column![container(footer).height(Length::Fill), toast].spacing(4)).height(FOOTER_H).padding([8, 24]).width(Length::Fill).style(|_| bar_style());
+        let strip = canvas_widget(self.form_strip()).width(Length::Fill).height(STRIP_H);
+        let toast: Element<Message> = if drums { text(self.toast.clone()).font(DATA_FONT).size(11).color(DIM).into() } else { Space::new().height(0).into() };
+        let footer = container(column![strip, container(cards).height(Length::Fill), toast].spacing(5)).height(FOOTER_H).padding([7, 24]).width(Length::Fill).style(|_| bar_style());
 
         let mut screen = column![top, body, footer];
         if self.show_library {
@@ -1291,6 +1489,78 @@ impl Gui {
         } else {
             base.into()
         }
+    }
+
+    /// The pattern editor (D60): the slots, the grid, the pattern.
+    fn pattern_editor(&self, drums: bool) -> Element<'_, Message> {
+        let mut slots = row![].spacing(3);
+        let playing = self.playing_slot();
+        for s in PSlot::ALL {
+            let edited = self.preview.as_ref().is_some_and(|pv| pv.books.get(s).is_some());
+            let label = if edited { format!("{} •", s.name()) } else { s.name().to_string() };
+            let lit = s.index() == self.slot;
+            let _ = playing;
+            slots = slots.push(chip_fill(&label, lit, Some(Message::SelectSlot(s.index()))));
+        }
+        let mut grid = row![small("SNAP")].spacing(3).align_y(Alignment::Center);
+        for d in SNAPS {
+            grid = grid.push(chip_sm(&format!("1/{d}"), self.snap == d, Some(Message::Snap(d))));
+        }
+        let edited = self.preview.as_ref().is_some_and(|pv| pv.books.get(PSlot::from_index(self.slot)).is_some());
+        let rerolled = self.preview.as_ref().is_some_and(|pv| pv.books.rerolls[self.slot] != 0);
+        grid = grid
+            .push(Space::new().width(Length::Fill))
+            .push(chip_sm("dot", self.feel == Feel::Dotted, Some(Message::Feel(Feel::Dotted))))
+            .push(chip_sm("tri", self.feel == Feel::Triplet, Some(Message::Feel(Feel::Triplet))))
+            .push(Space::new().width(10))
+            .push(chip_sm("reroll", false, Some(Message::RerollSlot)))
+            .push(chip_sm("reset", false, (edited || rerolled).then_some(Message::ResetSlot)));
+        let view: Element<Message> = match self.preview.as_ref() {
+            Some(pv) => {
+                let rows = pattern_view::rows(&pv.source, drums, pv.root % 12, pv.root as i32);
+                canvas_widget(pattern_view::PatternView { pattern: pv.source.clone(), rows, drums, unit: pattern_view::unit(self.snap, self.feel), playhead: self.playhead(pv) })
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            }
+            None => container(small("…")).center(Length::Fill).into(),
+        };
+        column![slots, grid, view].spacing(8).into()
+    }
+
+    /// The footer's strip: the form, or the slots the DAW plays.
+    fn form_strip(&self) -> form_strip::FormStrip {
+        let external = self.params().form_source.value() == FormSource::External;
+        let (notes, beats, cycles) = self.preview.as_ref().map_or((Vec::new(), 1, Vec::new()), |pv| (pv.form.clone(), pv.form_beats, pv.cycles.clone()));
+        let bar = self.data.shared.bar.load(Ordering::Relaxed);
+        let step = self.data.shared.step.load(Ordering::Relaxed);
+        let at = (bar != u32::MAX && step != u32::MAX && !external).then(|| (bar as f32 * 4.0 + step as f32 / 4.0) % beats.max(1) as f32);
+        form_strip::FormStrip { notes, beats, cycles, at, external, playing: self.playing_slot(), selected: self.slot }
+    }
+
+    /// The slot and operator the DAW plays, if any.
+    fn playing_slot(&self) -> Option<(PSlot, VelOp)> {
+        let s = self.data.shared.playing_slot.load(Ordering::Relaxed);
+        ((s as usize) < SLOTS).then(|| (PSlot::from_index(s as usize), VelOp::of_velocity(self.data.shared.playing_op.load(Ordering::Relaxed))))
+    }
+
+    /// Where the selected pattern plays in its source, while it plays.
+    fn playhead(&self, pv: &Preview) -> Option<u32> {
+        let shared = &self.data.shared;
+        let (bar, step) = (shared.bar.load(Ordering::Relaxed), shared.step.load(Ordering::Relaxed));
+        if bar == u32::MAX || step == u32::MAX {
+            return None;
+        }
+        let slot = PSlot::from_index(self.slot);
+        let mine = match self.playing_slot() {
+            Some((s, _)) => s == slot,
+            None => slot.variant == 0 && shared.letter.load(Ordering::Relaxed) == slot.letter.index() && self.params().form_source.value() == FormSource::Internal,
+        };
+        if !mine {
+            return None;
+        }
+        let t = bar as u64 * mesh_vst_core::TICKS_PER_BAR as u64 + step as u64 * mesh_vst_core::TICKS_PER_STEP as u64;
+        Some(pv.source.start + (t % pv.source.len.max(1) as u64) as u32)
     }
 
     fn settings_panel(&self) -> Element<'_, Message> {
@@ -1485,27 +1755,17 @@ fn small(s: &str) -> iced::widget::Text<'_> {
 
 /// Brightness a hit marker keeps per redraw (about a third of a second).
 const HIT_FADE: f32 = 0.9;
-/// Width of the slider handle (see [`slider_style`]).
-const HANDLE_W: f32 = 10.0;
 
 /// A knob slider; `hit` (position, brightness) marks where the last hit
 /// played it.
 fn knob(p: &MeshParams, k: Knob, hit: Option<(f32, f32)>) -> Element<'_, Message> {
     let param = k.param(p);
     let v = param.unmodulated_normalized_value();
-    let s = slider(0.0..=1.0, v, move |x| Message::Knob(k, x)).on_release(Message::KnobReleased(k)).step(0.001_f32).height(18).style(|_, _| slider_style());
-    // Always the same widgets, the marker hidden when no hit moved the knob:
-    // a slider that comes and goes in a stack loses its drag.
-    let marker = match hit {
-        Some((at, glow)) => HitMarker { at, glow, shown: true },
-        None => HitMarker { at: 0.0, glow: 0.0, shown: false },
-    };
-    let s: Element<Message> = iced::widget::stack![s, canvas_widget(marker).width(Length::Fill).height(18)].into();
     column![
-        row![text(param.name()).font(DATA_FONT).size(13).color(DIM), Space::new().width(Length::Fill), text(param.normalized_value_to_string(v, true)).font(DATA_FONT).size(13).color(INK)],
-        s,
+        row![text(param.name()).font(DATA_FONT).size(13).color(DIM), Space::new().width(Length::Fill), text(param.normalized_value_to_string(v, true)).font(DATA_FONT).size(13).color(ACCENT)],
+        canvas_widget(widgets::SegSlider { knob: k, value: v, hit }).width(Length::Fill).height(14),
     ]
-    .spacing(4)
+    .spacing(5)
     .into()
 }
 
@@ -1609,51 +1869,6 @@ fn pick_style() -> pick_list::Style {
         handle_color: DIM,
         background: Background::Color(BG),
         border: Border { color: EDGE, width: 1.0, radius: 0.0.into() },
-    }
-}
-
-fn slider_style() -> slider::Style {
-    slider::Style {
-        rail: slider::Rail { backgrounds: (Background::Color(ACCENT), Background::Color(LINE)), width: 4.0, border: border::rounded(0) },
-        handle: slider::Handle {
-            shape: slider::HandleShape::Rectangle { width: 10, border_radius: 0.0.into() },
-            background: Background::Color(INK),
-            border_width: 0.0,
-            border_color: INK,
-        },
-    }
-}
-
-/// The last hit's mark on a knob slider: a soft ink line where the hit
-/// played it, split red and blue at its edges like the field's points.
-struct HitMarker {
-    at: f32,
-    glow: f32,
-    shown: bool,
-}
-
-impl canvas::Program<Message> for HitMarker {
-    type State = ();
-
-    fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
-        if !self.shown {
-            return vec![frame.into_geometry()];
-        }
-        // The handle's centre travels HANDLE_W / 2 .. width − HANDLE_W / 2.
-        let x = HANDLE_W / 2.0 + self.at * (bounds.width - HANDLE_W);
-        let a = 0.1 + 0.25 * self.glow;
-        let h = bounds.height - 6.0;
-        let bar = |frame: &mut Frame, dx: f32, w: f32, color: Color| {
-            frame.fill_rectangle(Point::new(x + dx - w / 2.0, 3.0), Size::new(w, h), color);
-        };
-        // A blur: wide and faint to narrow and brighter.
-        for (w, k) in [(7.0, 0.15), (4.0, 0.3), (1.5, 0.6)] {
-            bar(&mut frame, 0.0, w, Color { a: a * k, ..INK });
-        }
-        bar(&mut frame, -1.5, 1.0, Color::from_rgba(0.95, 0.35, 0.32, a * 0.35));
-        bar(&mut frame, 1.5, 1.0, Color::from_rgba(0.35, 0.55, 0.98, a * 0.35));
-        vec![frame.into_geometry()]
     }
 }
 
@@ -1848,14 +2063,16 @@ impl Gui {
             crate::link::SIDECHAIN => HostItem::Sidechain,
             id => items.iter().find(|i| matches!(i, HostItem::Peer(p, _) if *p == id)).cloned().unwrap_or(HostItem::Peer(id, "host gone".into())),
         };
-        let list = pick_list(items, Some(selected), Message::Host).font(DATA_FONT).text_size(12).width(Length::Fill).style(|_, _| pick_style());
+        let list = pick_list(items, Some(selected), Message::Host).font(DATA_FONT).text_size(11).padding([2, 6]).width(Length::Fill).style(|_, _| pick_style());
+        // The amount: stacked on the host .. off (the middle) .. in its gaps.
+        let v = p.splice.unmodulated_normalized_value();
         column![
-            small("SPLICE · arrange around another lane"),
+            row![small("SPLICE"), Space::new().width(Length::Fill), text(p.splice.normalized_value_to_string(v, true)).font(DATA_FONT).size(11).color(ACCENT)],
             list,
-            knob(p, Knob::Splice, None),
+            canvas_widget(widgets::SegSlider { knob: Knob::Splice, value: v, hit: None }).width(Length::Fill).height(12),
             row![small("stack"), Space::new().width(Length::Fill), small("gaps")],
         ]
-        .spacing(6)
+        .spacing(4)
         .into()
     }
 }

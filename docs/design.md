@@ -786,6 +786,105 @@ drive external effects.
     filter bite, punch, release, attack) keep their mapping.
   - **Order:** the bass now runs Heat, then the Squash last, as the drums do (D53 had Heat
     last); the calibration follows.
+- **D60** **Patterns in the DAW, patterns in the plugin** (2026-10-24, user, after a research
+  into what MIDI and the hosts carry). The macro arrangement moves to the DAW, the patterns
+  stay in the plugin.
+  - **Slots.** A lane offers eight patterns, two per letter (A1, A2 .. D1, D2; `slots.rs`):
+    the second is another seed of the letter (another clip pick in clip mode). Each slot
+    plays its seeded pattern, a rerolled one (a per-slot seed), or the user's.
+  - **The DAW's form.** The **Form source** parameter (automatable) picks who plays the
+    form: the lane's own (INT) or the DAW's notes (EXT). In EXT a note on key 36 + slot
+    (C1 .. G1 in most DAWs) plays that slot from its start for as long as it is held, its
+    velocity the operator: 91–127 as is (a note the DAW draws at its default velocity plays
+    the plain pattern), 1–9 ′, 10–19 r, 20–29 i, 30–39 b, 40–49 v, 50–59 h, 60–69 x, 70–79 q,
+    80–90 a. One operator per note; the hosts cannot label velocity ranges (CLAP and VST3
+    name keys only), so the editor and the exported file carry the names. A note loops its
+    pattern's phrase (the seeded phrase or the user's window): a note-on does not say how
+    long it will be held, so no operator spans the note. EXT plays on F1, moved by the
+    **Transpose** parameter (semitones, ±24, automatable), which also moves the held note's
+    root in INT. In INT the form keeps its Phase setting (continuous by default).
+  - **Export.** `.mid ↓` writes the lane's own form over both passes as a type-0 Standard
+    MIDI File (a note per segment on its slot's key, its operator as velocity, a marker
+    naming it) to `~/Music/mesh vst/exports`, then switches to EXT, transposed to the root
+    heard. Dragging out of the plugin window is a TODO: baseview takes drops only.
+  - **The pattern editor.** The middle shows the visual or (EDIT) a slot's whole source: the
+    clip, or four bars of the generator's skeleton and pitches (R1, R8, before the knobs'
+    phases), the bass as a piano roll (rows in semitones over the root), the drums as a hit
+    grid (rows the sample targets, by voice). The window that plays is bracketed and dragged;
+    notes are added, moved, lengthened and deleted on a grid of 1/4 .. 1/32, dotted or
+    triplet. The first edit turns the seed's source into the user's pattern, which then is
+    the skeleton (R1, its pitches fixed like a clip's), so every phase after it still
+    applies: speed, recursion, Density, Length, Groove, the operators, expression. An edit
+    of A1 shows in every operator of A1; reroll and reset per slot.
+  - **Undo** covers everything that plays (D26): the parameters, the pins, the phrase pins,
+    the Splice host, the mod-out map and the patterns, and it lasts while the editor is
+    closed.
+  - **Look.** Chamfered chips for buttons, segmented knob bars, a transpose box (wheel or
+    drag, a double click resets), the unison as one pad of three drag areas over its voices
+    drawn as lines (their number, jagged and blurred by the detune, apart by the width), the
+    form strip at the top of the footer (the form with its playhead, or in EXT the slot the
+    DAW plays).
+- **D61** **Cycle forms** (2026-10-26, user: "a question answer system like 2 beats A 6 beats
+  B or 12 beats A then 4 beats B"). It replaces how D48 lays out a pass. D48 drew phrase
+  lengths again per section, let plans place letters freely and kept B's length at 1×, 2× or
+  ½× A's, so the A blocks came out long and short at random.
+  - **Cycle.** A and B repeat as one cycle: A+B, or A+B+A (a letter twice splits its beats
+    and goes on in its phrase). The cycle is 8, 16, 32 or 64 beats, so it fills 16 bars, and
+    Shape tilts the length. The seed picks A's share: 1/4, 3/8, 1/2, 5/8 or 3/4 (2+6,
+    3+5, 12+4). Contrast moved it at first; the user did not like that (2026-10-26).
+  - **Drums.** Cycles of 32 or 64 beats, mostly A alone; at 30 % a cycle ends on a short
+    B (an eighth of it).
+  - **Motive.** A motive is its cycle repeated over 16, 32 or 64 bars, and the seed picks
+    the length. A 64-bar pass plays two motives, X and Y: 16 bars as X Y X Y or X X Y Y,
+    32 bars as X Y, 64 bars as X, with Y all through the second pass. Y is another motive:
+    the letters' second patterns (A2, B2, D60, marked `"` in a form: `A"3`), its own split
+    or X's flipped, the plan's Y operators, and the lane's other sound by Contrast.
+  - **Plans** are characters: each picks the cycle shapes and how Y differs from X (the
+    breakdown's Y plays half time, the switch-up's re-cuts, the space's truncates). X keeps
+    to its `?` slots.
+  - **Seams.** C, a short fill of up to 4 beats, ends each motive. D, up to 8 beats, ends
+    the pass, each drawn from its own pool. A 16-bar seam inside a motive fills rarely and
+    for at most 2 beats. The extra fills at 4-bar seams stay.
+  - **Turnarounds.** The last bar of the main part before a motive's or the pass's seam
+    plays an operator (x p F t u r j K on the bass, x F j z on the drums) at 50 .. 95 % by
+    Variation, an inner seam at half; the pass's end now and then a push on top. The fill
+    seed picks it per seam and pass.
+  - **Second pass.** It draws its motives freely (again on a broken rule), then its recipe
+    applies.
+  - **One phrase per letter** and pattern for the whole form (`arrange::letter_phrase`; the
+    DAW's slots loop the same one).
+  - **Changes wait.** A spec change (a Contrast, Variation or Shape band) builds the new
+    form, and the player switches to it when the next 16-bar section starts. A preview
+    switches at once.
+  - **Strip.** The form strip ticks each cycle's start.
+  - **Level map** (`loader::level_gains`): near a stream's end a position is rated by what
+    is left, not by a window wrapped into the start. Contrast's Morph had put B's notes in a
+    library mudpie's faded tail, rated loud by the start, and B's bars, now whole, were 25 dB
+    down.
+  - **Truncation** leaves at most 2 beats of rest: a share of a long cycle part silenced
+    bars.
+  - The 4-bar repetition of the bass forms rose from about 0.70 to 0.80 (median of 30
+    seeds, test bound now 0.85; the references measure 0.33 .. 0.63).
+- **D62** **Listening round** (2026-10-26, user).
+  - **Squash** at full kept too little sub and low: on a stab chord the sub fell 3.0 dB and
+    the low 2.8, while the highs rose 7.5. The mids and highs keep their strong settings
+    (a first try trimmed them; the user wanted only the bass stronger). The sub now
+    compresses at 2.5:1 from −20 dB and the low at 5:1 from −26, each with +1 dB make-up.
+    The mudpie's level match hears only the bands from the mids up, so the sub and low add
+    on top; the drums' match still hears every band. The mudpie also comes out 3 dB louder
+    at full (`squash::lift_db`, scaled by the amount), and the bass calibration keeps that
+    lift. At full against the input: sub +3.6, low +2.1, mids +0.5, highs +8.0 dB. The
+    drums keep their level.
+  - **Shape's bottom** (user: 0 % too short, 40 % right). The Length at Shape 0 is 0.43,
+    where 40 % was; the middle and the top stay.
+  - **Contrast mirrors the Shape.** B's Length and stab share go towards and through the
+    centre: at full Contrast to their mirror image (stabby A against sustained B at Shape 0,
+    the other way at the top), at least half the range from the centre. This replaces
+    D49's "at a knob's end B moves inward and less" for these two.
+  - **Stab decay.** At Shape 0 the stabs decay twice as long as designed, falling to the
+    designed decay at the top (`STAB_DECAY_STRETCH`).
+  - **B's identity.** The drums' B and D play another style than A and C (seeded), at
+    any Contrast. That breaks D49's "at 0 B plays A's settings" for the style alone.
 - **Cost** (2026-10-23, clap-validator's parameter fuzz ran 48 s against its 45 s limit):
   the multiband distortion measures a pass's makeup again only when its drive moves 0.1 dB,
   the Squash makes its band settings only when the amount or the tempo changes, and the
@@ -962,6 +1061,11 @@ drive external effects.
 
   Each needs kick, snare, hat and ghost level maps in `generator/drums.rs` and a name in
   `DEFAULT_ARCHETYPE_ORDER`. The Style parameter then lists it.
+- Drag the exported form (D60) out of the editor into the DAW: baseview has no drag source;
+  it needs a drag per platform (XDND, OLE, NSDraggingSession).
+- Name the slot keys in the DAW's piano roll (D60): CLAP's note-name extension and VST3's
+  pitch names, which nice-plug does not offer yet (an upstream change, not a vendored copy);
+  then check which hosts show them (Bitwig, Reaper).
 - Slicing breaks on detected onsets (D29).
 - Pitching tonal drums to the key (D7).
 - Velocity as timbre (R3).
@@ -993,12 +1097,12 @@ A ninth, stepped and automatable parameter, **Style** (drums), picks the rhythm 
 
 The **settings panel** holds values that are seeded where sensible, saved with the project, and
 not knobs: Rate, the Bass source (D50, next to Rate), Phrase, Phase, Scale, Bend range, Gain, and the mod-out assignment and
-meters. The form's three seeds (D48) sit in the left column. Every parameter, the seeds and
+meters. **Form source** (INT, EXT) and **Transpose** (D60) sit in the right column and the top bar. The form's three seeds (D48) sit in the left column. Every parameter, the seeds and
 settings included, is automatable (2026-10-21).
 
 
 **Unison (Bass only, D38).** Each note plays a seeded number of detuned copies of the mudpie
-voice. The footer's bottom-right widget sets **Voices** (maximum, 1–8), **Detune** (cents) and
+voice. The unison pad at the right column's bottom (D60; the footer before) sets **Voices** (maximum, 1–8), **Detune** (cents) and
 **Width** (stereo spread of the copies, 0 = mono, as for a reese): Detune and Width are the
 centres each note draws its own value around, in a seeded range that Variation widens (the
 per-note moves of Shape, Morph, Spread and Slide scale 0.05 to 1 over Variation, on a curve,

@@ -69,8 +69,8 @@ const MUDPIE: Voicing = Voicing {
     },
     strong: Setting {
         bands: [
-            band((-23.0, 5.0), (-80.0, 1.0), note(1.0 / 64.0), note(1.0 / 8.0), -1.5),
-            band((-28.0, 8.0), (-40.0, 3.5), note(1.0 / 128.0), note(1.0 / 16.0), -1.0),
+            band((-20.0, 2.5), (-80.0, 1.0), note(1.0 / 64.0), note(1.0 / 8.0), 1.0),
+            band((-26.0, 5.0), (-40.0, 3.5), note(1.0 / 128.0), note(1.0 / 16.0), 1.0),
             band((-31.0, 5.0), (-40.0, 4.0), note(1.0 / 256.0), note(1.0 / 16.0), 2.5),
             band((-34.0, 8.0), (-38.0, 8.0), note(1.0 / 512.0), note(3.0 / 64.0), 3.5),
             band((-34.0, 8.0), (-40.0, 8.0), note(1.0 / 1024.0), note(1.0 / 32.0), 3.5),
@@ -119,6 +119,18 @@ const LEVEL_RANGE: (f32, f32) = (0.25, 4.0);
 /// squash lifts does not turn the lows and mids down.
 const LEVEL_HIGH: f32 = 0.0;
 const FLOOR: f32 = 1e-6;
+/// The first band the mudpie's level match hears (the mids: its sub and
+/// low add on top); the drums' hears them all.
+const MATCH_FROM: usize = 2;
+// MUSICAL: tune by ear (user, 2026-10-26: at full the Squash sounded too
+// quiet). How much louder the mudpie comes out at full Squash than in (the
+// bass calibration leaves it: [`lift_db`]); the drums keep their level.
+const MUDPIE_LIFT_DB: f32 = 3.0;
+
+/// How much louder than its input the Squash plays at `amount` (dB).
+pub fn lift_db(amount: f32, drums: bool) -> f32 {
+    if drums { 0.0 } else { MUDPIE_LIFT_DB * amount.clamp(0.0, 1.0) }
+}
 
 #[inline]
 fn flush(v: f32) -> f32 {
@@ -215,6 +227,8 @@ pub struct Squash {
     /// The amount, stretch and voicing the bands' settings were made for
     /// (made again only when these change).
     set_for: Option<(f32, f32, bool)>,
+    /// The output lift ([`lift_db`]), linear.
+    lift: f32,
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -239,11 +253,12 @@ impl Squash {
             smooth: coeff(GAIN_SMOOTH_SECS, sr),
             level: LevelMatch::new(sr, LEVEL_RANGE, LEVEL_HIGH),
             set_for: None,
+            lift: 1.0,
         }
     }
 
     /// The bands' settings at `t` 0 (mild) .. 1 (strong) of voicing `v`.
-    fn set(&mut self, v: &Voicing, t: f32, stretch: f32) {
+    fn set(&mut self, v: &Voicing, t: f32, stretch: f32, drums: bool) {
         for (st, (m, s)) in self.bands.iter_mut().zip(v.mild.bands.iter().zip(v.strong.bands.iter())) {
             st.down_t = lerp(m.down.0, s.down.0, t);
             st.down_slope = 1.0 - 1.0 / lerp(m.down.1, s.down.1, t).max(1.0);
@@ -254,6 +269,7 @@ impl Squash {
             st.makeup_db = lerp(m.gain, s.gain, t);
         }
         self.up_max = lerp(v.mild.up_max, v.strong.up_max, t);
+        self.lift = 10f32.powf(lift_db(t, drums) / 20.0);
     }
 
     /// Squash `buf` in place at `amount` 0 (mild) .. 1 (strong), voiced for
@@ -275,7 +291,7 @@ impl Squash {
         let t = amount.clamp(0.0, 1.0);
         if self.set_for != Some((t, stretch, drums)) {
             self.set_for = Some((t, stretch, drums));
-            self.set(v, t, stretch);
+            self.set(v, t, stretch, drums);
         }
         for s in buf.iter_mut() {
             let x = [s.left, s.right];
@@ -296,7 +312,12 @@ impl Squash {
                 }
             }
             let mut y = [0.0f32; 2];
-            for (p, b) in parts.iter().zip(self.bands.iter_mut()) {
+            // The level match hears the bands over the lows only, so the
+            // sub and low the squash keeps add to the level (user,
+            // 2026-10-26: the bass too weak, the rest as it was).
+            let (mut xu, mut yu) = ([0.0f32; 2], [0.0f32; 2]);
+            let match_from = if drums { 0 } else { MATCH_FROM };
+            for (i, (p, b)) in parts.iter().zip(self.bands.iter_mut()).enumerate() {
                 let peak = p[0].abs().max(p[1].abs());
                 let k = if peak > b.env { b.attack } else { b.release };
                 b.env = flush(k * b.env + (1.0 - k) * peak);
@@ -307,8 +328,12 @@ impl Squash {
                 let g = 10f32.powf((b.gain_db + b.makeup_db) / 20.0);
                 y[0] += p[0] * g;
                 y[1] += p[1] * g;
+                if i >= match_from {
+                    xu = [xu[0] + p[0], xu[1] + p[1]];
+                    yu = [yu[0] + p[0] * g, yu[1] + p[1] * g];
+                }
             }
-            let g = self.level.gain(x, y);
+            let g = self.level.gain(xu, yu) * self.lift;
             *s = StereoSample { left: flush(y[0] * g), right: flush(y[1] * g) };
         }
     }
@@ -368,13 +393,64 @@ mod tests {
     #[test]
     fn keeps_the_loudness_and_stays_finite() {
         let rms = |b: &[StereoSample]| (b[b.len() / 2..].iter().map(|s| s.left * s.left).sum::<f32>() / (b.len() / 2) as f32).sqrt();
-        let dry = rms(&bursts(300.0, 3.0));
+        // In the mids, which the level match hears (the lows add on top).
+        let dry = rms(&bursts(1000.0, 3.0));
         for drums in [false, true] {
             for amount in [0.0, 0.5, 1.0] {
-                let wet = run(amount, drums, 300.0);
+                let wet = run(amount, drums, 1000.0);
                 assert!(wet.iter().all(|s| s.left.is_finite()));
-                let db = 20.0 * (rms(&wet) / dry).log10();
+                let db = 20.0 * (rms(&wet) / dry).log10() - lift_db(amount, drums);
                 assert!(db.abs() < 2.5, "drums {drums} at {amount}: {db} dB");
+            }
+        }
+    }
+
+    /// A bass stab chord: sub, low, mid and high partials under a decaying
+    /// envelope every 8th at 172 bpm.
+    fn stabs(secs: f32) -> Vec<StereoSample> {
+        (0..(secs * SR) as usize)
+            .map(|i| {
+                let t = i as f32 / SR;
+                let env = (-(t % 0.174) * 14.0).exp();
+                let v = env * PARTIALS.iter().map(|(hz, a)| a * (std::f32::consts::TAU * hz * t).sin()).sum::<f32>();
+                StereoSample { left: v, right: v }
+            })
+            .collect()
+    }
+    const PARTIALS: [(f32, f32); 4] = [(45.0, 0.5), (130.0, 0.35), (700.0, 0.2), (3000.0, 0.08)];
+
+    /// Each partial's level in dB over the last two seconds.
+    fn partials(b: &[StereoSample]) -> [f32; 4] {
+        let tail = &b[b.len() - 2 * SR as usize..];
+        PARTIALS.map(|(hz, _)| {
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (i, s) in tail.iter().enumerate() {
+                let ph = std::f64::consts::TAU * hz as f64 * i as f64 / SR as f64;
+                re += s.left as f64 * ph.cos();
+                im += s.left as f64 * ph.sin();
+            }
+            (20.0 * ((re * re + im * im).sqrt() / tail.len() as f64).log10()) as f32
+        })
+    }
+
+    #[test]
+    fn the_mudpie_keeps_its_sub_and_lows_when_squashed() {
+        // User, 2026-10-26: at full it lost far too much bass and sub.
+        let dry = partials(&stabs(4.0));
+        for amount in [0.0, 0.5, 1.0] {
+            let mut b = stabs(4.0);
+            let mut s = Squash::new(SR);
+            for chunk in b.chunks_mut(256) {
+                s.process(chunk, amount, false, 1.0);
+            }
+            let wet = partials(&b);
+            // Against the input, the lift included: the sub and low stay
+            // up, the mids and highs as the strong end made them (user,
+            // 2026-10-26: only the bass was too weak).
+            let d: Vec<f32> = wet.iter().zip(dry).map(|(w, d)| w - d).collect();
+            assert!(d[0] > -1.0 && d[1] > -1.0 && d[2] > -1.0, "{amount}: {d:?}");
+            if amount == 1.0 {
+                assert!(d[0] > 1.0 && d[1] > 1.0 && d[3] > 6.0, "{d:?}");
             }
         }
     }

@@ -68,7 +68,9 @@ pub fn bass_trim(
     if !post.is_finite() {
         return gain;
     }
-    let db = (20.0 * (gain as f64).log10() + target_lufs(Role::Bass) - post).clamp(TRIM_RANGE_DB.0, TRIM_RANGE_DB.1);
+    // The Squash's lift stays: it plays louder by design.
+    let target = target_lufs(Role::Bass) + crate::squash::lift_db(settings.squash, false) as f64;
+    let db = (20.0 * (gain as f64).log10() + target - post).clamp(TRIM_RANGE_DB.0, TRIM_RANGE_DB.1);
     10f64.powf(db / 20.0) as f32
 }
 
@@ -160,7 +162,7 @@ mod tests {
         let settings = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 3, pattern_seed: 3, form: None, rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: true, squash: 1.0 };
         let gain = bass_trim(|| PatternLane::bass(3, 3), pie(0.6), mudpie_params(), &settings, 48_000, 16);
         let post = render_lufs(PatternLane::bass(3, 3), pie(0.6), LaneSamplerParams { gain, ..mudpie_params() }, &settings, None, 48_000, 16, true);
-        assert!((post - target_lufs(Role::Bass)).abs() < 0.5, "{post}");
+        assert!((post - target_lufs(Role::Bass) - crate::squash::lift_db(1.0, false) as f64).abs() < 0.5, "{post}");
     }
 
     #[test]

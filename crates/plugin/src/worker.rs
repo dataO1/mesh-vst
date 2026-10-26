@@ -27,6 +27,7 @@ use mesh_vst_core::library::Library;
 use mesh_vst_core::loader::{self, DrumPicks, Slot};
 use mesh_vst_core::pattern::PatternLane;
 use mesh_vst_core::sampler::{SampleBank, SampleData};
+use mesh_vst_core::slots::PatternBook;
 use serde::{Deserialize, Serialize};
 
 use crate::builtin;
@@ -53,11 +54,14 @@ pub enum Ready {
     Bass { bank: Shared<SampleBank>, gain: f32, settings: LaneSettings, generation: u32 },
     /// A file to preview, on target 0 (D35).
     Audition { bank: Shared<SampleBank> },
+    /// The user's patterns changed (D60): both modes' books.
+    Patterns { drums: Arc<PatternBook>, bass: Arc<PatternBook> },
 }
 
 /// What the audio thread hands back to be dropped here.
 pub enum Garbage {
     Lane(Box<PatternLane>),
+    Book(Arc<PatternBook>),
 }
 
 /// A file the project played: its path below the library folder and its hash.
@@ -136,18 +140,28 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn spawn(sample_rate: u32, state: Arc<Mutex<KitState>>, ui: Arc<crate::ui::UiShared>) -> Self {
+    pub fn spawn(sample_rate: u32, state: Arc<Mutex<KitState>>, ui: Arc<crate::ui::UiShared>, patterns: Arc<Mutex<crate::patterns::PatternBooks>>) -> Self {
         let (requests, mut req_rx) = rtrb::RingBuffer::new(16);
         let (mut ready_tx, ready) = rtrb::RingBuffer::new(4);
-        let (garbage, mut garbage_rx) = rtrb::RingBuffer::new(16);
+        let (garbage, mut garbage_rx) = rtrb::RingBuffer::new(64);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = stop.clone();
         let thread = std::thread::Builder::new()
             .name("mesh-vst-loader".into())
             .spawn(move || {
                 let mut job = Job::new(sample_rate, state);
+                // The books last handed over (none yet: the first poll sends them).
+                let mut sent: Option<crate::patterns::PatternBooks> = None;
                 while !stop_thread.load(Ordering::Acquire) {
                     while garbage_rx.pop().is_ok() {}
+                    // The patterns, when the editor or a loaded project changed them.
+                    let books = patterns.lock().map(|b| b.clone()).ok();
+                    if let Some(b) = books.filter(|b| sent.as_ref() != Some(b)) {
+                        let ready = Ready::Patterns { drums: Arc::new(b.drums.clone()), bass: Arc::new(b.bass.clone()) };
+                        if ready_tx.push(ready).is_ok() {
+                            sent = Some(b);
+                        }
+                    }
                     let audition = ui.audition.lock().ok().and_then(|mut a| a.take());
                     if let Some(path) = audition {
                         let root = 60;
@@ -164,6 +178,12 @@ impl Worker {
                     }
                     if let Some(r) = latest {
                         if let Some(done) = job.load(r) {
+                            // The editor's drum rows follow the kit's layout.
+                            if let Ready::Drums { lane, .. } = &done {
+                                if let Ok(mut l) = ui.drum_layout.lock() {
+                                    *l = Some(*lane.layout());
+                                }
+                            }
                             // The audio thread drains this every block; wait for room.
                             let mut done = Some(done);
                             while let Some(d) = done.take() {

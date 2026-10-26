@@ -16,9 +16,10 @@ use crate::sampler::MORPH_REGION;
 use crate::arrange::{FormBuilder, FormSpec};
 use crate::contrast;
 use crate::form::{
-    form_chord, letter_seed, prime_from, prime_seed, splice_from, Feel, Form, FormPos, Letter, Play, SeedClass, LETTER_OFFSETS,
-    NOTE_JITTER_SHARE,
+    form_chord, letter_seed, prime_from, prime_seed, splice_from, Feel, Form, FormPos, Letter, Play, Segment, SeedClass,
+    LETTER_OFFSETS, NOTE_JITTER_SHARE,
 };
+use crate::slots::{PatternBook, Slot, UserPattern, VelOp};
 use crate::generator::bass::{self, BassGenerator, BassRules};
 use crate::generator::blocks::{defaults_from_spec, patterned, NoteShape};
 use crate::generator::drums::{self, DrumGenerator, DrumRules};
@@ -309,6 +310,19 @@ pub struct PatternLane {
     pub follow: Option<FormFollow>,
     /// Generator parameters, indexed like [`LaneGenerator::param_names`].
     pub params: [f32; MAX_GEN_PARAMS],
+    /// The patterns the user edited (D60), and a count of the books set
+    /// (the span cache keys on it).
+    patterns: std::sync::Arc<PatternBook>,
+    patterns_version: u64,
+    /// A DAW note's pattern (D60): its slot and operator, and the form of
+    /// it the lane plays instead of its own while it is set.
+    ext: Option<(Slot, VelOp)>,
+    ext_form: Form,
+    /// Hold a new form until the next 16-bar section starts (D61, the
+    /// player sets it): the spec waiting and the form it built.
+    pub defer_forms: bool,
+    pending: Option<FormSpec>,
+    next_form: Form,
 }
 
 impl PatternLane {
@@ -365,7 +379,75 @@ impl PatternLane {
             host_line: crate::splice::HostLine::default(),
             follow: None,
             params,
+            patterns: std::sync::Arc::new(PatternBook::default()),
+            patterns_version: 0,
+            ext: None,
+            ext_form: Form::generated(),
+            defer_forms: false,
+            pending: None,
+            next_form: Form::generated(),
         }
+    }
+
+    /// The user's patterns (D60). Returns the book it played before, for
+    /// the caller to drop off the audio thread. RT-safe.
+    pub fn set_patterns(&mut self, book: std::sync::Arc<PatternBook>) -> std::sync::Arc<PatternBook> {
+        self.patterns_version = self.patterns_version.wrapping_add(1);
+        std::mem::replace(&mut self.patterns, book)
+    }
+
+    pub fn patterns(&self) -> &PatternBook {
+        &self.patterns
+    }
+
+    /// The pattern the user edited for `pos`'s slot, if any.
+    fn user_of(&self, pos: &FormPos) -> Option<&UserPattern> {
+        self.patterns.get(Slot { letter: pos.letter, variant: pos.variant })
+    }
+
+    /// The seed of `pos`'s pattern: its letter's, or its second's (D60).
+    fn seed_of(&self, lane: u8, pos: &FormPos) -> u32 {
+        self.patterns.seed_of(Slot { letter: pos.letter, variant: pos.variant }, letter_seed(self.pattern_seed, lane, pos.letter), lane)
+    }
+
+    /// Play slot `slot`'s pattern with `op` from bar 0, looping, instead of
+    /// the form (a DAW note, D60); `None` goes back to the form. The pattern
+    /// loops its seeded phrase, or the window of the user's pattern. RT-safe.
+    pub fn play_slot(&mut self, play: Option<(Slot, VelOp)>) {
+        self.ext = play;
+        let Some((slot, op)) = play else { return };
+        let seg = self.slot_segment(slot, op);
+        self.ext_form.set_one(seg);
+    }
+
+    /// The DAW note playing, if any.
+    pub fn playing_slot(&self) -> Option<(Slot, VelOp)> {
+        self.ext
+    }
+
+    /// The segment slot `slot` plays as (one loop of its phrase) with `op`.
+    pub fn slot_segment(&self, slot: Slot, op: VelOp) -> Segment {
+        let (phrase, offset) = self.slot_phrase(slot);
+        let mut seg = Segment { variant: slot.variant, phrase, offset, ..Segment::new(slot.letter, phrase as u16, 0) };
+        match op {
+            VelOp::Plain => {}
+            VelOp::Prime => seg.prime = true,
+            VelOp::Op(o) => {
+                seg.ops.push(o);
+            }
+        }
+        seg
+    }
+
+    /// Slot `slot`'s phrase in beats and its offset: the user's window, else
+    /// the phrase its letter plays in the lane's form (one bar without one).
+    pub fn slot_phrase(&self, slot: Slot) -> (u8, u8) {
+        if let Some(u) = self.patterns.get(slot) {
+            return (u.window_beats().clamp(1, u8::MAX as u32) as u8, 0);
+        }
+        let Some(spec) = self.spec else { return (crate::form::BEATS_PER_BAR as u8, 0) };
+        let p = crate::arrange::letter_phrase(&spec, slot.letter, slot.variant);
+        (p.beats.max(1), p.offset)
     }
 
     pub fn role(&self) -> Role {
@@ -411,14 +493,32 @@ impl PatternLane {
     /// Play the form `spec` builds (D48), unless it plays it already.
     /// RT-safe.
     pub fn set_form_spec(&mut self, spec: FormSpec) {
-        if self.spec != Some(spec) {
+        if self.spec == Some(spec) {
+            self.pending = None;
+        } else if !self.defer_forms || self.spec.is_none() {
             self.builder.build(&spec, &mut self.form);
             self.spec = Some(spec);
+            self.pending = None;
+        } else if self.pending != Some(spec) {
+            self.builder.build(&spec, &mut self.next_form);
+            self.pending = Some(spec);
         }
+    }
+
+    /// Play the form held back ([`Self::defer_forms`]) when pattern bar
+    /// `bar` starts a 16-bar section, or `now`; whether it did. RT-safe.
+    pub fn advance_form(&mut self, bar: u64, now: bool) -> bool {
+        if self.pending.is_none() || !(now || bar % 16 == 0) {
+            return false;
+        }
+        std::mem::swap(&mut self.form, &mut self.next_form);
+        self.spec = self.pending.take();
+        true
     }
 
     /// Play one bar of A forever (a style without forms). RT-safe.
     pub fn clear_form(&mut self) {
+        self.pending = None;
         if self.spec.is_some() {
             self.form.set_single();
             self.spec = None;
@@ -454,11 +554,12 @@ impl PatternLane {
         let lane = lane_index(self.role);
         // Splice: the host's form position, so the blocks change with its.
         let (parts, n_parts) = match self.follow {
+            _ if self.ext.is_some() => self.ext_form.parts(bar, self.pattern_seed, lane),
             Some(f) if self.derived_from.is_some_and(|d| d.0 == f.spec) => self.derived.parts(f.bar, f.spec.seeds.fill, lane),
             _ => self.form.parts(bar, self.pattern_seed, lane),
         };
         let pos = parts[0].pos;
-        let seed = letter_seed(self.pattern_seed, lane, pos.letter);
+        let seed = self.seed_of(lane, &pos);
         let mut harmony = HarmonyCtx { key, chord_degree: 0, progression: 0, mode: self.mode };
         if self.role != Role::Drums {
             harmony.chord_degree = form_chord(self.pattern_seed, lane, &pos, seed, key.minor);
@@ -503,69 +604,11 @@ impl PatternLane {
             out.clear();
             return 0;
         }
-        // R0 Resolve: the letter's seeds and its own knob values.
-        let seed = letter_seed(self.pattern_seed, c.lane, pos.letter);
-        let class = pos.letter.class();
+        // R0 Resolve.
+        let r = self.resolve(c, pos);
+        let bar_ctx = self.bar_ctx(c, pos, &r);
         let names = self.generator.param_names();
-        // Variation widens how far notes move the parameters; Contrast how
-        // far B moves from A, and C and D from them (D49).
-        let reach = variation_reach(names, &self.params);
-        let mut params = contrast::letter_params(names, &self.params, self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast);
-        // The block's own Permute and (bass) Morph. A Permute at 0 stays off.
-        let permute_amount = contrast::knob_value("permute", self.permute, self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast);
-        let variation = names.iter().position(|n| *n == "variation").map_or(0.0, |i| params[i]);
-        let block_morph = contrast::morph_move(self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast) + letter_morph(self.pattern_seed, c.lane, pos.letter, variation);
-        // Drums: the Swing knob swings every off 16th of the bar (breaks,
-        // ghosts, percussion and tops too), on top of the letter's feel, so
-        // the generator itself plays straight.
-        let knob_swing = match names.iter().position(|n| *n == "swing") {
-            Some(i) if self.role == Role::Drums => std::mem::take(&mut params[i]),
-            _ => 0.0,
-        };
-        // The drum lane fills the last bar of a filler segment, and the last
-        // bar of every phrase (D25).
-        let phrase_end = self.phrase_bars > 1 && (c.bar + 1) % self.phrase_bars as u64 == 0;
-        let fill = self.role == Role::Drums && ((class == SeedClass::Filler && pos.last_of_segment) || phrase_end);
-        let no_mask = [0u8; STEPS_PER_BAR];
-        let sound_seed = match class {
-            SeedClass::Main => self.sound_seed,
-            SeedClass::Filler => rng::hash(self.sound_seed, c.lane, pos.letter.index(), 0, S_SOUND) as u32,
-        };
-        let exponent = self.rate + self.letter_rate(c.lane, pos.letter);
-        let bar_ctx = BarCtx {
-            style_seed: self.pattern_seed,
-            seed,
-            sound_seed,
-            class,
-            lane: c.lane,
-            role: self.role,
-            bar_in_phrase: c.bar_in_phrase,
-            phrase: c.phrase,
-            fill,
-            half_time: false,
-            params: &params,
-            harmony: c.harmony,
-            drum_mask: &no_mask,
-            jitter: {
-                let mut j = note_jitter(names, reach);
-                if let Some(i) = names.iter().position(|n| *n == "length") {
-                    j[i] = shape_note(names, &params, self.pattern_seed, c.lane);
-                }
-                j
-            },
-            bass_onsets: 0,
-            bass_phrase: [0; 4],
-            drum_fill: false,
-            focus: self.focus,
-            focus_shift: focus_shift(names, &self.focus),
-            // The host's line as the bar will play after the speed (half
-            // speed plays a part of it stretched).
-            host: if self.role == Role::Drums { self.host_line } else { speed::host_in_render(&self.host_line, exponent, c.bar) },
-            letter: pos.letter.index(),
-            material_bar: (c.bar % (u16::MAX as u64 + 1)) as u16,
-        };
-        let groove = self.groove_of(&params, knob_swing);
-        let front = Front { exponent, permute: permute_amount, groove, variation, swing: knob_swing };
+        let (seed, class, reach, params, block_morph, knob_swing, phrase_end, front) = (r.seed, r.class, r.reach, r.params, r.block_morph, r.knob_swing, r.phrase_end, r.front);
         let voices = self.generator.voice_mask(&bar_ctx);
         let chain = self.resolve_ops(pos, form_seed, c.lane);
         // A phrase loops from its own start (D48); the drums' phrase-end
@@ -588,7 +631,7 @@ impl PatternLane {
                 reach,
                 swing: (Feel::of(seed, c.lane, class).swing + knob_swing).min(1.0),
                 morph: if self.role == Role::Drums { 0.0 } else { block_morph },
-                permute: permute_amount,
+                permute: front.permute,
             };
         }
         // R10 Splice.
@@ -660,6 +703,12 @@ impl PatternLane {
             work.a.sort();
             splice_from(out, &work.a, prime_from(self.op_amount()));
         }
+        if f.source {
+            // R8 only: the pitches of the skeleton as written.
+            self.generator.melody(ctx, out);
+            out.sort();
+            return;
+        }
         permute(out, f.permute, ctx.seed, ctx.lane);
         // R3 Speed.
         if pitched {
@@ -715,9 +764,155 @@ struct Front {
     groove: f32,
     variation: f32,
     swing: f32,
+    /// The pattern's source only (D60): R1, A′ and R8, none of the knobs'
+    /// phases (speed, recursion, Density, Length, Groove).
+    source: bool,
+}
+
+// The editor's source of a generated pattern (D60): its first bars.
+const SOURCE_BARS: u32 = 4;
+
+/// No drum lane's onsets (the drums and the bass render without one).
+const NO_MASK: [u8; STEPS_PER_BAR] = [0; STEPS_PER_BAR];
+
+/// R0 Resolve (D57) of one part: its seeds, the user's pattern and its own
+/// knob values.
+struct Resolved<'a> {
+    seed: u32,
+    sound_seed: u32,
+    user: Option<&'a UserPattern>,
+    class: SeedClass,
+    params: [f32; MAX_GEN_PARAMS],
+    jitter: [f32; MAX_GEN_PARAMS],
+    /// How far Variation lets letters and notes move the parameters.
+    reach: f32,
+    /// Bass: the block's Morph move, in knob values.
+    block_morph: f32,
+    /// Drums: the Swing knob, taken out of the parameters.
+    knob_swing: f32,
+    /// The bar ends a phrase (the drums fill it, D25); the drums fill it.
+    phrase_end: bool,
+    fill: bool,
+    front: Front,
 }
 
 impl PatternLane {
+    /// R0 Resolve: part `pos` of bar `c`, its seeds and knob values.
+    fn resolve(&self, c: &PartCtx, pos: &FormPos) -> Resolved<'_> {
+        let seed = self.seed_of(c.lane, pos);
+        let class = pos.letter.class();
+        let names = self.generator.param_names();
+        // Variation widens how far notes move the parameters; Contrast how
+        // far B moves from A, and C and D from them (D49).
+        let reach = variation_reach(names, &self.params);
+        let mut params = contrast::letter_params(names, &self.params, self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast);
+        // The drums' B plays another style (user, 2026-10-26).
+        if let Some(i) = names.iter().position(|n| *n == "style") {
+            params[i] = contrast::letter_style(params[i], self.pattern_seed, c.lane, pos.letter);
+        }
+        // The block's own Permute and (bass) Morph. A Permute at 0 stays off.
+        let permute = contrast::knob_value("permute", self.permute, self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast);
+        let variation = names.iter().position(|n| *n == "variation").map_or(0.0, |i| params[i]);
+        let block_morph = contrast::morph_move(self.pattern_seed, c.lane, pos.letter, pos.second, self.contrast) + letter_morph(self.pattern_seed, c.lane, pos.letter, variation);
+        // Drums: the Swing knob swings every off 16th of the bar (breaks,
+        // ghosts, percussion and tops too), on top of the letter's feel, so
+        // the generator itself plays straight.
+        let knob_swing = match names.iter().position(|n| *n == "swing") {
+            Some(i) if self.role == Role::Drums => std::mem::take(&mut params[i]),
+            _ => 0.0,
+        };
+        // The drum lane fills the last bar of a filler segment, and the last
+        // bar of every phrase (D25).
+        let phrase_end = self.phrase_bars > 1 && (c.bar + 1) % self.phrase_bars as u64 == 0;
+        let fill = self.role == Role::Drums && ((class == SeedClass::Filler && pos.last_of_segment) || phrase_end);
+        let sound_seed = match class {
+            SeedClass::Main => self.sound_seed,
+            SeedClass::Filler => rng::hash(self.sound_seed, c.lane, pos.letter.index(), 0, S_SOUND) as u32,
+        };
+        let mut jitter = note_jitter(names, reach);
+        if let Some(i) = names.iter().position(|n| *n == "length") {
+            jitter[i] = shape_note(names, &params, self.pattern_seed, c.lane);
+        }
+        let exponent = self.rate + self.letter_rate(c.lane, pos.letter);
+        let groove = self.groove_of(&params, knob_swing);
+        let front = Front { exponent, permute, groove, variation, swing: knob_swing, source: false };
+        Resolved { seed, sound_seed, user: self.user_of(pos), class, params, jitter, reach, block_morph, knob_swing, phrase_end, fill, front }
+    }
+
+    /// The generator's context of part `pos` of bar `c`, resolved as `r`.
+    fn bar_ctx<'a>(&'a self, c: &PartCtx, pos: &FormPos, r: &'a Resolved<'a>) -> BarCtx<'a> {
+        let names = self.generator.param_names();
+        BarCtx {
+            style_seed: self.pattern_seed,
+            seed: r.seed,
+            sound_seed: r.sound_seed,
+            class: r.class,
+            lane: c.lane,
+            role: self.role,
+            bar_in_phrase: c.bar_in_phrase,
+            phrase: c.phrase,
+            fill: r.fill,
+            half_time: false,
+            params: &r.params,
+            harmony: c.harmony,
+            drum_mask: &NO_MASK,
+            jitter: r.jitter,
+            bass_onsets: 0,
+            bass_phrase: [0; 4],
+            drum_fill: false,
+            focus: self.focus,
+            focus_shift: focus_shift(names, &self.focus),
+            // The host's line as the bar will play after the speed (half
+            // speed plays a part of it stretched).
+            host: if self.role == Role::Drums { self.host_line } else { speed::host_in_render(&self.host_line, r.front.exponent, c.bar) },
+            letter: pos.letter.index(),
+            material_bar: (c.bar % (u16::MAX as u64 + 1)) as u16,
+            user: r.user,
+        }
+    }
+
+    /// What slot `slot` offers the editor (D60), in key `key`: the user's
+    /// pattern, else the seeded one's whole source (its clip, or four bars
+    /// of the generator's) with the window the seed plays of it. The
+    /// source is the skeleton and its pitches (R1, R8), before the knobs'
+    /// phases; bass rows are semitones over the home root. Not RT-safe.
+    pub fn slot_source(&self, slot: Slot, key: MusicalKey) -> UserPattern {
+        if let Some(u) = self.patterns.get(slot) {
+            return u.clone();
+        }
+        let lane = lane_index(self.role);
+        let pos = FormPos { letter: slot.letter, variant: slot.variant, ..FormPos::default() };
+        let harmony = HarmonyCtx { key, chord_degree: 0, progression: 0, mode: self.mode };
+        let part = |bar: u64| PartCtx { lane, bar, bar_in_phrase: (bar % BARS_PER_PHRASE) as u8, phrase: (bar / BARS_PER_PHRASE) as u32, harmony };
+        let beat = TICKS_PER_BAR as u32 / crate::form::BEATS_PER_BAR as u32;
+        let first = self.resolve(&part(0), &pos);
+        let material = self.generator.material_beats(&self.bar_ctx(&part(0), &pos, &first));
+        let bars = material.map_or(SOURCE_BARS, |b| b.div_ceil(crate::form::BEATS_PER_BAR as u32)).clamp(1, crate::slots::MAX_SOURCE_TICKS / TICKS_PER_BAR as u32);
+        let mut notes = Vec::new();
+        let mut work = Work::default();
+        let mut out = BarEvents::default();
+        for j in 0..bars as u64 {
+            let c = part(j);
+            let mut r = self.resolve(&c, &pos);
+            r.fill = false;
+            r.front.source = true;
+            let ctx = self.bar_ctx(&c, &pos, &r);
+            self.front(&ctx, &r.front, j, false, &mut out, &mut work);
+            let home = self.generator.home_key(&ctx);
+            for e in out.as_slice().iter().filter(|e| matches!(e.kind, EventKind::NoteOn | EventKind::Trigger) && e.vel > 0) {
+                let row = if self.role == Role::Drums { e.target as i16 } else { (e.key as i32 - home) as i16 };
+                notes.push(crate::slots::UserNote { tick: j as u32 * TICKS_PER_BAR as u32 + e.tick as u32, len: e.gate as u32, row, vel: e.vel, start: e.start, choke: e.choke });
+            }
+        }
+        let ticks = bars * TICKS_PER_BAR as u32;
+        let (phrase, offset) = self.slot_phrase(slot);
+        let window = material.map_or(0, |b| clip_window(first.seed, lane, b));
+        let len = (phrase as u32 * beat).clamp(crate::slots::MIN_WINDOW, ticks);
+        let start = ((offset as u32 + window) * beat) % ticks;
+        let mut p = UserPattern { notes, ticks, start: start.min(ticks - len), len };
+        p.normalize();
+        p
+    }
     /// The operators segment `pos` plays (D47): the seeded `?` resolved by
     /// the form's seed (a follower's are its host's).
     fn resolve_ops(&self, pos: &FormPos, form_seed: u32, lane: u8) -> OpChain {
@@ -754,6 +949,22 @@ impl PatternLane {
         chain
     }
 
+    /// What a DAW note asks for to play segment `pos` (D60): its written
+    /// operator (the seeded `?` resolved) as a velocity band, or `′`.
+    pub fn velocity_op(&self, pos: &FormPos) -> VelOp {
+        if pos.prime {
+            return VelOp::Prime;
+        }
+        let place = ops::Place { period_end: pos.period_end, repeat: pos.repeat, before_change: pos.before_change };
+        pos.ops
+            .iter()
+            .enumerate()
+            .map(|(k, op)| if op == Op::Seeded { ops::seeded(rng::hash(self.pattern_seed, self.form_lane(), pos.segment, k as u8, S_SEEDED_OP ^ pos.second as u32), place) } else { op })
+            .map(VelOp::Op)
+            .find(|v| v.velocity().is_some())
+            .unwrap_or(VelOp::Plain)
+    }
+
     /// The bass speed step `letter` plays: A's seeded, the others from it
     /// by Contrast (D49).
     fn letter_rate(&self, lane: u8, letter: Letter) -> i8 {
@@ -786,7 +997,12 @@ impl PatternLane {
         // A phrase (D48) is its own length wherever it plays; a segment
         // without one spans itself from its first bar.
         let phrased = pos.phrase > 0;
-        let span_beats = if phrased { pos.phrase as u32 } else { pos.segment_beats as u32 };
+        // The user's pattern (D60) loops its own window.
+        let span_beats = match base.user {
+            Some(u) if phrased => u.window_beats(),
+            _ if phrased => pos.phrase as u32,
+            _ => pos.segment_beats as u32,
+        };
         let ticks = (span_beats * beat_ticks).clamp(1, (MAX_SPAN_BARS as u32) * bar_ticks);
         let bars = ticks.div_ceil(bar_ticks) as u16;
         // Clip mode (D50): a phrase is a window of its letter's clip, which
@@ -816,6 +1032,7 @@ impl PatternLane {
             (front.exponent as u8 as u64) | (self.rate as u8 as u64) << 8,
             front.groove.to_bits() as u64 | (front.permute.to_bits() as u64) << 32,
             front.swing.to_bits() as u64,
+            self.patterns_version,
         ] {
             key = mix(key, v);
         }
@@ -878,7 +1095,10 @@ impl PatternLane {
                 // In clip mode the window starts anywhere in the clip: a
                 // seeded part of it plus the offset (D50).
                 let len = limit;
-                let shift = if self.role == Role::Drums {
+                let shift = if base.user.is_some() {
+                    // The user's window starts where they set it.
+                    0
+                } else if self.role == Role::Drums {
                     (pos.offset as u32 * beat_ticks) % ticks
                 } else {
                     let want = pos.offset as u32 + material.map_or(0, |b| clip_window(base.seed, c.lane, b));
@@ -1421,6 +1641,70 @@ mod tests {
         out.events.as_slice().to_vec()
     }
 
+    fn user_note(tick: u32, row: i16) -> crate::slots::UserNote {
+        crate::slots::UserNote { tick, len: 48, row, vel: 100, start: 0, choke: 0 }
+    }
+
+    #[test]
+    fn a_users_pattern_is_the_skeleton() {
+        // A seed whose A plays at its own pace (no speed step).
+        let seed = (0..400).find(|&s| PatternLane::bass(s, s).letter_rate(lane_index(Role::Bass), Letter::A) == 0).unwrap();
+        let mut lane = PatternLane::bass(seed, seed);
+        lane.set_param("syncopation", 0.0);
+        lane.set_param("density", 0.5);
+        let mut book = PatternBook::default();
+        book.slots[0] = Some(UserPattern { notes: vec![user_note(0, 0), user_note(192, 7)], ticks: 384, start: 0, len: 384 });
+        let before = bar_alone(&lane, 0);
+        lane.set_patterns(std::sync::Arc::new(book));
+        let ons: Vec<_> = bar_alone(&lane, 0).into_iter().filter(|e| e.kind == EventKind::NoteOn).collect();
+        assert_eq!(ons.len(), 2, "{ons:?}");
+        assert!(ons[0].tick < 12 && (180..204).contains(&ons[1].tick), "{ons:?}");
+        assert_eq!(ons[1].key as i32 - ons[0].key as i32, 7);
+        assert_ne!(before.iter().filter(|e| e.kind == EventKind::NoteOn).count(), 0);
+        // B keeps its seeded pattern.
+        let mut b = Form::generated();
+        b.set_one(Segment::new(Letter::B, 4, 0));
+        lane.set_form(b);
+        assert!(!bar_alone(&lane, 0).is_empty());
+    }
+
+    #[test]
+    fn a_window_of_the_users_pattern_loops() {
+        let seed = (0..400).find(|&s| PatternLane::bass(s, s).letter_rate(lane_index(Role::Bass), Letter::A) == 0).unwrap();
+        let mut lane = PatternLane::bass(seed, seed);
+        lane.set_param("syncopation", 0.0);
+        lane.set_param("density", 0.5);
+        // Two bars of source, the window the second bar's first half.
+        let mut book = PatternBook::default();
+        book.slots[0] = Some(UserPattern { notes: vec![user_note(0, 0), user_note(384, 3), user_note(480, 5)], ticks: 768, start: 384, len: 192 });
+        lane.set_patterns(std::sync::Arc::new(book));
+        lane.play_slot(Some((Slot::from_index(0), VelOp::Plain)));
+        let ons: Vec<_> = bar_alone(&lane, 0).into_iter().filter(|e| e.kind == EventKind::NoteOn).map(|e| e.key as i32).collect();
+        // Twice the window: rows 3 and 5, twice.
+        assert_eq!(ons.len(), 4, "{ons:?}");
+        assert_eq!((ons[1] - ons[0], ons[2] - ons[0], ons[3] - ons[0]), (2, 0, 2));
+    }
+
+    #[test]
+    fn a_slots_source_holds_its_window() {
+        for lane in [PatternLane::bass(7, 7), PatternLane::drums(DrumLayout::standard(), 7, 7)] {
+            for slot in Slot::ALL {
+                let src = lane.slot_source(slot, MusicalKey::new(5, true));
+                assert!(!src.notes.is_empty(), "{slot:?}");
+                assert!(src.start + src.len <= src.ticks && src.len >= crate::slots::MIN_WINDOW);
+                assert!(src.notes.windows(2).all(|w| w[0].tick <= w[1].tick));
+                if lane.role() == Role::Drums {
+                    assert!(src.notes.iter().all(|n| crate::generator::layout::DrumVoice::of_target(n.row as u8).is_some()));
+                } else {
+                    assert!(src.notes.iter().all(|n| (-24..=36).contains(&n.row)), "{:?}", src.notes);
+                }
+            }
+            // The two patterns of a letter differ.
+            let (a1, a2) = (lane.slot_source(Slot::from_index(0), MusicalKey::new(5, true)), lane.slot_source(Slot::from_index(1), MusicalKey::new(5, true)));
+            assert_ne!(a1.notes, a2.notes);
+        }
+    }
+
     #[test]
     fn a_variant_plays_its_letters_first_bars_and_repeats_exactly() {
         for drums in [true, false] {
@@ -1465,7 +1749,14 @@ mod tests {
                 lane.render(0, key, &mut out, &mut scratch);
                 let a = out.params.values;
                 lane.render(1, key, &mut out, &mut scratch);
-                assert_eq!(out.params.values, a, "seed {seed}: at Contrast 0 B plays A's settings");
+                // But the drums' style: B plays another at any Contrast (user,
+                // 2026-10-26).
+                let style = lane.param_names().iter().position(|n| *n == "style");
+                let other = |v: [f32; MAX_GEN_PARAMS]| { let mut v = v; if let Some(i) = style { v[i] = 0.0; } v };
+                assert_eq!(other(out.params.values), other(a), "seed {seed}: at Contrast 0 B plays A's settings");
+                if let Some(i) = style {
+                    assert_ne!(out.params.values[i], a[i], "seed {seed}: B's style");
+                }
                 lane.contrast = 1.0;
                 lane.render(1, key, &mut out, &mut scratch);
                 equal += (out.params.values == a) as u32;
@@ -1485,15 +1776,11 @@ mod tests {
             }
         }
         assert_eq!(equal, 0, "at Contrast 1 B moves away from A");
-        // B keeps the knob's end: its notes at Shape 0 nearer A's at Shape 0
-        // than at Shape 1, and the other way round.
+        // B mirrors the Shape (user, 2026-10-26): at Shape 0 its notes far
+        // longer than A's, at Shape 1 far shorter.
         let mean = |end: usize, l: usize| gates[end][l] / notes[end][l].max(1) as f32;
-        // (0.6: since 2026-10-21 short notes shorten too, so a Length step
-        // near 0 moves a note further; 0.7 since the fills come in runs,
-        // D56, B's moved Density fills more of its rests; 0.75 for Shape 1
-        // since the shortening's floor, 2026-10-24, narrowed the range.)
-        assert!((mean(0, 1) - mean(0, 0)).abs() < 0.7 * (mean(0, 1) - mean(1, 0)).abs(), "Shape 0 stays short for B: {gates:?} {notes:?}");
-        assert!((mean(1, 1) - mean(1, 0)).abs() < 0.75 * (mean(1, 1) - mean(0, 0)).abs(), "Shape 1 stays long for B: {gates:?} {notes:?}");
+        assert!(mean(0, 1) > 2.0 * mean(0, 0), "Shape 0: B holds: {gates:?} {notes:?}");
+        assert!(mean(1, 1) < 0.6 * mean(1, 0), "Shape 1: B stabs: {gates:?} {notes:?}");
     }
 
     #[test]
@@ -1652,6 +1939,29 @@ mod tests {
 
 
         }
+    }
+
+    #[test]
+    fn a_new_form_waits_for_the_next_16_bar_section() {
+        // D61: a Contrast (or Variation, Shape) band moved mid-section plays
+        // from the next section on.
+        let mut lane = PatternLane::bass(3, 3);
+        lane.defer_forms = true;
+        let seeded = crate::macros::FormSettings::seeded(3);
+        let (a, b) = (seeded.spec(false, 0.5, 0.5, 0.0), seeded.spec(false, 0.5, 0.5, 1.0));
+        lane.set_form_spec(a);
+        let first = lane.form().clone();
+        lane.set_form_spec(b);
+        assert_eq!((lane.form_spec(), lane.form()), (Some(a), &first), "the first form plays at once, a new one waits");
+        assert!(!lane.advance_form(5, false));
+        assert!(lane.advance_form(16, false));
+        assert_eq!(lane.form_spec(), Some(b));
+        assert_ne!(lane.form(), &first);
+        // Back before it plays: nothing waits.
+        lane.set_form_spec(a);
+        lane.set_form_spec(b);
+        assert!(!lane.advance_form(32, false));
+        assert_eq!(lane.form_spec(), Some(b));
     }
 
     #[test]

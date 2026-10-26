@@ -409,6 +409,23 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     let octave = render(entry, &Render { mode: "bass", key: base.key + 12, ..base.clone() })?;
     rep.check("an octave up plays other notes", octave.samples != bass.samples, String::new());
 
+    // The DAW's form (D60): a note on a slot's key plays that pattern,
+    // other keys play nothing; Transpose moves it.
+    let ext = |key: u16, params: Vec<(String, f64)>| Render { mode: "bass", key, params: [vec![("Form source".to_string(), 1.0)], params].concat(), ..base.clone() };
+    let a1 = render(entry, &ext(36, vec![]))?;
+    rep.healthy("a DAW note on A1 plays the bass", &a1);
+    let again = render(entry, &ext(36, vec![]))?;
+    let b1 = render(entry, &ext(38, vec![]))?;
+    rep.check("A1 plays the same each time, B1 another pattern", again.samples == a1.samples && b1.samples != a1.samples, String::new());
+    let off = render(entry, &ext(50, vec![]))?;
+    rep.check("a key off the slots plays nothing", off.rms_db(0.0, off.secs()) < -90.0, format!("{:.1} dBFS", off.rms_db(0.0, off.secs())));
+    let up = render(entry, &ext(36, vec![("Transpose".into(), 12.0)]))?;
+    rep.check("Transpose moves the DAW's form", up.samples != a1.samples, String::new());
+    for mode in ["drums"] {
+        let d = render(entry, &Render { mode, ..ext(36, vec![]) })?;
+        rep.healthy("a DAW note on A1 plays the drums", &d);
+    }
+
     // The mod outputs (D32): 16 channels, levels 0..1, following the hits.
     let range = |a: &Audio| a.mods.iter().flatten().all(|v| (0.0..=1.0).contains(v));
     let peak = |a: &Audio, ch: usize| a.mods.get(ch).map_or(0.0, |c| c.iter().cloned().fold(0.0, f32::max));
@@ -452,14 +469,17 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
         let db = 20.0 * (rms(&diff) / rms(&lo.samples).max(1e-9)).log10();
         rep.check(&format!("{knob} changes the {mode}"), db > -20.0, format!("difference {db:.1} dB below the {mode}"));
     }
-    // Squash keeps the lane's loudness from mild to strong.
+    // Squash keeps the drums' loudness from mild to strong and lifts the
+    // bass by its lift (3 dB at full, user 2026-10-26: too quiet).
     for mode in ["drums", "bass"] {
         let mut l = Vec::new();
         for amount in [0.0, 0.3, 1.0] {
             l.push(render(entry, &Render { mode, bars: 8.0, params: vec![("Squash".into(), amount)], ..base.clone() })?.lufs());
         }
-        let spread = l.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - l.iter().cloned().fold(f64::INFINITY, f64::min);
-        rep.check(&format!("Squash keeps the {mode} loudness"), spread <= 1.5, format!("{:.1}, {:.1}, {:.1} LUFS at 0, 30, 100 %", l[0], l[1], l[2]));
+        let lift = if mode == "bass" { 3.0 } else { 0.0 };
+        let off: Vec<f64> = [0.0, 0.3, 1.0].iter().zip(&l).map(|(a, v)| v - a * lift).collect();
+        let spread = off.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - off.iter().cloned().fold(f64::INFINITY, f64::min);
+        rep.check(&format!("Squash keeps the {mode} loudness, the lift aside"), spread <= 1.5, format!("{:.1}, {:.1}, {:.1} LUFS at 0, 30, 100 %", l[0], l[1], l[2]));
     }
     // The three release tails at full Shape sound apart.
     let mut tails = Vec::new();

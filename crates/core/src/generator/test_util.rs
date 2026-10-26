@@ -42,6 +42,7 @@ pub(crate) fn ctx<'a>(
         focus_shift: [0.0; crate::generator::MAX_GEN_PARAMS],
         letter: 0,
         material_bar: bar_in_phrase as u16,
+        user: None,
     }
 }
 
