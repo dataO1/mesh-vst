@@ -3,7 +3,7 @@
 //!
 //! The lane's output splits at [`SUB_HZ`]: the sub passes clean, the band
 //! above runs through a chain of stages ([`ORDER`]) and is matched back to
-//! its own loudness ([`crate::heat`]'s level match), so the amount changes
+//! its own loudness by the amount's make-up ([`crate::makeup`], D64), so the amount changes
 //! the character, not the level. Each stage is one [`Stage`]; the chain is
 //! built from [`ORDER`], so stages can be added, removed and reordered in
 //! one place.
@@ -29,7 +29,6 @@
 use std::f32::consts::{PI, TAU};
 
 use crate::event::{flags, EventKind, LiveEvent};
-use crate::heat::{LevelMatch, K_HIGH};
 use crate::dsp::{flush, mix, safe, Biquad, Butter4, Delay, Gap, Oversampler, Svf};
 use crate::mbdist::{BandConfig, Curve, MbConfig, MbDist, Pass};
 use crate::rng;
@@ -42,8 +41,6 @@ pub const SUB_HZ: f32 = 130.0;
 /// frames (8: a fast sweep moves in steps of a sixth of a millisecond, too
 /// fine to hear as stepping).
 const CHUNK: usize = 8;
-/// The level match's range on the processed band.
-const LEVEL_RANGE: (f32, f32) = (0.1, 3.0);
 /// The stage amount at full Neuro for a rack weight of 1 (clamped to 1).
 const AMOUNT_REACH: f32 = 1.4;
 /// The amount's smoothing time.
@@ -128,11 +125,14 @@ const HEARD_ENERGY: f32 = 1e-6;
 const HARSH_DRIVE_CUT: f32 = 0.5;
 const LEAD_HEAVY: f32 = 0.5;
 const LEAD_SUBTLE: f32 = 0.5;
-/// The top before the drive (O2): a high shelf at [`TAME_HZ`], down to
-/// [`TAME_DB`] at a harsh source (half of it at a mild one), half of it
-/// given back after the deemphasis.
+/// The top before the drive (O2): a high shelf at [`TAME_HZ`], up by
+/// [`TAME_LIFT`] on a dark source (user, 2026-10-27: the drive reacted to the
+/// lows only, the top came out with holes) down to
+/// [`TAME_DB`] at a harsh source (a chord or a lead, so it does not fizz), half
+/// of it given back after the deemphasis.
 const TAME_HZ: f32 = 1200.0;
 const TAME_DB: f32 = -12.0;
+const TAME_LIFT: f32 = 8.0;
 const TAME_BACK: f32 = 0.5;
 // MUSICAL: tune by ear (2026-10-22: a chord as a mudpie came out mostly
 // fizz, a lead got harsher at full Neuro). The balance guard (O3): the share
@@ -315,8 +315,8 @@ pub enum StageKind {
     /// Pre-emphasis: broad boosts either side of a narrower, deeper cut,
     /// around the note's harmonics, each band moving on its own.
     Emphasis,
-    /// A high shelf before the drive, deeper the more the source has above
-    /// 1 kHz, so the drive bites on the mids.
+    /// A high shelf before the drive: up on a dark source, down on a harsh
+    /// one, so the drive bites on the mids and the top alike.
     Tame,
     /// The heavy multiband drive (tape, a character drive into a slight
     /// tanh, a slight tube).
@@ -342,7 +342,8 @@ pub enum StageKind {
     Shaper,
     /// The post filter: tames the fizz the stages made.
     Post,
-    /// A slight multiband compressor (the Squash, mild, mixed in).
+    /// A multiband compressor (the Squash at 60 %, mostly mixed in), on top
+    /// of the lane's own Squash.
     Multiband,
     /// A wide stereo chorus after the chain, at most [`CHORUS_WET`] wet
     /// (user, 2026-10-23: before the drive the detuned copies distorted
@@ -433,14 +434,16 @@ struct NotchSpec {
 /// octaves is −14 dB at its middle, its bell takes it to about −25; the
 /// 18 dB/octave one is −23 dB on its own.
 // User, 2026-10-23: the low cut was too hard; less of it, its shoulders
-// boosted. At full the low gap is about −12 dB in its middle.
+// boosted. At full the low gap is about −12 dB in its middle. 2026-10-27:
+// the holes in the top too big; the upper gap takes 60 % of its band, its
+// shoulders lifted 3 dB, the air's dip halved.
 const NOTCHES: [NotchSpec; 2] = [
     NotchSpec { range: (250.0, 500.0), width: 1.5, steep: true, bell: (1.0, -4.0), most: 0.75, shoulders: (4.0, 1.0) },
-    NotchSpec { range: (1000.0, 5000.0), width: 1.25, steep: false, bell: (1.0, 0.0), most: 1.0, shoulders: (0.0, 1.0) },
+    NotchSpec { range: (1000.0, 5000.0), width: 1.25, steep: false, bell: (1.0, 0.0), most: 0.6, shoulders: (3.0, 1.0) },
 ];
 /// The air bands (Hz, Q, dB), each moving within ±[`AIR_OCTAVES`], kept in
 /// [`AIR_RANGE_HZ`]; the share of a note they take to grow in full.
-const AIR: [(f32, f32, f32); 3] = [(2500.0, 1.0, 3.0), (4500.0, 3.0, -8.0), (7000.0, 1.2, 1.0)];
+const AIR: [(f32, f32, f32); 3] = [(2500.0, 1.0, 3.0), (4500.0, 3.0, -4.0), (7000.0, 1.2, 2.0)];
 const AIR_OCTAVES: f32 = 0.6;
 const AIR_RANGE_HZ: (f32, f32) = (2000.0, 8000.0);
 const AIR_GROW: f32 = 0.6;
@@ -461,13 +464,13 @@ const DRIVE_BANDS: [BandConfig; 3] = [
         contain: 3.0,
         oversample: 2,
     },
-    BandConfig { passes: [Pass { curve: Curve::Tube, drive_db: 5.0, wet: 0.2 }, Pass::OFF], contain: 1.0, oversample: 2 },
+    BandConfig { passes: [Pass { curve: Curve::Tube, drive_db: 8.0, wet: 0.35 }, Pass { curve: Curve::Tanh, drive_db: 4.0, wet: 0.25 }], contain: 1.0, oversample: 2 },
 ];
 const DRIVE_FOLD_DB: f32 = 4.0;
 const ASYM_DB: f32 = 9.0;
 const ASYM_SOFT: f32 = 0.6;
 const ASYM_WET: f32 = 0.45;
-const SHAPER: (f32, f32) = (0.12, 0.05);
+const SHAPER: (f32, f32) = (0.2, 0.08);
 /// The comb: its feedback, the damping in its loop (Hz), its mix.
 const COMB_FEEDBACK: f32 = 0.55;
 const COMB_DAMP_HZ: f32 = 2500.0;
@@ -484,7 +487,10 @@ const CHORUS_WET: f32 = 0.3;
 const POST_HARMONIC: f32 = 120.0;
 const POST_RANGE_HZ: (f32, f32) = (5000.0, 16_000.0);
 /// The multiband's mix at full stage amount (the Squash at its mild end).
-const MULTIBAND_MIX: f32 = 0.6;
+const MULTIBAND_MIX: f32 = 0.85;
+/// The Squash amount the multiband stage runs at (user, 2026-10-27: harder
+/// than the lane'"'"'s own, on top of it).
+const MULTIBAND_SQUASH: f32 = 0.6;
 /// The shortest attack; how much the seed's ADSR strays from its shape.
 const ADSR_MIN_ATTACK: f32 = 0.002;
 const ADSR_JITTER: f32 = 0.3;
@@ -494,9 +500,9 @@ const LEVEL_SECS: (f32, f32) = (0.006, 0.3);
 const FOLLOW: (f32, f32) = (0.5, 1.0);
 const FOLLOW_RANGE: (f32, f32) = (0.25, 1.75);
 /// The movement's speed at full amount (user: only a little faster).
-const AMOUNT_SPEED: f32 = 1.5;
+const AMOUNT_SPEED: f32 = 2.0;
 /// Variation's scale of the depths and of the speed at 0 and 1.
-const VARIATION_DEPTH: (f32, f32) = (0.4, 1.2);
+const VARIATION_DEPTH: (f32, f32) = (0.6, 1.5);
 const VARIATION_SPEED: (f32, f32) = (0.8, 1.3);
 /// Contrast (user, 2026-10-22: at 0 every letter alike, at 1 on purpose
 /// very different): how far B's bands sit off A's (octaves) and its
@@ -792,7 +798,7 @@ struct Tame {
 impl Tame {
     /// The shelf's gain (dB) for this source at stage amount `amount`.
     pub(crate) fn db(source: &Source, amount: f32, back: bool) -> f32 {
-        let db = TAME_DB * (0.5 + 0.5 * source.harsh) * amount;
+        let db = (TAME_LIFT + (TAME_DB - TAME_LIFT) * source.harsh) * amount;
         if back { -TAME_BACK * db } else { db }
     }
 }
@@ -1175,7 +1181,7 @@ impl Stage for Multiband {
         }
         let n = buf.len().min(self.dry.len());
         self.dry[..n].copy_from_slice(&buf[..n]);
-        self.squash.process(&mut buf[..n], 0.0, false, self.stretch);
+        self.squash.process(&mut buf[..n], MULTIBAND_SQUASH, false, self.stretch);
         let m = MULTIBAND_MIX * amount;
         for (s, d) in buf[..n].iter_mut().zip(&self.dry[..n]) {
             s.left = d.left + (s.left - d.left) * m;
@@ -1292,11 +1298,22 @@ pub fn voice(sound_seed: u32, letter: u8, contrast: f32) -> Voice {
 
 /// The stage weights for `sound_seed`: two racks blended.
 pub fn rack(sound_seed: u32) -> [f32; ORDER.len()] {
+    let (a, b, t) = rack_pick(sound_seed);
+    std::array::from_fn(|i| RACKS[a].1[i] + (RACKS[b].1[i] - RACKS[a].1[i]) * t)
+}
+
+/// The two [`RACKS`] the sound seed blends and how far towards the second.
+pub fn rack_pick(sound_seed: u32) -> (usize, usize, f32) {
     let h = |k: u8| rng::hash(sound_seed, 0, k, 0, S_RACK);
     let a = rng::below(h(0), RACKS.len() as u32) as usize;
     let b = (a + 1 + rng::below(h(1), RACKS.len() as u32 - 1) as usize) % RACKS.len();
-    let t = 0.5 * rng::unit_f32(h(2));
-    std::array::from_fn(|i| RACKS[a].1[i] + (RACKS[b].1[i] - RACKS[a].1[i]) * t)
+    (a, b, 0.5 * rng::unit_f32(h(2)))
+}
+
+/// `n` sound seeds that play rack `rack` nearly alone (the make-up's
+/// measurement, [`crate::makeup`]).
+pub(crate) fn seeds_of_rack(rack: usize, n: usize) -> Vec<u32> {
+    (0u32..).filter(|&s| rack_pick(s).0 == rack && rack_pick(s).2 < 0.1).take(n).collect()
 }
 
 // --- The chain -------------------------------------------------------------
@@ -1412,7 +1429,9 @@ pub struct Neuro {
     align: [Lr4; 3],
     align_hz: [f32; 3],
     stages: Vec<(StageKind, Box<dyn Stage>)>,
-    level: LevelMatch,
+    /// Whether the make-up ([`crate::makeup::neuro`]) is off (its table's
+    /// measurement).
+    pub(crate) raw: bool,
     upper: Vec<StereoSample>,
     dry_upper: Vec<StereoSample>,
     amount: f32,
@@ -1462,7 +1481,7 @@ impl Neuro {
             align: [Lr4::default(); 3],
             align_hz: [0.0; 3],
             stages: ORDER.iter().map(|&k| (k, build(k, sr))).collect(),
-            level: LevelMatch::new(sr, LEVEL_RANGE, K_HIGH),
+            raw: false,
             upper: vec![StereoSample::silence(); CHUNK],
             dry_upper: vec![StereoSample::silence(); CHUNK],
             amount: 0.0,
@@ -1571,7 +1590,7 @@ impl Neuro {
     }
 
     /// One chunk: split, the input envelope, the stages on the upper band,
-    /// level match, sum. `depth` scales every move (Variation).
+    /// make-up, sum. `depth` scales every move (Variation).
     fn chunk(&mut self, buf: &mut [StereoSample], c: &Ctl, depth: f32) {
         let n = buf.len();
         let mut sub = [[0.0f32; 2]; CHUNK];
@@ -1631,9 +1650,10 @@ impl Neuro {
             (w.left, w.right) = (hi[0], hi[1]);
         }
         self.guard(n);
+        // The band's level from the (smoothed) amount and the racks (D64).
+        let g = if self.raw { 1.0 } else { crate::makeup::neuro(self.seed.unwrap_or(0), self.amount) };
         for i in 0..n {
             let (d, w) = (self.dry_upper[i], self.upper[i]);
-            let g = self.level.gain([d.left, d.right], [w.left, w.right]);
             // What the clean highpass took off the band, as it was dry, and
             // the sub in the same phase.
             let (low, _) = self.dry_clean.split([d.left, d.right]);
@@ -1728,7 +1748,7 @@ mod tests {
             assert!(y.iter().all(|s| s.left.is_finite() && s.right.is_finite()), "seed {seed}");
             let (a, b) = (rms(&x[48_000..]), rms(&y[48_000..]));
             let db = 20.0 * (b / a).log10();
-            // Unweighted: the level match is K-weighted, and the gaps take
+            // Unweighted: the make-up is K-weighted, and the gaps take
             // out the low mids it weighs less (about −2 .. −3 dB here).
             assert!(db.abs() < 4.0, "seed {seed}: {db:.1} dB");
             assert_ne!(y, x);
@@ -1759,8 +1779,11 @@ mod tests {
         for hz in [60.0f32, 90.0, 110.0, 130.0, 150.0, 180.0, 250.0] {
             let x: Vec<StereoSample> = (0..48_000).map(|i| { let v = 0.3 * (TAU * hz * i as f32 / sr).sin(); StereoSample { left: v, right: v } }).collect();
             // (The sub takes the band's crossovers near it as allpasses; what
-            // is left of the band's phase there makes up to about 2 dB.)
-            for amount in [0.001, 1.0] {
+            // is left of the band's phase there makes up to about 2 dB. In
+            // full only around the split: above it a sine is the band's, at
+            // the level the make-up gives the probes, D64.)
+            let amounts: &[f32] = if hz <= 180.0 { &[0.001, 1.0] } else { &[0.001] };
+            for &amount in amounts {
                 let y = run(amount, 2, &x);
                 let db = 20.0 * (rms(&y[24_000..]) / rms(&x[24_000..])).log10();
                 assert!(db.abs() < 2.0, "{hz} Hz at {amount}: {db:.2} dB");

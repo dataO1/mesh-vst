@@ -14,25 +14,25 @@ use crate::types::StereoSample;
 // MUSICAL: stab accent, tune by ear.
 /// Gain kick at a note start at full punch (+1 = +6 dB), and its fade time.
 /// It drives the saturation, so it shows as a blown-out attack.
-const PUNCH_GAIN: f32 = 1.0;
-const PUNCH_SECS: f32 = crate::tempo::note(3.0 / 128.0);
+pub(crate) const PUNCH_GAIN: f32 = 1.0;
+pub(crate) const PUNCH_SECS: f32 = crate::tempo::note(3.0 / 128.0);
 /// Extra mod-envelope pitch and cutoff depth at full punch (on top of
 /// Expression).
 const PUNCH_PITCH: f32 = 1.8;
-const PUNCH_CUTOFF: f32 = 0.5;
+pub(crate) const PUNCH_CUTOFF: f32 = 0.5;
 /// Saturation drive at full punch, and the share of it taken back at the
 /// output (in dB terms).
 const PUNCH_SAT_DB: f32 = 21.0;
 const PUNCH_SAT_BACK: f32 = 0.8;
 /// The mod envelope runs this much slower at full punch (user, 2026-10-18:
 /// the filter move more pronounced, so only slightly slower).
-const PUNCH_ENV_STRETCH: f32 = 0.3;
+pub(crate) const PUNCH_ENV_STRETCH: f32 = 0.3;
 /// Share of the mod envelope's cutoff sweep a held (sustained) note keeps
 /// (user, 2026-10-24: the held notes' tail sounded weak).
-const HELD_CUTOFF_SUSTAIN: f32 = 0.5;
+pub(crate) const HELD_CUTOFF_SUSTAIN: f32 = 0.5;
 /// A held note's gain kick, as a share of its accent (its drive takes the
 /// accent whole).
-const HELD_KICK: f32 = 0.5;
+pub(crate) const HELD_KICK: f32 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
@@ -752,7 +752,7 @@ const PITCH_ENV_OFF: f32 = 1e-3;
 #[inline(always)]
 /// The mod envelope at note time `t` (seconds), stepping `dt`; `prev` is its
 /// last value (the release falls from it).
-fn mod_env_value(e: &ModEnv, prev: f32, t: f32, dt: f32, released: bool) -> f32 {
+pub(crate) fn mod_env_value(e: &ModEnv, prev: f32, t: f32, dt: f32, released: bool) -> f32 {
     const LN_1000: f32 = 6.907_755;
     if released {
         return if e.release > 0.0 { prev * (-LN_1000 * dt / e.release).exp() } else { 0.0 };

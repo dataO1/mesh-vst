@@ -6,12 +6,12 @@
 //! balance). The drums reach a much lighter strong end than the mudpie,
 //! which can be squashed hard. LR4 crossovers with allpass compensation, so
 //! the bands sum flat when nothing compresses. The output keeps the input's
-//! loudness ([`crate::heat`]'s level match). Times are note values,
+//! loudness by its amount's make-up ([`crate::makeup`], D64). Times are note values,
 //! stretched with the tempo ([`crate::tempo`]).
 
 use std::f32::consts::{PI, SQRT_2};
 
-use crate::heat::LevelMatch;
+use crate::makeup::Ramp;
 use crate::tempo::note;
 use crate::types::StereoSample;
 
@@ -111,20 +111,19 @@ const DRUMS: Voicing = Voicing {
 const UP_GATE_DB: f32 = -65.0;
 /// Gain smoothing after the envelope (against zipper noise).
 const GAIN_SMOOTH_SECS: f32 = 0.001;
-/// The level match's make-up range (a hard squash takes more than 6 dB).
-const LEVEL_RANGE: (f32, f32) = (0.25, 4.0);
-// MUSICAL: tune by ear (user, 2026-10-20: matched with K-weighting's highs
-// the lifted top pulled the body down, much quieter than before).
-/// The highs' extra weight in the level match: none, so the top the
-/// squash lifts does not turn the lows and mids down.
-const LEVEL_HIGH: f32 = 0.0;
 const FLOOR: f32 = 1e-6;
-/// The first band the mudpie's level match hears (the mids: its sub and
-/// low add on top); the drums' hears them all.
+// MUSICAL: tune by ear (user, 2026-10-26: the bass too weak, the rest as
+// it was). The first band the mudpie's make-up hears (the mids: its sub and
+// low add on top); the drums' hears them all.
 const MATCH_FROM: usize = 2;
+
+/// Above which the make-up ([`crate::makeup::SQUASH_DB`]) hears the lane.
+pub(crate) fn match_above(drums: bool) -> Option<f32> {
+    (!drums).then(|| MUDPIE.splits[MATCH_FROM - 1])
+}
 // MUSICAL: tune by ear (user, 2026-10-26: at full the Squash sounded too
-// quiet). How much louder the mudpie comes out at full Squash than in (the
-// bass calibration leaves it: [`lift_db`]); the drums keep their level.
+// quiet). How much louder the mudpie comes out at full Squash than in (on
+// top of the make-up: [`lift_db`]); the drums keep their level.
 const MUDPIE_LIFT_DB: f32 = 3.0;
 
 /// How much louder than its input the Squash plays at `amount` (dB).
@@ -223,7 +222,10 @@ pub struct Squash {
     bands: [BandState; BANDS],
     up_max: f32,
     smooth: f32,
-    level: LevelMatch,
+    /// The make-up from the amount (D64), and whether it is off (the
+    /// table's measurement).
+    makeup: Ramp,
+    pub(crate) raw: bool,
     /// The amount, stretch and voicing the bands' settings were made for
     /// (made again only when these change).
     set_for: Option<(f32, f32, bool)>,
@@ -251,7 +253,8 @@ impl Squash {
             bands: [BandState::default(); BANDS],
             up_max: 0.0,
             smooth: coeff(GAIN_SMOOTH_SECS, sr),
-            level: LevelMatch::new(sr, LEVEL_RANGE, LEVEL_HIGH),
+            makeup: Ramp::default(),
+            raw: false,
             set_for: None,
             lift: 1.0,
         }
@@ -293,7 +296,10 @@ impl Squash {
             self.set_for = Some((t, stretch, drums));
             self.set(v, t, stretch, drums);
         }
-        for s in buf.iter_mut() {
+        // The level from the amount (D64) and the lift, moving over the buffer.
+        let to = if self.raw { 1.0 } else { crate::makeup::squash(drums, t) * self.lift };
+        let makeup = self.makeup.over(to, buf.len());
+        for (i, s) in buf.iter_mut().enumerate() {
             let x = [s.left, s.right];
             // Band b is the low side of split b, the last band the rest.
             let mut parts = [[0.0f32; 2]; BANDS];
@@ -312,12 +318,7 @@ impl Squash {
                 }
             }
             let mut y = [0.0f32; 2];
-            // The level match hears the bands over the lows only, so the
-            // sub and low the squash keeps add to the level (user,
-            // 2026-10-26: the bass too weak, the rest as it was).
-            let (mut xu, mut yu) = ([0.0f32; 2], [0.0f32; 2]);
-            let match_from = if drums { 0 } else { MATCH_FROM };
-            for (i, (p, b)) in parts.iter().zip(self.bands.iter_mut()).enumerate() {
+            for (p, b) in parts.iter().zip(self.bands.iter_mut()) {
                 let peak = p[0].abs().max(p[1].abs());
                 let k = if peak > b.env { b.attack } else { b.release };
                 b.env = flush(k * b.env + (1.0 - k) * peak);
@@ -328,12 +329,8 @@ impl Squash {
                 let g = 10f32.powf((b.gain_db + b.makeup_db) / 20.0);
                 y[0] += p[0] * g;
                 y[1] += p[1] * g;
-                if i >= match_from {
-                    xu = [xu[0] + p[0], xu[1] + p[1]];
-                    yu = [yu[0] + p[0] * g, yu[1] + p[1] * g];
-                }
             }
-            let g = self.level.gain(xu, yu) * self.lift;
+            let g = makeup(i);
             *s = StereoSample { left: flush(y[0] * g), right: flush(y[1] * g) };
         }
     }
@@ -392,15 +389,21 @@ mod tests {
 
     #[test]
     fn keeps_the_loudness_and_stays_finite() {
-        let rms = |b: &[StereoSample]| (b[b.len() / 2..].iter().map(|s| s.left * s.left).sum::<f32>() / (b.len() / 2) as f32).sqrt();
-        // In the mids, which the level match hears (the lows add on top).
-        let dry = rms(&bursts(1000.0, 3.0));
+        // On the make-up's probes (D64), above the mudpie's lows (they add
+        // on top), the lift aside.
+        use crate::makeup::{bass_probe, drum_probe, lufs_above};
         for drums in [false, true] {
+            let dry = if drums { drum_probe() } else { bass_probe().0 };
+            let above = match_above(drums);
             for amount in [0.0, 0.5, 1.0] {
-                let wet = run(amount, drums, 1000.0);
+                let mut wet = dry.clone();
+                let mut s = Squash::new(SR);
+                for chunk in wet.chunks_mut(256) {
+                    s.process(chunk, amount, drums, 1.0);
+                }
                 assert!(wet.iter().all(|s| s.left.is_finite()));
-                let db = 20.0 * (rms(&wet) / dry).log10() - lift_db(amount, drums);
-                assert!(db.abs() < 2.5, "drums {drums} at {amount}: {db} dB");
+                let db = (lufs_above(&wet, above) - lufs_above(&dry, above)) as f32 - lift_db(amount, drums);
+                assert!(db.abs() < 1.0, "drums {drums} at {amount}: {db} dB");
             }
         }
     }

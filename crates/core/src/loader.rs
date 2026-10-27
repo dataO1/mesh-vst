@@ -16,7 +16,7 @@ use crate::error::AudioFileError;
 use crate::kit::{grid_slices, share, DrumKit};
 use crate::library::{Library, Pool, Tag};
 use crate::loudness::{measure_hit_lufs, measure_lufs};
-use crate::sampler::{SampleData, LEVEL_PARTS};
+use crate::sampler::SampleData;
 use crate::types::StereoSample;
 
 /// Loudness every sample is brought to before the knobs (as in Mesh live).
@@ -34,15 +34,15 @@ const CHOPS_PER_BAR: u32 = 16;
 
 // MUSICAL: Mesh live's sub-voice balance (style-calibrate, user 2026-10-15):
 // the kit's voices sum on one lane, so the quieter roles sit below the
-// backbone. Applied on top of each sample's normalization.
+// backbone. Applied on top of each sample's normalization. User, 2026-10-27:
+// the break and the perc not audible enough, the break up 2 dB, the perc 5).
 /// Level of a slot against the kick and snare, in dB.
 pub fn slot_offset_db(slot: Slot) -> f64 {
     match slot {
-        Slot::Kick | Slot::Snare => 0.0,
-        Slot::Break => -2.0,
+        Slot::Kick | Slot::Snare | Slot::Break => 0.0,
         Slot::HatClosed | Slot::HatOpen => -8.0,
         Slot::CymbalA | Slot::CymbalB | Slot::Shaker => -6.0,
-        Slot::Perc => -10.0,
+        Slot::Perc => -5.0,
     }
 }
 
@@ -323,18 +323,15 @@ fn load_trimmed(path: &Path, root: u8, sample_rate: u32, offset_db: f64, trim: T
         cut_quiet_tail(&mut left, &mut right, rate);
     }
     let cents = data.root_cents;
-    let gains = if trim == Trim::Gaps { level_gains(&left, &right, rate) } else { Vec::new() };
+    // Every note of it plays at the target, its slot's balance on top (D64).
     SampleData::from_channels(&left, &right, data.sample_rate(), root)
         .with_root_cents(cents)
-        .with_level_gains(gains)
+        .with_note_lufs((SAMPLE_LOUDNESS_TARGET + offset_db) as f32)
         .resampled_to(sample_rate)
 }
 
-// MUSICAL: first draft, tune by ear.
-/// What a streamed note hears from its start position: this much of the sample.
+/// The window the quiet tail is judged by.
 const LEVEL_WINDOW_SECS: f64 = 0.4;
-/// Largest correction of a part's level, in dB.
-const LEVEL_MAX_DB: f32 = 18.0;
 
 // MUSICAL: tune by ear (user, 2026-10-21: a one-shot chord as a mudpie had
 // far too much dynamic range: notes streaming from its decayed tail were
@@ -370,31 +367,6 @@ fn cut_quiet_tail(left: &mut Vec<f32>, right: &mut Vec<f32>, rate: f64) {
     }
 }
 
-/// Per part of the sample, the gain that brings the next
-/// [`LEVEL_WINDOW_SECS`] from there to the sample's overall level, so every
-/// streamed note plays at the loudness the lane was calibrated for.
-fn level_gains(left: &[f32], right: &[f32], rate: f64) -> Vec<f32> {
-    let n = left.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    let power = |a: usize, b: usize| (a..b).map(|i| 0.5 * (left[i] * left[i] + right[i] * right[i])).sum::<f32>() / (b - a).max(1) as f32;
-    let overall = power(0, n).sqrt();
-    let window = ((LEVEL_WINDOW_SECS * rate) as usize).clamp(1, n);
-    let max = 10f32.powf(LEVEL_MAX_DB / 20.0);
-    (0..LEVEL_PARTS)
-        .map(|i| {
-            let a = i * n / LEVEL_PARTS;
-            // Near the end only what is left: a note replays its stretch
-            // there and never reaches the start (D61: a wrapped window rated
-            // a faded tail by the loud start, and B's bars from it were
-            // 25 dB down).
-            let local = power(a, (a + window).min(n)).sqrt();
-            if local <= 0.0 { 1.0 } else { (overall / local).clamp(1.0 / max, max) }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,20 +383,6 @@ mod tests {
                 })
             })
             .collect()
-    }
-
-    #[test]
-    fn the_level_map_rates_the_tail_by_itself() {
-        // 1.6 s loud, then 0.4 s 20 dB down: the last parts are brought up,
-        // not rated by the loud start the window used to wrap into.
-        let rate = 48_000.0;
-        let n = (2.0 * rate) as usize;
-        let tail = (1.6 * rate) as usize;
-        let l: Vec<f32> = (0..n).map(|i| (i as f32 * 0.05).sin() * if i < tail { 1.0 } else { 0.1 }).collect();
-        let g = level_gains(&l, &l, rate);
-        let max = 10f32.powf(LEVEL_MAX_DB / 20.0);
-        assert!(g[LEVEL_PARTS - 1] > 0.9 * max, "the tail: {}", g[LEVEL_PARTS - 1]);
-        assert!(g[LEVEL_PARTS / 4] < 1.0, "the loud start: {}", g[LEVEL_PARTS / 4]);
     }
 
     #[test]

@@ -4,7 +4,8 @@
 //! Heat clips from the first touch, its threshold falling all the way up
 //! the knob, the crush comes last. The saturation is multiband (D54, [`crate::mbdist`]): it comes
 //! in from a fifth and drives harder up to the top, each band through its
-//! own curve, never all wet, level-matched so the lane keeps about its
+//! own curve, never all wet, made up from the knobs ([`crate::makeup`],
+//! D64) so the lane keeps about its
 //! loudness. The bass: subtle tape on the low band (the sub stays solid),
 //! a tube then a slight tanh on the mids, a soft top; the drums: tape on
 //! the kick's band, a drive then a slight hard clip on the snare's, a
@@ -15,6 +16,7 @@
 //! bites: low Tone drives the lows, high Tone the highs. RT-safe, no
 //! allocation.
 
+use crate::makeup::Ramp;
 use crate::mbdist::{BandConfig, Curve, MbConfig, MbDist, Pass};
 use crate::types::StereoSample;
 
@@ -70,12 +72,6 @@ const CRUSH_MIX_MAX: f32 = 0.5;
 /// Tilt split frequency and the tilt at full Tone and full Heat, in dB.
 pub const TILT_HZ: f32 = 700.0;
 const TILT_DB: f32 = 12.0;
-/// Level match: the time the loudness followers average over, and the
-/// make-up range.
-const LEVEL_SECS: f32 = 0.5;
-const LEVEL_RANGE: (f32, f32) = (0.5, 2.0);
-/// The highs' extra weight in the level match (+4 dB, as K-weighting).
-pub(crate) const K_HIGH: f32 = 0.58;
 
 /// One-pole lowpass state per channel.
 #[derive(Debug, Clone, Copy, Default)]
@@ -93,69 +89,6 @@ impl OnePole {
     }
 }
 
-/// A rough loudness weighting per channel: a 150 Hz highpass plus a
-/// 1.5 kHz highpass at a share (K-weighting's two stages, first order).
-#[derive(Debug, Clone, Copy, Default)]
-struct Weigh {
-    low: OnePole,
-    mid: OnePole,
-}
-
-impl Weigh {
-    #[inline]
-    fn weigh(&mut self, x: [f32; 2], a: (f32, f32), high: f32) -> [f32; 2] {
-        let l = self.low.low(x, a.0);
-        let m = self.mid.low(x, a.1);
-        [0, 1].map(|c| (x[c] - l[c]) + high * (x[c] - m[c]))
-    }
-}
-
-/// A slow loudness match: the gain that brings an output back to its
-/// input's loudness. Weighted roughly as loudness is (K-weighting: lows
-/// count less, highs more), so added harmonics do not fool it.
-#[derive(Debug, Clone)]
-pub(crate) struct LevelMatch {
-    /// Mean squares of the input and the output, and their follower.
-    ms_in: f32,
-    ms_out: f32,
-    level_a: f32,
-    weigh_in: Weigh,
-    weigh_out: Weigh,
-    /// The weighting's one-pole coefficients (150 Hz, 1.5 kHz).
-    wa: (f32, f32),
-    /// Least and most gain.
-    range: (f32, f32),
-    /// The highs' extra weight.
-    high: f32,
-}
-
-impl LevelMatch {
-    /// A match that makes up within `range` (linear gain), the highs above
-    /// 1.5 kHz weighted `1 + high` (K-weighting's +4 dB: [`K_HIGH`]).
-    pub(crate) fn new(sample_rate: f32, range: (f32, f32), high: f32) -> Self {
-        Self {
-            range,
-            high,
-            ms_in: 0.0,
-            ms_out: 0.0,
-            level_a: one_pole(1.0 / (std::f32::consts::TAU * LEVEL_SECS), sample_rate),
-            weigh_in: Weigh::default(),
-            weigh_out: Weigh::default(),
-            wa: (one_pole(150.0, sample_rate), one_pole(1500.0, sample_rate)),
-        }
-    }
-
-    /// The gain for output frame `y` of input frame `x`.
-    #[inline]
-    pub(crate) fn gain(&mut self, x: [f32; 2], y: [f32; 2]) -> f32 {
-        let wi = self.weigh_in.weigh(x, self.wa, self.high);
-        let wo = self.weigh_out.weigh(y, self.wa, self.high);
-        self.ms_in = flush(self.ms_in + self.level_a * (0.5 * (wi[0] * wi[0] + wi[1] * wi[1]) - self.ms_in));
-        self.ms_out = flush(self.ms_out + self.level_a * (0.5 * (wo[0] * wo[0] + wo[1] * wo[1]) - self.ms_out));
-        if self.ms_out > 1e-9 { (self.ms_in / self.ms_out).sqrt().clamp(self.range.0, self.range.1) } else { 1.0 }
-    }
-}
-
 /// Heat's state per lane.
 #[derive(Debug, Clone)]
 pub struct Heat {
@@ -165,7 +98,10 @@ pub struct Heat {
     post: OnePole,
     /// One-pole coefficient of the tilt split.
     tilt_a: f32,
-    level: LevelMatch,
+    /// The make-up from the knobs (D64), and whether it is off (the
+    /// tables' measurement).
+    makeup: Ramp,
+    pub(crate) raw: bool,
     mb: MbDist,
 }
 
@@ -187,7 +123,8 @@ impl Heat {
             pre: OnePole::default(),
             post: OnePole::default(),
             tilt_a: one_pole(TILT_HZ, sample_rate),
-            level: LevelMatch::new(sample_rate, LEVEL_RANGE, K_HIGH),
+            makeup: Ramp::default(),
+            raw: false,
             mb: MbDist::new(sample_rate),
         }
     }
@@ -195,11 +132,12 @@ impl Heat {
     /// Process `buf` in place at Heat `amount` 0..1 (0 = bypass). `tone`
     /// 0..1 tilts the saturation's focus (0.5 = flat). On the `drums` the
     /// transients stay: the clip only shaves the very peaks at every Heat
-    /// (the lane comes in at its calibrated loudness) and the saturation
+    /// (the notes come in matched, D64) and the saturation
     /// is mixed in under the clean hits.
     pub fn process(&mut self, buf: &mut [StereoSample], amount: f32, tone: f32, drums: bool) {
         let h = amount.clamp(0.0, 1.0);
         if h <= 0.0 {
+            self.makeup = Ramp::default();
             return;
         }
         // Squared: the low end of the knob only shaves the very peaks.
@@ -218,9 +156,10 @@ impl Heat {
         let band_tilt = [-TONE_BAND_DB * sat * t, 0.0, TONE_BAND_DB * sat * t];
         let cfg = if drums { &DRUM_HEAT } else { &BASS_HEAT };
         let drive = sat.powf(DRIVE_CURVE);
-        for block in buf.chunks_mut(HEAT_CHUNK) {
-            let mut dry = [StereoSample::silence(); HEAT_CHUNK];
-            dry[..block.len()].copy_from_slice(block);
+        // The level from the knobs (D64), moving over the buffer.
+        let to = if self.raw { 1.0 } else { crate::makeup::heat(drums, tone, h) };
+        let makeup = self.makeup.over(to, buf.len());
+        for (chunk, block) in buf.chunks_mut(HEAT_CHUNK).enumerate() {
             for s in block.iter_mut() {
                 let mut x = [s.left, s.right].map(|v| soft_clip(v, clip_t));
                 if sat > 0.0 {
@@ -232,7 +171,7 @@ impl Heat {
             if sat > 0.0 {
                 self.mb.process(block, cfg, drive, band_tilt);
             }
-            for (s, d) in block.iter_mut().zip(&dry) {
+            for (k, s) in block.iter_mut().enumerate() {
                 let mut y = [s.left, s.right];
                 if sat > 0.0 {
                     let lo = self.post.low(y, self.tilt_a);
@@ -247,8 +186,7 @@ impl Heat {
                     self.hold_left -= 1;
                     y = [0, 1].map(|c| y[c] + (self.held[c] - y[c]) * crush_mix);
                 }
-                // Level match: the output follows the input's loudness (slow).
-                let g = self.level.gain([d.left, d.right], y);
+                let g = makeup(chunk * HEAT_CHUNK + k);
                 *s = StereoSample { left: flush(y[0] * g), right: flush(y[1] * g) };
             }
         }
@@ -272,11 +210,11 @@ fn soft_clip(x: f32, t: f32) -> f32 {
 }
 
 // MUSICAL: first draft, tune by ear (user: the lows stay clean, the mix
-// never above 30 %).
+// never above 30 %; 2026-10-27: up to half, so Morph is heard).
 /// The ring modulator leaves the band below this alone (the fundamentals).
 pub const RING_FROM_HZ: f32 = 400.0;
 /// Most of the upper band the ring modulator takes.
-pub const RING_MIX_MAX: f32 = 0.3;
+pub const RING_MIX_MAX: f32 = 0.5;
 /// Carrier shape: sine at 0 .. near square at 1 (tanh drive).
 const RING_SQUARE_DRIVE: f32 = 8.0;
 
@@ -526,12 +464,17 @@ mod top_tests {
             for s in &b[48_000..] { let h = hp.run([s.left, s.right]); e += h[0] * h[0]; a += s.left * s.left; }
             (10.0 * f32::log10(e), 10.0 * f32::log10(a))
         };
-        let dry = top(&x).0;
+        // The top's share of the whole (the level is the make-up's, D64).
+        let share = |b: &[StereoSample]| {
+            let (t, a) = top(b);
+            t - a
+        };
+        let dry = share(&x);
         for h in [0.3, 0.5, 0.75, 1.0] {
             let mut y = x.clone();
             let mut heat = Heat::new(sr);
             for b in y.chunks_mut(256) { heat.process(b, h, 0.5, true); }
-            let (t, _) = top(&y);
+            let t = share(&y);
             assert!(dry - t < 1.0, "Heat {h}: the top {:.1} dB down", dry - t);
         }
     }

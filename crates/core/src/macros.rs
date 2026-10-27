@@ -87,6 +87,32 @@ const DRUM_CENTRES: [(f32, f32); KNOBS] =
 const BASS_CENTRES: [(f32, f32); KNOBS] =
     [(0.35, 0.65), (0.5, 0.5), (0.3, 0.6), (0.2, 0.6), (0.25, 0.75), (0.1, 0.9), (0.05, 0.4), (0.3, 0.7), (0.5, 0.5), (0.5, 0.5)];
 const S_CENTRE: u32 = 0xC40;
+// MUSICAL: tune by ear (user, 2026-10-27: Squash a post effect beside Heat
+// and Neuro, rolled with the sound seed; Heat and Squash move per pattern,
+// never per hit, in that range). The range the Squash's seeded centre falls
+// in, drums and bass (around the former fixed 30 %); the range Heat's centre
+// moves in per pattern (A plays the knob as set).
+const SQUASH_CENTRES: [(f32, f32); 2] = [(0.15, 0.5), (0.2, 0.6)];
+const HEAT_CENTRES: (f32, f32) = (0.35, 0.65);
+const S_SQUASH_CENTRE: u32 = 0xC48;
+const S_HEAT_CENTRE: u32 = 0xC49;
+
+/// Where the Squash knob's middle sits for a sound seed and the pattern
+/// playing, `letter` (0..=3, D66): each letter its own in the seed's range,
+/// the knob giving the amount around it ([`around`]).
+pub fn squash_centre(role: Role, sound_seed: u32, letter: u8) -> f32 {
+    let (lo, hi) = SQUASH_CENTRES[(role != Role::Drums) as usize];
+    lo + (hi - lo) * rng::unit_f32(rng::hash(sound_seed, letter, 0, 0, S_SQUASH_CENTRE))
+}
+
+/// Where the Heat knob's middle sits for the pattern playing, `letter`
+/// (D66): A's at the middle (the knob as set), the others their own.
+pub fn heat_centre(sound_seed: u32, letter: u8) -> f32 {
+    if letter == 0 {
+        return 0.5;
+    }
+    HEAT_CENTRES.0 + (HEAT_CENTRES.1 - HEAT_CENTRES.0) * rng::unit_f32(rng::hash(sound_seed, letter, 0, 0, S_HEAT_CENTRE))
+}
 
 impl Centers {
     /// The seed's suggestion per knob. The pattern seed places the groove
@@ -210,8 +236,6 @@ pub struct LaneSettings {
     pub unison: crate::sampler::Unison,
     /// Bass: play from the clips (D50), else the generated line.
     pub clips: bool,
-    /// The Squash knob, which the bass's loudness is calibrated through.
-    pub squash: f32,
 }
 
 /// The seeds a generated form is built from (D48).
@@ -489,6 +513,9 @@ fn apply_bass(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSample
 /// The bass's accent gain (about +0.5 dB; user, 2026-10-21: the loudness
 /// between notes differs far too much).
 const BASS_ACCENT_GAIN: f32 = 1.06;
+/// How far velocity scales a mudpie note below its matched level (D64; the
+/// drums the whole curve).
+const MUDPIE_VELOCITY_DEPTH: f32 = 0.6;
 /// Sustain level of held notes (−1 dB).
 const HELD_SUSTAIN: f32 = 0.89;
 /// Release at full Shape (from the designed one at the bottom; user,
@@ -548,6 +575,9 @@ pub fn mudpie_params() -> LaneSamplerParams {
         sustain: 0.89,
         release: note(1.0 / 16.0),
         cutoff_glide: note(3.0 / 128.0),
+        // User, 2026-10-27: accents and variation after the match, less
+        // than on the drums.
+        velocity_depth: MUDPIE_VELOCITY_DEPTH,
         ..LaneSamplerParams::default()
     };
     let mut m = ModConfig {
@@ -618,7 +648,7 @@ mod style_tests {
         let mut bars = Vec::new();
         for style in 0..DRUM_STYLES.len() as u8 {
             let mut lane = PatternLane::drums(DrumLayout::standard(), 5, 5);
-            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 5, pattern_seed: 5, form: None, rate: 0, mode: 0, style: Some(style), contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 5, pattern_seed: 5, form: None, rate: 0, mode: 0, style: Some(style), contrast: 0.5, unison: Default::default(), clips: false };
             configure(&mut lane, LaneSamplerParams::default(), &s);
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
             lane.render(0, MusicalKey::new(0, true), &mut out, &mut scratch);
@@ -640,7 +670,7 @@ mod style_tests {
         for seed in 1..=40 {
             let mut lane = PatternLane::bass(seed, seed);
             // At Contrast 0: above it B mirrors the Shape into stabs (D62).
-            let s = LaneSettings { knobs: Knobs { shape: 1.0, ..Knobs::CENTERED }, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.0, unison: Default::default(), clips: false, squash: 0.0 };
+            let s = LaneSettings { knobs: Knobs { shape: 1.0, ..Knobs::CENTERED }, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.0, unison: Default::default(), clips: false };
             configure(&mut lane, mudpie_params(), &s);
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
             for b in 0..8 {
@@ -662,7 +692,7 @@ mod style_tests {
     fn the_sound_seed_rolls_the_mudpie_voice() {
         let voice = |seed| {
             let mut lane = PatternLane::bass(5, seed);
-            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: seed, pattern_seed: 5, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: seed, pattern_seed: 5, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false };
             let p = configure(&mut lane, mudpie_params(), &s);
             (p.cutoff_hz, p.resonance, p.modulation.lfo.rate, p.modulation.env.decay)
         };
@@ -692,7 +722,7 @@ mod style_tests {
         let (mut on_knob, mut moved, mut varied_bars) = (0, 0, 0);
         for seed in 1..=10 {
             let mut lane = PatternLane::bass(seed, seed);
-            let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+            let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false };
             configure(&mut lane, mudpie_params(), &s);
             let centres = Centers::of(Role::Bass, seed, seed);
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
@@ -758,7 +788,7 @@ mod style_tests {
             let mut widest = 0.0f32;
             for seed in 1..=10 {
                 let mut lane = PatternLane::bass(seed, seed);
-                let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.0, unison: Default::default(), clips: false, squash: 0.0 };
+                let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.0, unison: Default::default(), clips: false };
                 configure(&mut lane, mudpie_params(), &s);
                 let centres = Centers::of(Role::Bass, seed, seed);
                 let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
@@ -786,7 +816,7 @@ mod style_tests {
             let (mut density, mut spread, mut n) = (0.0, 0.0, 0);
             for seed in 1..=10 {
                 let mut lane = PatternLane::bass(seed, seed);
-                let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+                let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false };
                 configure(&mut lane, mudpie_params(), &s);
                 let centres = Centers::of(Role::Bass, seed, seed);
                 let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
@@ -812,7 +842,7 @@ mod style_tests {
     /// Eight bars of drums at style `style` with `knobs`, as (bar, tick, target).
     fn bars(style: u8, seed: u32, knobs: Knobs) -> Vec<(u64, u16, u8)> {
         let mut lane = PatternLane::drums(DrumLayout::standard(), seed, seed);
-        let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: Some(style), contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+        let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: Some(style), contrast: 0.5, unison: Default::default(), clips: false };
         configure(&mut lane, LaneSamplerParams::default(), &s);
         let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
         (0..8u64)
@@ -829,7 +859,7 @@ mod style_tests {
         let mut n = [0u32; 8];
         for seed in 1..=10 {
             let mut lane = PatternLane::drums(DrumLayout::standard(), seed, seed);
-            let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+            let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false };
             configure(&mut lane, LaneSamplerParams::default(), &s);
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
             for b in 0..8 {
@@ -861,7 +891,7 @@ mod style_tests {
         use crate::generator::layout::DrumVoice;
         let render = |groove: f32| {
             let mut lane = PatternLane::drums(DrumLayout::standard(), 4, 4);
-            let s = LaneSettings { knobs: Knobs { swing: groove, ..Knobs::CENTERED }, sound_seed: 4, pattern_seed: 4, form: None, rate: 0, mode: 0, style: Some(1), contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+            let s = LaneSettings { knobs: Knobs { swing: groove, ..Knobs::CENTERED }, sound_seed: 4, pattern_seed: 4, form: None, rate: 0, mode: 0, style: Some(1), contrast: 0.5, unison: Default::default(), clips: false };
             configure(&mut lane, LaneSamplerParams::default(), &s);
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
             lane.render(0, MusicalKey::new(5, true), &mut out, &mut scratch);
@@ -882,7 +912,7 @@ mod style_tests {
         use crate::event::{flags, EventKind};
         let bars = |knobs: Knobs| {
             let mut lane = PatternLane::bass(9, 9);
-            let s = LaneSettings { knobs, sound_seed: 9, pattern_seed: 9, form: None, rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+            let s = LaneSettings { knobs, sound_seed: 9, pattern_seed: 9, form: None, rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false };
             let p = configure(&mut lane, mudpie_params(), &s);
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
             let mut ev = Vec::new();
@@ -930,7 +960,7 @@ mod style_tests {
         use crate::form::Letter;
         let configured = |form: Option<FormSettings>, knobs: Knobs| {
             let mut lane = PatternLane::bass(4, 4);
-            let s = LaneSettings { knobs, sound_seed: 4, pattern_seed: 4, form, rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+            let s = LaneSettings { knobs, sound_seed: 4, pattern_seed: 4, form, rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false };
             configure(&mut lane, mudpie_params(), &s);
             lane
         };
@@ -953,7 +983,7 @@ mod style_tests {
         assert_eq!(a_phrase(&rolled), a_phrase(&base));
         // Contrast (D49) reaches the lane and the form's band.
         let mut lane = PatternLane::bass(4, 4);
-        let s = LaneSettings { knobs: c, sound_seed: 4, pattern_seed: 4, form: Some(FormSettings::seeded(3)), rate: 0, mode: 0, style: None, contrast: 1.0, unison: Default::default(), clips: false, squash: 0.0 };
+        let s = LaneSettings { knobs: c, sound_seed: 4, pattern_seed: 4, form: Some(FormSettings::seeded(3)), rate: 0, mode: 0, style: None, contrast: 1.0, unison: Default::default(), clips: false };
         configure(&mut lane, mudpie_params(), &s);
         assert_eq!(lane.contrast, 1.0);
         assert!(lane.form_spec().unwrap().contrast > spec.contrast);
@@ -963,7 +993,7 @@ mod style_tests {
         let mut lane = configured(Some(FormSettings::seeded(3)), c);
         let (_, allocs) = crate::test_support::count_allocs(|| {
             for seed in 10..30 {
-                let s = LaneSettings { knobs: c, sound_seed: 4, pattern_seed: 4, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false, squash: 0.0 };
+                let s = LaneSettings { knobs: c, sound_seed: 4, pattern_seed: 4, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips: false };
                 configure(&mut lane, mudpie_params(), &s);
             }
         });
@@ -998,7 +1028,7 @@ mod style_tests {
         let mut reps: Vec<f32> = (1..=30u32)
             .map(|seed| {
                 let mut lane = PatternLane::bass(seed, seed);
-                let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips, squash: 0.0 };
+                let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips };
                 configure(&mut lane, mudpie_params(), &s);
                 rep4(&lane, 64)
             })
@@ -1011,7 +1041,7 @@ mod style_tests {
     fn the_bass_source_setting_picks_clips_or_the_generator() {
         for clips in [true, false] {
             let mut lane = PatternLane::bass(3, 3);
-            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 3, pattern_seed: 3, form: Some(FormSettings::seeded(3)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips, squash: 0.0 };
+            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 3, pattern_seed: 3, form: Some(FormSettings::seeded(3)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips };
             configure(&mut lane, mudpie_params(), &s);
             let i = lane.param_names().iter().position(|n| *n == "source").unwrap();
             assert_eq!(lane.params[i], if clips { 1.0 } else { 0.0 });
@@ -1054,7 +1084,7 @@ mod density_tests {
         let (mut silent, mut bars) = (0, 0);
         for seed in 1..=10u32 {
             let mut lane = PatternLane::bass(seed, seed);
-            let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips, squash: 0.0 };
+            let s = LaneSettings { knobs, sound_seed: seed, pattern_seed: seed, form: Some(FormSettings::seeded(seed)), rate: 0, mode: 0, style: None, contrast: 0.5, unison: Default::default(), clips };
             configure(&mut lane, mudpie_params(), &s);
             let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
             for b in 0..64 {

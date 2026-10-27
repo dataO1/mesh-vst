@@ -9,6 +9,7 @@ use std::path::Path;
 use basedrop::Shared;
 
 use crate::error::AudioFileError;
+use crate::loudness::POWER_ENTRIES;
 use crate::types::{StereoBuffer, StereoSample};
 
 use super::params::{ZoneMod, MAX_ZONE_MODS};
@@ -58,31 +59,38 @@ pub struct SampleData {
     /// Tuning of the recording relative to `root_key` (+20 = 20 cents sharp).
     pub root_cents: i16,
     pub slices: Vec<Slice>,
-    /// Gain that brings each part of the sample to its overall loudness:
-    /// entry `i` covers the fraction `i / n .. (i + 1) / n`. Empty: unity.
-    /// A note streaming from a position takes that position's gain.
-    pub level_gains: Vec<f32>,
+    /// The K-weighted power (L + R) of each [`POWER_BLOCK`] frames, in bands
+    /// ([`crate::loudness::block_powers`]): what a note plays of the sample
+    /// is measured from it (D64).
+    powers: Vec<[f32; POWER_ENTRIES]>,
+    /// The loudness every note of it is brought to before the effects
+    /// (LUFS, D64); `None` plays it as it is.
+    pub note_lufs: Option<f32>,
     /// What the library's scan heard in it (D53), when it came from there.
     pub timbre: Option<crate::library::Timbre>,
 }
 
-/// Parts of a sample's level map.
-pub const LEVEL_PARTS: usize = 256;
+/// Frames per entry of a sample's power table (about 5 ms).
+pub const POWER_BLOCK: usize = 256;
 
 impl SampleData {
-    /// The level gain at `pos` (0..1 of the sample).
-    pub fn level_gain(&self, pos: f64) -> f32 {
-        if self.level_gains.is_empty() {
-            return 1.0;
-        }
-        let i = (pos.clamp(0.0, 0.999_999) * self.level_gains.len() as f64) as usize;
-        self.level_gains[i]
+    /// The K-weighted power (L + R) per band around frame `i`.
+    #[inline]
+    pub fn power_at(&self, i: usize) -> [f32; POWER_ENTRIES] {
+        self.powers.get(i / POWER_BLOCK).copied().unwrap_or([0.0; POWER_ENTRIES])
     }
 
-    /// Attach a level map (see [`Self::level_gains`]).
-    pub fn with_level_gains(mut self, gains: Vec<f32>) -> Self {
-        self.level_gains = gains;
+    /// Bring every note to `lufs` before the effects (D64).
+    pub fn with_note_lufs(mut self, lufs: f32) -> Self {
+        self.note_lufs = Some(lufs);
         self
+    }
+
+    fn built(frames: StereoBuffer, len: usize, sample_rate: u32, root_key: u8) -> Self {
+        let audio = &frames.as_slice()[PAD..PAD + len];
+        let (left, right): (Vec<f32>, Vec<f32>) = audio.iter().map(|s| (s.left, s.right)).unzip();
+        let powers = crate::loudness::block_powers(&left, &right, sample_rate as f64, POWER_BLOCK);
+        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new(), powers, note_lufs: None, timbre: None }
     }
 
     /// Build from separate channel buffers. `right` may be empty for mono.
@@ -94,7 +102,7 @@ impl SampleData {
         for i in 0..len {
             dst[PAD + i] = StereoSample::new(left[i], right[i]);
         }
-        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new(), level_gains: Vec::new(), timbre: None }
+        Self::built(frames, len, sample_rate, root_key)
     }
 
     /// Build from interleaved samples with 1 or 2 channels (extra channels ignored).
@@ -108,7 +116,7 @@ impl SampleData {
             let r = if channels > 1 { samples[i * channels + 1] } else { l };
             dst[PAD + i] = StereoSample::new(l, r);
         }
-        Self { frames, len, sample_rate, root_key, root_cents: 0, slices: Vec::new(), level_gains: Vec::new(), timbre: None }
+        Self::built(frames, len, sample_rate, root_key)
     }
 
     pub fn with_root_cents(mut self, cents: i16) -> Self {
@@ -173,7 +181,8 @@ impl SampleData {
                 kind: s.kind,
             })
             .collect();
-        out = out.with_slices(slices).with_level_gains(self.level_gains);
+        out = out.with_slices(slices);
+        out.note_lufs = self.note_lufs;
         out.timbre = self.timbre;
         Ok(out)
     }

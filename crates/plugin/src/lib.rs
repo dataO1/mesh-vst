@@ -41,8 +41,6 @@ const SIDECHAIN_CHUNK: usize = 64;
 /// Sampler voices per mode.
 pub(crate) const DRUM_VOICES: usize = 48;
 pub(crate) const BASS_VOICES: usize = 48;
-// MUSICAL: gains of the built-in sounds until their first calibration lands
-// (a few hundred ms after loading), measured near the target.
 /// Environment variable that makes the plugin hold a note from activation
 /// (screenshots of the playing editor, without MIDI input).
 const DEMO_ENV: &str = "MESH_VST_DEMO";
@@ -68,8 +66,9 @@ const MOD_PORT_NAMES: [&str; modout::CHANNELS] = [
 
 /// Editor redraws per second.
 const REDRAW_FPS: f32 = 30.0;
-const START_DRUM_GAIN: f32 = 0.4;
-const START_BASS_GAIN: f32 = 0.8;
+/// The lanes' output gain: their notes come matched (D64), the DAW sets the
+/// level.
+pub(crate) const LANE_GAIN: f32 = 1.0;
 
 /// Everything the knobs and settings resolve to; a change re-applies them.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,20 +85,17 @@ struct Settings {
     transpose: i8,
 }
 
-/// What the loudness calibration depends on: the samples, seeds, form and
-/// rate, not the knobs (Mesh calibrated at the default controls too).
-fn calibration_key(s: &LaneSettings) -> (u32, u32, Option<FormSettings>, i8, u8, Option<u8>, (u8, u32, u8), (bool, u32)) {
-
-    let u = (s.unison.voices, s.unison.detune_cents.to_bits(), s.unison.mode as u8);
-    // The bass source and the Squash it is calibrated through (D50).
-    (s.sound_seed, s.pattern_seed, s.form, s.rate, s.mode, s.style, u, (s.clips, s.squash.to_bits()))
+/// What a kit depends on: its sound seed (D64: the notes come matched, no
+/// calibration renders the lane again).
+fn kit_key(s: &LaneSettings) -> u32 {
+    s.sound_seed
 }
 
 /// One mode's player and the sampler params the knobs start from.
 struct Lane {
     player: Player,
     base: LaneSamplerParams,
-    /// Settings and kit generation the playing kit was calibrated for, and
+    /// Settings and kit generation the playing kit was loaded for, and
     /// the ones asked for.
     loaded: Option<(LaneSettings, u32)>,
     requested: Option<(LaneSettings, u32)>,
@@ -252,8 +248,6 @@ pub(crate) fn lane_settings(p: &MeshParams, pins: [Option<u32>; 4], mod_wheel: f
                 seed: p.sound_seed.value() as u32,
             },
             clips: p.bass_source.value() == BassSource::Clips,
-            // In 5 % steps: a move recalibrates the bass in the background.
-            squash: (p.squash.value() * 20.0).round() / 20.0,
     }
 }
 
@@ -335,11 +329,11 @@ impl MeshVst {
         }
     }
 
-    /// Ask the worker for the kit and its loudness trim when the samples,
-    /// seeds or form are not the ones playing or already asked for.
+    /// Ask the worker for the kit when its sound seed or the library
+    /// generation is not the one playing or already asked for.
     fn ask_kit(&mut self, mode: Mode) {
         let want = self.settings().lane;
-        let key = calibration_key(&want);
+        let key = kit_key(&want);
         let Some(w) = self.worker.as_mut() else { return };
         let lane = match mode {
             Mode::Drums => self.drums.as_mut(),
@@ -348,7 +342,7 @@ impl MeshVst {
         let Some(l) = lane else { return };
         let generation = self.ui.kit_generation.load(std::sync::atomic::Ordering::Acquire);
         let key = (key, generation);
-        let have = |s: &Option<(LaneSettings, u32)>| s.as_ref().map(|(s, g)| (calibration_key(s), *g));
+        let have = |s: &Option<(LaneSettings, u32)>| s.as_ref().map(|(s, g)| (kit_key(s), *g));
         if have(&l.loaded) == Some(key) || have(&l.requested) == Some(key) {
             return;
         }
@@ -365,7 +359,7 @@ impl MeshVst {
     /// Test hosts ([`SYNC_LOAD_ENV`]): block until the asked-for kit landed, so
     /// a render never waits on the clock for the worker. Not RT-safe.
     fn wait_for_kit(&mut self, mode: Mode) {
-        let key = |s: &Option<(LaneSettings, u32)>| s.as_ref().map(|(s, g)| (calibration_key(s), *g));
+        let key = |s: &Option<(LaneSettings, u32)>| s.as_ref().map(|(s, g)| (kit_key(s), *g));
         let started = std::time::Instant::now();
         while started.elapsed() < std::time::Duration::from_secs(60) {
             let Some(l) = self.lane_mut(mode) else { return };
@@ -618,12 +612,18 @@ impl MeshVst {
             }
             0.5
         };
-        // Both lanes: Heat, then the Squash last (D59).
-        self.heat.process(buf, self.resolved.heat, tone, drums);
+        // Both lanes: Heat, then the Squash last (D59), each around its
+        // centre for the pattern playing (D66: per pattern, never per hit).
+        let letter = if drums { self.drums.as_ref() } else { self.bass.as_ref() }.and_then(|l| l.player.rendered()).map_or(0, |(_, b)| b.letter);
+        let seed = self.params.sound_seed.value() as u32;
+        let role = if drums { mesh_vst_core::role::Role::Drums } else { mesh_vst_core::role::Role::Bass };
+        let heat = macros::around(self.resolved.heat, macros::heat_centre(seed, letter));
+        self.heat.process(buf, heat, tone, drums);
         if self.params.mono_lows.value() {
             self.mono.process(buf);
         }
-        self.squash.process(buf, self.params.squash.value(), drums, mesh_vst_core::tempo::stretch(transport.bpm));
+        let squash = macros::around(self.params.squash.value(), macros::squash_centre(role, seed, letter));
+        self.squash.process(buf, squash, drums, mesh_vst_core::tempo::stretch(transport.bpm));
         self.meter.process(buf);
         // Splice: the sidechain's level per 16th of the song.
         if self.ui.host.load(std::sync::atomic::Ordering::Relaxed) == link::SIDECHAIN {
@@ -781,11 +781,11 @@ impl Plugin for MeshVst {
         self.books = Some([Arc::new(books.drums), Arc::new(books.bass)]);
         let mut sampler = Sampler::new(sr, DRUM_VOICES);
         sampler.set_bank(basedrop::Shared::new(&gc_handle(), bank));
-        self.drums = Some(Lane { player: Player::new(PatternLane::drums(layout, 1, 1), sampler), base: LaneSamplerParams { gain: START_DRUM_GAIN, ..macros::drum_params() }, loaded: None, requested: None });
+        self.drums = Some(Lane { player: Player::new(PatternLane::drums(layout, 1, 1), sampler), base: LaneSamplerParams { gain: LANE_GAIN, ..macros::drum_params() }, loaded: None, requested: None });
 
         let mut sampler = Sampler::new(sr, BASS_VOICES);
         sampler.set_bank(basedrop::Shared::new(&gc_handle(), mudpie_bank(share(builtin::mudpie(sr)))));
-        self.bass = Some(Lane { player: Player::new(PatternLane::bass_with_clips(1, 1, worker::bass_clips()), sampler), base: LaneSamplerParams { gain: START_BASS_GAIN, ..macros::mudpie_params() }, loaded: None, requested: None });
+        self.bass = Some(Lane { player: Player::new(PatternLane::bass_with_clips(1, 1, worker::bass_clips()), sampler), base: LaneSamplerParams { gain: LANE_GAIN, ..macros::mudpie_params() }, loaded: None, requested: None });
         if let Some([d, b]) = self.books.clone() {
             for (lane, book) in [(self.drums.as_mut(), d), (self.bass.as_mut(), b)] {
                 if let Some(l) = lane {

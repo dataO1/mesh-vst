@@ -149,6 +149,60 @@ pub fn measure_hit_lufs(stereo: &[StereoSample], sample_rate: f64) -> f64 {
     if p > 0.0 { power_to_lufs(p) } else { f64::NEG_INFINITY }
 }
 
+/// Bands of [`block_powers`]: their upper edges in Hz (the last band runs
+/// to the top) and their centres, where a filter's response is read.
+pub const POWER_BANDS: usize = 4;
+pub const BAND_EDGES_HZ: [f64; POWER_BANDS - 1] = [250.0, 1000.0, 4000.0];
+pub const BAND_CENTRES_HZ: [f32; POWER_BANDS] = [100.0, 500.0, 2000.0, 8000.0];
+/// Entries per block: the bands, then the whole (the bands' powers miss
+/// their cross terms, so the whole is kept apart).
+pub const POWER_ENTRIES: usize = POWER_BANDS + 1;
+
+/// The K-weighted power (L + R) of each `block` frames of a stereo signal
+/// in [`POWER_BANDS`] bands (split by one-pole lowpasses at
+/// [`BAND_EDGES_HZ`], so they sum to the whole), the last block over what is
+/// left: the loudness of any stretch of it, and through a filter, without
+/// filtering it again (D64: what a sampler note plays).
+pub fn block_powers(left: &[f32], right: &[f32], sample_rate: f64, block: usize) -> Vec<[f32; POWER_ENTRIES]> {
+    let block = block.max(1);
+    let [mut shelf_l, mut hp_l] = k_weighting(sample_rate);
+    let [mut shelf_r, mut hp_r] = k_weighting(sample_rate);
+    let coef = BAND_EDGES_HZ.map(|f| 1.0 - (-std::f64::consts::TAU * f / sample_rate).exp());
+    let mut low = [[0.0f64; POWER_BANDS - 1]; 2];
+    let mut out = Vec::with_capacity(left.len().div_ceil(block));
+    let (mut acc, mut n) = ([0.0f64; POWER_ENTRIES], 0usize);
+    for (i, &l) in left.iter().enumerate() {
+        let r = right.get(i).copied().unwrap_or(l);
+        let x = [hp_l.process(shelf_l.process(l as f64)), hp_r.process(shelf_r.process(r as f64))];
+        for (c, &v) in x.iter().enumerate() {
+            let mut below = 0.0;
+            for (k, a) in coef.iter().enumerate() {
+                low[c][k] += a * (v - low[c][k]);
+                let band = low[c][k] - below;
+                acc[k] += band * band;
+                below = low[c][k];
+            }
+            let top = v - below;
+            acc[POWER_BANDS - 1] += top * top;
+            acc[POWER_BANDS] += v * v;
+        }
+        n += 1;
+        if n == block {
+            out.push(acc.map(|a| (a / n as f64) as f32));
+            (acc, n) = ([0.0; POWER_ENTRIES], 0);
+        }
+    }
+    if n > 0 {
+        out.push(acc.map(|a| (a / n as f64) as f32));
+    }
+    out
+}
+
+/// The K-weighted power (L + R) of `lufs`.
+pub fn lufs_to_power(lufs: f64) -> f64 {
+    10f64.powf((lufs + 0.691) / 10.0)
+}
+
 /// Static trim in dB that brings `measured` LUFS to `target` LUFS.
 /// Unmeasurable input (silence) gets no trim.
 pub fn trim_db(measured: f64, target: f64) -> f64 {

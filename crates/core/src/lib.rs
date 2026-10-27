@@ -4,7 +4,6 @@
 //! and sampler started as a copy of Mesh live mode
 //! (`mesh-core/src/live`), relicensed under GPL-3.0-or-later by their author.
 
-pub mod calibrate;
 pub(crate) mod chain;
 pub mod clips;
 pub(crate) mod cluster;
@@ -25,6 +24,7 @@ pub mod library;
 pub mod loader;
 pub mod loudness;
 pub mod macros;
+pub mod makeup;
 pub mod mbdist;
 pub mod midi;
 pub mod modout;

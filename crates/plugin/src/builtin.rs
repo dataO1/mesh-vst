@@ -2,6 +2,7 @@
 //! it makes sound in any DAW right after loading.
 
 use mesh_vst_core::kit::{grid_slices, share, DrumKit};
+use mesh_vst_core::loader::{slot_offset_db, Slot, SAMPLE_LOUDNESS_TARGET};
 use mesh_vst_core::sampler::SampleData;
 
 /// MIDI key the built-in mudpie sounds at (F2).
@@ -18,8 +19,9 @@ impl Noise {
     }
 }
 
-fn mono(s: Vec<f32>, sr: u32, root: u8) -> SampleData {
-    SampleData::from_channels(&s, &s, sr, root)
+/// A mono sample whose notes play at the library's loudness for `slot` (D64).
+fn mono(s: Vec<f32>, sr: u32, root: u8, slot: Slot) -> SampleData {
+    SampleData::from_channels(&s, &s, sr, root).with_note_lufs((SAMPLE_LOUDNESS_TARGET + slot_offset_db(slot)) as f32)
 }
 
 fn kick(sr: u32) -> Vec<f32> {
@@ -98,13 +100,13 @@ fn break_loop(sr: u32) -> Vec<f32> {
 /// The built-in drum kit.
 pub fn drum_kit(sr: u32) -> DrumKit {
     DrumKit {
-        kick: Some(share(mono(kick(sr), sr, 60))),
-        snare: Some(share(mono(snare(sr, 7), sr, 60))),
-        hats_closed: vec![share(mono(hat(sr, 3, 0.025), sr, 60))],
-        hats_open: vec![share(mono(hat(sr, 5, 0.12), sr, 60))],
-        rides: vec![share(mono(hat(sr, 17, 0.3), sr, 60))],
-        perc: vec![share(mono(snare(sr, 23).into_iter().map(|x| x * 0.5).collect(), sr, 60))],
-        break_loop: Some(share(grid_slices(mono(break_loop(sr), sr, 60), 16))),
+        kick: Some(share(mono(kick(sr), sr, 60, Slot::Kick))),
+        snare: Some(share(mono(snare(sr, 7), sr, 60, Slot::Snare))),
+        hats_closed: vec![share(mono(hat(sr, 3, 0.025), sr, 60, Slot::HatClosed))],
+        hats_open: vec![share(mono(hat(sr, 5, 0.12), sr, 60, Slot::HatOpen))],
+        rides: vec![share(mono(hat(sr, 17, 0.3), sr, 60, Slot::CymbalA))],
+        perc: vec![share(mono(snare(sr, 23).into_iter().map(|x| x * 0.5).collect(), sr, 60, Slot::Perc))],
+        break_loop: Some(share(grid_slices(mono(break_loop(sr), sr, 60, Slot::Break), 16))),
         ..Default::default()
     }
 }
@@ -137,5 +139,5 @@ pub fn mudpie(sr: u32) -> SampleData {
         left.push(((lp + side) * 0.45).tanh());
         right.push(((lp - side) * 0.45).tanh());
     }
-    SampleData::from_channels(&left, &right, sr, MUDPIE_ROOT)
+    SampleData::from_channels(&left, &right, sr, MUDPIE_ROOT).with_note_lufs(SAMPLE_LOUDNESS_TARGET as f32)
 }

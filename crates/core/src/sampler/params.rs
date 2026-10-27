@@ -87,6 +87,9 @@ pub struct LaneSamplerParams {
     /// The feel of the lane's musical times: 1 straight, 1.5 dotted, 2/3
     /// triplet ([`crate::tempo::feel`], from the Groove knob).
     pub feel: f32,
+    /// How far velocity scales a note below its matched level (D64): 1 the
+    /// whole curve, 0 every note at the level.
+    pub velocity_depth: f32,
 }
 
 /// Per-note modulation envelope (SF2 "Mod env", SFZ `fileg_*` / `pitcheg_*`):
@@ -391,6 +394,7 @@ impl Default for LaneSamplerParams {
             unison: super::unison::Unison::default(),
             choke_amount: 1.0,
             feel: 1.0,
+            velocity_depth: 1.0,
         }
     }
 }

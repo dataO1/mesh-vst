@@ -83,8 +83,9 @@ const P_TOP: usize = 11;
 const P_TONE: usize = 12;
 
 // MUSICAL: first draft, tune by ear. Defaults: two-step at medium density
-// with 8th hats, a few ghosts, little percussion, a lightly chopped break.
-pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.25, 0.5, 0.5, 0.3, 0.2, 0.5, 0.3, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5];
+// with 8th hats, a few ghosts, little percussion, the break in order (Morph
+// starts off, user 2026-10-27).
+pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.25, 0.5, 0.5, 0.3, 0.2, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5];
 
 
 /// Archetype order used when the lane gives none (research §7.2).
@@ -131,6 +132,7 @@ const S_TOP_VEL: u32 = 0x1B4;
 const S_FEEL_ADD: u32 = 0x1C2;
 const S_FEEL_TRIPLET: u32 = 0x1C3;
 const S_FEEL_PRESENCE: u32 = 0x1D0;
+const S_KIT_CHOP: u32 = 0x1E0;
 
 // ─── Musical tables ────────────────────────────────────────────────────
 
@@ -605,6 +607,84 @@ fn rate_feel(density: f32, rng: &PhraseRng, bb: &Backbone, until: usize, add_vel
     for e in &adds[..n_adds] {
         out.push(*e);
     }
+}
+
+// MUSICAL: tune by ear (user, 2026-10-27: Morph on the drums not heard; it
+// should chop up the whole kit, not only the break).
+/// Share of the kick and snare hits Morph cuts up at full, and how: a
+/// stutter (the hit again a 32nd or a 16th later, softer), a move (a 16th
+/// either way), a swap (kick for snare and back), as shares of the cuts.
+const KIT_CHOP_MAX: f32 = 0.45;
+const KIT_CHOP_KINDS: [f32; 3] = [0.45, 0.35, 0.2];
+/// A stutter's level against its hit.
+const KIT_STUTTER_VEL: f32 = 0.7;
+
+/// Morph on the whole kit: kick and snare hits before `until` (a fill) are
+/// stuttered, moved or swapped at `chop` (0 none .. 1 [`KIT_CHOP_MAX`] of
+/// them), seeded per hit. The bar's first downbeat stays.
+fn kit_chop(chop: f32, rng: &PhraseRng, until: usize, out: &mut BarEvents) {
+    let p = chop.clamp(0.0, 1.0) * KIT_CHOP_MAX;
+    if p <= 0.0 {
+        return;
+    }
+    let backbone = |e: &LiveEvent| matches!(e.kind, EventKind::Trigger | EventKind::NoteOn) && matches!(DrumVoice::of_target(e.target), Some(DrumVoice::Kick | DrumVoice::Snare));
+    let target_of = |v: DrumVoice| out.as_slice().iter().find(|e| backbone(e) && DrumVoice::of_target(e.target) == Some(v)).map(|e| e.target);
+    let (kick, snare) = (target_of(DrumVoice::Kick), target_of(DrumVoice::Snare));
+    let snapshot = out.clone();
+    let taken = |tick: u16, target: u8| snapshot.as_slice().iter().any(|x| backbone(x) && x.target == target && x.tick / TICKS_PER_STEP == tick / TICKS_PER_STEP);
+    let until_tick = until as u16 * TICKS_PER_STEP;
+    let mut adds = [LiveEvent::default(); STEPS_PER_BAR];
+    let mut n_adds = 0;
+    for e in out.as_mut_slice().iter_mut().filter(|e| backbone(e)) {
+        let step = (e.tick / TICKS_PER_STEP) as u8;
+        if e.tick == 0 || e.tick >= until_tick || !rng.chance(step, S_KIT_CHOP, p) {
+            continue;
+        }
+        let kind = rng::weighted_pick(rng.at(step, S_KIT_CHOP + 1), &KIT_CHOP_KINDS).unwrap_or(0);
+        match kind {
+            0 => {
+                let gap = if rng.chance(step, S_KIT_CHOP + 2, 0.5) { TICKS_PER_STEP / 2 } else { TICKS_PER_STEP };
+                let tick = e.tick + gap;
+                if tick < until_tick && !taken(tick, e.target) && n_adds < adds.len() {
+                    let mut c = *e;
+                    c.tick = tick;
+                    c.vel = ((e.vel as f32) * KIT_STUTTER_VEL).round().max(1.0) as u8;
+                    c.flags &= !flags::ACCENT;
+                    adds[n_adds] = c;
+                    n_adds += 1;
+                }
+            }
+            1 => {
+                let tick = if rng.chance(step, S_KIT_CHOP + 3, 0.5) { e.tick + TICKS_PER_STEP } else { e.tick.saturating_sub(TICKS_PER_STEP) };
+                if tick > 0 && tick < until_tick && !taken(tick, e.target) {
+                    e.tick = tick;
+                }
+            }
+            _ => {
+                let other = if DrumVoice::of_target(e.target) == Some(DrumVoice::Kick) { snare } else { kick };
+                if let Some(t) = other.filter(|t| !taken(e.tick, *t)) {
+                    e.target = t;
+                }
+            }
+        }
+    }
+    for e in &adds[..n_adds] {
+        out.push(*e);
+    }
+}
+
+/// The steps the kick and the snare hit in `out`.
+fn backbone_masks(out: &BarEvents) -> (u16, u16) {
+    let (mut kick, mut snare) = (0u16, 0u16);
+    for e in out.as_slice().iter().filter(|e| matches!(e.kind, EventKind::Trigger | EventKind::NoteOn)) {
+        let s = (e.tick / TICKS_PER_STEP) as usize % STEPS_PER_BAR;
+        match DrumVoice::of_target(e.target) {
+            Some(DrumVoice::Kick) => kick |= bit(s),
+            Some(DrumVoice::Snare) => snare |= bit(s),
+            _ => {}
+        }
+    }
+    (kick, snare)
 }
 
 #[inline]
@@ -1296,6 +1376,10 @@ impl LaneGenerator for DrumGenerator {
         }
         let wants_pickup = rng.is_variation_bar() && !ctx.fill;
         let picked_up = wants_pickup && self.pickup(&p, &rng, &mut bb, out);
+        // Morph chops the whole kit, not only the break and the top: the
+        // backbone first, so the layers around it follow it.
+        kit_chop(p.chop, &rng, fill_from, out);
+        (bb.kick, bb.snare) = backbone_masks(out);
 
         // A2: overlays stay off fired steps and off steps the backbone rates
         // as important, even while the density hides them.
@@ -1374,6 +1458,28 @@ mod tests {
     /// Kit without a break, so backbone tests see only one-shots.
     fn kit_only() -> DrumGenerator {
         DrumGenerator::with_layout(DrumLayout::empty().with_backbone(2).with_hats(2, 2).with_perc(2))
+    }
+
+    #[test]
+    fn morph_chops_the_whole_kit_from_off() {
+        // User, 2026-10-27: Morph not heard on the drums; it chops kick and
+        // snare too, and at 0 it leaves them alone.
+        let g = generator();
+        let kit = |events: &[LiveEvent]| {
+            let mut v: Vec<(u16, u8)> = events.iter().filter(|e| matches!(DrumVoice::of_target(e.target), Some(DrumVoice::Kick | DrumVoice::Snare))).map(|e| (e.tick, e.target)).collect();
+            v.sort();
+            v
+        };
+        let (mut changed, mut bars) = (0, 0);
+        for seed in 0..40 {
+            for b in 0..4 {
+                let (off, full) = (bar(&g, seed, b, &params(|p| p[P_CHOP] = 0.0)), bar(&g, seed, b, &params(|p| p[P_CHOP] = 1.0)));
+                bars += 1;
+                changed += (kit(&off) != kit(&full)) as u32;
+                assert!(kit(&full).first().is_some_and(|k| k.0 == 0) == kit(&off).first().is_some_and(|k| k.0 == 0), "seed {seed}: the downbeat stays");
+            }
+        }
+        assert!(changed * 2 > bars, "{changed} of {bars} bars chop the kit");
     }
 
     fn params(edit: impl FnOnce(&mut [f32; MAX_GEN_PARAMS])) -> [f32; MAX_GEN_PARAMS] {

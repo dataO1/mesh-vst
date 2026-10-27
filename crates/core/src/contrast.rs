@@ -147,6 +147,11 @@ pub fn letter_params(
 ) -> [f32; MAX_GEN_PARAMS] {
     let mut out = *params;
     for (k, (name, _)) in LETTER_OFFSETS.iter().enumerate() {
+        // Morph (the drums' chop) plays as set on A and B; the fills move
+        // it (user, 2026-10-27).
+        if *name == "chop" && letter.class() == crate::form::SeedClass::Main {
+            continue;
+        }
         let Some(i) = names.iter().position(|n| n == name) else { continue };
         let Some(p) = out.get_mut(i) else { continue };
         let base = *p;
@@ -233,6 +238,30 @@ pub fn answer_line(pattern_seed: u32, lane: u8, contrast: f32) -> (bool, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_and_b_play_morph_as_set_and_the_fills_move_it() {
+        // User, 2026-10-27: Morph is not moved by A and B, only by C and D.
+        let names = crate::generator::drums::PARAM_NAMES;
+        let k = names.iter().position(|n| *n == "chop").unwrap();
+        let mut params = [0.5f32; MAX_GEN_PARAMS];
+        params[k] = 0.3;
+        let (mut moved_fill, mut fills) = (0, 0);
+        for seed in 0..100 {
+            for second in [false, true] {
+                for letter in Letter::ALL {
+                    let p = letter_params(&names, &params, seed, 1, letter, second, 1.0);
+                    if letter.class() == crate::form::SeedClass::Main {
+                        assert_eq!(p[k], 0.3, "seed {seed} {letter:?}");
+                    } else {
+                        fills += 1;
+                        moved_fill += (p[k] != 0.3) as u32;
+                    }
+                }
+            }
+        }
+        assert!(moved_fill * 2 > fills, "{moved_fill} of {fills}");
+    }
 
     #[test]
     fn the_drums_b_plays_another_style() {

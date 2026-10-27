@@ -240,7 +240,7 @@ fn render(entry: &PluginEntry, r: &Render) -> Result<Audio, Error> {
         Ok(())
     };
 
-    // Warmup: a few stopped blocks so the kit and its calibration land (the
+    // Warmup: a few stopped blocks so the kit lands (the
     // plugin waits for them, MESH_VST_SYNC_LOAD).
     let mut first = true;
     for _ in 0..if r.warmup > 0.0 { WARMUP_BLOCKS } else { 0 } {
@@ -357,10 +357,13 @@ fn make_library(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// Loudness is calibrated (G5): every seed of both modes lands on the
-/// target at the knobs' middle, so a new seed or sample never jumps in level.
+/// Loudness (D64): every note comes matched before the effects and nothing
+/// levels the output, so the seeds of both modes sit in a range the user
+/// plays as one track, and the bass's stabs (Shape 0) are as loud as its
+/// middle.
 fn loudness(entry: &PluginEntry, rep: &mut Report, base: &Render, what: &str) -> Result<(), Error> {
-    const TARGET: f64 = -14.0;
+    const SPREAD_DB: f64 = 4.0;
+    const RANGE: (f64, f64) = (-20.0, -6.0);
     for mode in ["drums", "bass"] {
         let mut all = Vec::new();
         for seed in [1, 7, 21, 99] {
@@ -369,10 +372,14 @@ fn loudness(entry: &PluginEntry, rep: &mut Report, base: &Render, what: &str) ->
         }
         let lo = all.iter().cloned().fold(f64::INFINITY, f64::min);
         let hi = all.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let ok = all.iter().all(|l| (l - TARGET).abs() <= 1.5);
+        let ok = hi - lo <= SPREAD_DB && lo >= RANGE.0 && hi <= RANGE.1;
         let list: Vec<String> = all.iter().map(|l| format!("{l:.1}")).collect();
-        rep.check(&format!("{what} {mode} land on {TARGET} LUFS over seeds"), ok, format!("{} LUFS (spread {:.1} dB)", list.join(", "), hi - lo));
+        rep.check(&format!("{what} {mode} seeds sit within {SPREAD_DB} dB"), ok, format!("{} LUFS (spread {:.1} dB)", list.join(", "), hi - lo));
     }
+    // User, 2026-10-27: short stabs came out very silent.
+    let shape = |v: f64| render(entry, &Render { mode: "bass", bars: 16.0, params: vec![("Shape".into(), v)], ..base.clone() }).map(|a| a.lufs());
+    let (stabs, mid) = (shape(0.0)?, shape(0.5)?);
+    rep.check(&format!("{what} bass stabs are as loud as the middle"), (stabs - mid).abs() <= 3.0, format!("{stabs:.1} LUFS at Shape 0, {mid:.1} at the middle"));
     Ok(())
 }
 
@@ -384,7 +391,7 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
 
     // Built-in sounds (no library).
     std::env::remove_var("MESH_VST_LIBRARY");
-    // The warmup lets the background kit load and loudness calibration land.
+    // The warmup lets the background kit load.
     let base = Render { seed: Some(7), bars: 4.0, warmup: 1.5, ..Default::default() };
     let drums = render(entry, &base)?;
     save("builtin-drums", &drums)?;
@@ -462,7 +469,7 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     }
     // Swing, Morph and Permute are heard: their extremes differ by more than a trace.
     let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt();
-    for (mode, knob) in [("drums", "Groove"), ("drums", "Morph"), ("drums", "Permute"), ("drums", "Tone"), ("drums", "Heat"), ("drums", "Squash"), ("bass", "Squash")] {
+    for (mode, knob) in [("drums", "Groove"), ("drums", "Morph"), ("drums", "Permute"), ("drums", "Tone"), ("drums", "Heat"), ("drums", "Squash"), ("bass", "Squash"), ("bass", "Morph")] {
         let lo = render(entry, &Render { mode, params: vec![(knob.into(), 0.0)], ..base.clone() })?;
         let hi = render(entry, &Render { mode, params: vec![(knob.into(), 1.0)], ..base.clone() })?;
         let diff: Vec<f32> = lo.samples.iter().zip(&hi.samples).map(|(a, b)| a - b).collect();
@@ -479,7 +486,19 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
         let lift = if mode == "bass" { 3.0 } else { 0.0 };
         let off: Vec<f64> = [0.0, 0.3, 1.0].iter().zip(&l).map(|(a, v)| v - a * lift).collect();
         let spread = off.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - off.iter().cloned().fold(f64::INFINITY, f64::min);
-        rep.check(&format!("Squash keeps the {mode} loudness, the lift aside"), spread <= 1.5, format!("{:.1}, {:.1}, {:.1} LUFS at 0, 30, 100 %", l[0], l[1], l[2]));
+        // Within 2 dB: the make-up is a table (D64), and Heat moves per
+        // pattern under it (D66).
+        rep.check(&format!("Squash keeps the {mode} loudness, the lift aside"), spread <= 2.0, format!("{:.1}, {:.1}, {:.1} LUFS at 0, 30, 100 %", l[0], l[1], l[2]));
+    }
+    // D64: every effect keeps its level by its knobs' make-up, so Heat and
+    // Neuro from off to full stay within a few dB.
+    for (mode, knob, most) in [("drums", "Heat", 2.0), ("bass", "Heat", 2.0), ("bass", "Neuro", 3.0)] {
+        let mut l = Vec::new();
+        for amount in [0.0, 0.5, 1.0] {
+            l.push(render(entry, &Render { mode, bars: 8.0, params: vec![(knob.into(), amount)], ..base.clone() })?.lufs());
+        }
+        let spread = l.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - l.iter().cloned().fold(f64::INFINITY, f64::min);
+        rep.check(&format!("{knob} keeps the {mode} loudness"), spread <= most, format!("{:.1}, {:.1}, {:.1} LUFS at 0, 50, 100 %", l[0], l[1], l[2]));
     }
     // The three release tails at full Shape sound apart.
     let mut tails = Vec::new();

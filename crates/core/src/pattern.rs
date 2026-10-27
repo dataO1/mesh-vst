@@ -80,7 +80,9 @@ fn focus_shift(names: &[&str], focus: &[f32; STEPS_PER_BAR]) -> [f32; MAX_GEN_PA
 /// Splice: hits outside the focus move into it or thin out (seeded per
 /// hit). A hit on a step of low focus moves a 16th or an 8th to a step of
 /// more focus where it does not land on another of its kind; where it can't
-/// it drops, up to [`crate::splice::DROP_MAX`] of them where the focus is
+/// it plays softer (up to [`crate::splice::SOFTEN_MAX`]) and, past
+/// [`crate::splice::DROP_FROM`] of the knob's way out, drops, up to
+/// [`crate::splice::DROP_MAX`] of them where the focus is
 /// lowest. A dropped note's time is held by the note before it at chance
 /// `hold` (a pitched lane's Density near the top: the line keeps sounding,
 /// its onsets leave the host's), unless that one is a stab. The bar stays
@@ -89,6 +91,8 @@ fn splice_thin(out: &mut BarEvents, focus: &[f32; STEPS_PER_BAR], seed: u32, lan
     if focus.iter().all(|f| *f >= 1.0) {
         return;
     }
+    // How far the knob is out of its centre (the focus's widest move).
+    let reach = focus.iter().map(|f| (f - 1.0).abs()).fold(0.0, f32::max) / crate::splice::FOCUS_RANGE;
     let step = TICKS_PER_BAR / STEPS_PER_BAR as u16;
     let mut taken = [0u64; STEPS_PER_BAR];
     for e in out.as_slice().iter().filter(|e| matches!(e.kind, EventKind::Trigger | EventKind::NoteOn)) {
@@ -121,9 +125,16 @@ fn splice_thin(out: &mut BarEvents, focus: &[f32; STEPS_PER_BAR], seed: u32, lan
                 e.tick = t as u16 * step + off;
                 e.gate = e.gate.min(TICKS_PER_BAR - e.tick);
             }
-            // No place to go: it drops (velocity 0, removed below).
-            None if rng::unit_f32(h.rotate_left(17)) < low * crate::splice::DROP_MAX => e.vel = 0,
-            None => {}
+            // No place to go: with the knob far out it drops (velocity 0,
+            // removed below), else it plays softer.
+            None => {
+                let far = ((reach - crate::splice::DROP_FROM) / (1.0 - crate::splice::DROP_FROM)).clamp(0.0, 1.0);
+                if rng::unit_f32(h.rotate_left(17)) < low * far * crate::splice::DROP_MAX {
+                    e.vel = 0;
+                } else {
+                    e.vel = ((e.vel as f32 * (1.0 - crate::splice::SOFTEN_MAX * low)).round() as u8).max(1);
+                }
+            }
         }
     }
     if hold > 0.0 {
@@ -629,7 +640,7 @@ impl PatternLane {
                 lane: c.lane,
                 root: c.harmony.key.root,
                 reach,
-                swing: (Feel::of(seed, c.lane, class).swing + knob_swing).min(1.0),
+                swing: if self.role == Role::Drums { knob_swing } else { (Feel::of(seed, c.lane, class).swing + knob_swing).min(1.0) },
                 morph: if self.role == Role::Drums { 0.0 } else { block_morph },
                 permute: front.permute,
             };
@@ -744,7 +755,8 @@ impl PatternLane {
             feel.apply(out, ctx.seed, ctx.lane);
             crate::chain::groove::pitched(out, f.groove, f.variation, ctx.seed, ctx.lane);
         } else {
-            feel.swing = (feel.swing + f.swing).min(1.0);
+            // The drums swing as the knob says (no letter's own swing).
+            feel.swing = f.swing;
             feel.apply(out, ctx.seed, ctx.lane);
             crate::chain::groove::drums(out, f.swing);
         }
@@ -818,7 +830,12 @@ impl PatternLane {
         // ghosts, percussion and tops too), on top of the letter's feel, so
         // the generator itself plays straight.
         let knob_swing = match names.iter().position(|n| *n == "swing") {
-            Some(i) if self.role == Role::Drums => std::mem::take(&mut params[i]),
+            // The knob's own value: no letter moves the drums' Groove (user,
+            // 2026-10-27: it moved with the letters).
+            Some(i) if self.role == Role::Drums => {
+                params[i] = 0.0;
+                self.params[i]
+            }
             _ => 0.0,
         };
         // The drum lane fills the last bar of a filler segment, and the last
@@ -1460,6 +1477,30 @@ fn onset_shift(notes: &mut [SpanNote], want: u32, ticks: u32, beat: u32) -> u32 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splice_softens_hits_near_its_centre_and_drops_them_far_out() {
+        // User, 2026-10-27: off the centre a little the hits against the
+        // setting play softer instead of going.
+        let mut occ = [0.0f32; STEPS_PER_BAR];
+        for s in (0..STEPS_PER_BAR).step_by(4) {
+            occ[s] = 1.0;
+        }
+        let thinned = |amount: f32| {
+            let mut bar = BarEvents::default();
+            for s in 0..STEPS_PER_BAR {
+                // Every step taken, so a hit has nowhere to move.
+                bar.push(crate::event::LiveEvent { tick: s as u16 * crate::TICKS_PER_STEP, kind: EventKind::Trigger, vel: 100, target: 1, ..Default::default() });
+            }
+            splice_thin(&mut bar, &crate::splice::focus(amount, &occ), 7, 1, 0.0);
+            let vels: Vec<u8> = bar.as_slice().iter().map(|e| e.vel).collect();
+            (vels.len(), vels.iter().filter(|v| **v < 100).count())
+        };
+        let (near, far) = (thinned(0.7), thinned(1.0));
+        assert_eq!(near.0, STEPS_PER_BAR, "near the centre none goes: {near:?}");
+        assert!(near.1 > 0, "but some play softer: {near:?}");
+        assert!(far.0 < STEPS_PER_BAR, "far out some go: {far:?}");
+    }
 
     fn render_all(lane: &PatternLane, bars: u64) -> Vec<Vec<crate::event::LiveEvent>> {
         let key = MusicalKey::new(5, true);

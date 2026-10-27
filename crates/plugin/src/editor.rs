@@ -1107,6 +1107,10 @@ impl Gui {
     /// Where the last hit puts knob `k`'s marker and how bright it is; `None`
     /// once it faded or while the hit sits on the knob.
     fn hit_marker(&self, k: Knob) -> Option<(f32, f32)> {
+        // Squash plays one amount for the whole lane (D66).
+        if k == Knob::Squash {
+            return None;
+        }
         let i = k as usize;
         let v = *self.hit.get(i)?;
         if !v.is_finite() || self.hit_glow < 0.05 {
@@ -1273,9 +1277,6 @@ impl Gui {
         for k in [Knob::Density, Knob::Contrast, Knob::Variation, Knob::Groove] {
             left = left.push(knob(p, k, self.hit_marker(k)));
         }
-        // The lane's last stage.
-        left = left.push(small("OUTPUT"));
-        left = left.push(knob(p, Knob::Squash, None));
         left = left.push(column![
             small("PHASE"),
             row![
@@ -1312,7 +1313,8 @@ impl Gui {
         let left = container(left).width(260);
 
         // Right: the mode's knobs, then who plays the form, Splice and (bass) the unison.
-        let mut right = column![small(if drums { "KIT" } else { "MUDPIE VOICE" })].spacing(9);
+        // The bass has more knobs: tighter, so the form and Splice fit.
+        let mut right = column![small(if drums { "KIT" } else { "MUDPIE VOICE" })].spacing(if drums { 9 } else { 5 });
         if drums {
             right = right.push(column![small("STYLE"), pick(DrumStyle::variants_list(), p.style.value(), Message::Style)].spacing(6));
             right = right.push(knob(p, Knob::Shape, self.hit_marker(Knob::Shape)));
@@ -1326,11 +1328,12 @@ impl Gui {
                 ]
                 .spacing(4),
             );
-            for k in [Knob::Morph, Knob::Tone, Knob::Heat] {
+            // The post effects last, Squash at the end (user, 2026-10-27).
+            for k in [Knob::Morph, Knob::Tone, Knob::Heat, Knob::Squash] {
                 right = right.push(knob(p, k, self.hit_marker(k)));
             }
         } else {
-            for k in [Knob::Shape, Knob::Morph, Knob::Spread, Knob::Slide, Knob::Heat, Knob::Neuro] {
+            for k in [Knob::Shape, Knob::Morph, Knob::Spread, Knob::Slide, Knob::Heat, Knob::Neuro, Knob::Squash] {
                 right = right.push(knob(p, k, self.hit_marker(k)));
             }
             let source = p.bass_source.value();

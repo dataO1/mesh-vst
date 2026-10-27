@@ -312,6 +312,13 @@ const GAP_SPILL: f32 = 0.6;
 pub const FOCUS_RANGE: f32 = 0.85;
 /// Most of the hits outside the focus dropped at the extremes.
 pub const DROP_MAX: f32 = 0.85;
+// MUSICAL: tune by ear (user, 2026-10-27: off the centre a little, the hits
+// against the setting play softer instead of going; the gaps cut too hard).
+/// How far the knob is out of its centre (0..1) while a hit against it only
+/// plays softer; from there on it may drop, more often further out. The
+/// most a hit's velocity falls.
+pub const DROP_FROM: f32 = 0.5;
+pub const SOFTEN_MAX: f32 = 0.6;
 /// Most of the hits outside the focus moved into it at the extremes.
 pub const MOVE_MAX: f32 = 0.85;
 /// Most a generator parameter moves at full focus (per unit of focus).

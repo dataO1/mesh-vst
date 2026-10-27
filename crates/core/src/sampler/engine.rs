@@ -10,6 +10,7 @@ use super::interp::{sinc_tables, Hermite, Interp, Interpolation, Linear, Sinc8, 
 use super::params::{
     attack_secs, decay_secs, glide_secs, LaneSamplerParams, ModConfig, ZoneMod, ZoneTarget, CHOKE_FADE_SECS, PITCH_ENV_ATTACK_SECS,
 };
+use super::level;
 use super::voice::{BlockMod, Section, VoiceInit, VoiceState};
 use super::unison::{Copy as UnisonCopy, Unison};
 use crate::event::{flags, EventKind, LiveEvent};
@@ -572,118 +573,37 @@ impl Sampler {
         // Unison copies of pitched notes (D38).
         let pitched = ev.kind == EventKind::NoteOn && layers[0].as_ref().is_some_and(|s| s.pitched);
         let (copies, n) = if pitched { self.params.unison.copies(ev.note_id, ev.key) } else { Unison::default().copies(0, 0) };
+        let gain = self.note_gain(ev, &layers, group, gate_ticks, &copies[0]);
         for copy in &copies[..n] {
             for slot in layers.iter().flatten() {
-                self.start_voice(ev, slot, group, gate_ticks, copy);
+                self.start_voice(ev, slot, group, gate_ticks, copy, gain);
             }
         }
     }
 
-    /// Start one voice of a note on `slot`.
-    fn start_voice(&mut self, ev: &LiveEvent, slot: &SlotDef, group: u8, gate_ticks: f64, copy: &UnisonCopy) {
-        let p = &self.params;
-        let pitched = slot.pitched && ev.key != 0;
-        let semis = if pitched { ev.key as f64 - slot.root_key as f64 } else { 0.0 };
-        let root_rate = (-(slot.root_cents as f64) / 1200.0).exp2() * (slot.sample.sample_rate() as f64 / self.sr as f64);
-        let detune = copy.cents as f64;
-        let rate = root_rate * (semis / 12.0 + (ev.cents as f64 + detune) / 1200.0).exp2();
-
-        let vel = (ev.vel.min(127) as f32 / 127.0).powf(p.velocity_curve);
-        let accent = if ev.has(flags::ACCENT) { p.accent_gain } else { 1.0 };
-        let held = (ev.gate > 0 || ev.kind == EventKind::NoteOn) && !slot.one_shot;
-        let stab = ev.has(flags::STAB);
-        let (decay, sustain) = if ev.decay != 0 {
-            (decay_secs(ev.decay), 0.0)
-        } else if stab {
-            (p.decay, 0.0)
-        } else {
-            (p.decay, p.sustain)
-        };
-        self.age += 1;
-        // Notes start at the slot start, except on streams (mudpies), where
-        // the generator picks the position. Pack zones may set their own
-        // start (SFZ `offset`, plus its CC).
-        let (offset, level) = if ev.kind == EventKind::NoteOn && !slot.stream {
-            let cc = self.cc_now();
-            let cc_frames = (ModConfig::sum(&p.modulation.offset_cc, &cc) + ZoneMod::sum(&slot.zone_mods, &cc, ZoneTarget::Offset)) as f64;
-            (((slot.start_offset as f64 + cc_frames) / slot.len().max(1) as f64).clamp(0.0, 0.999), 1.0)
-        } else {
-            // A stream: the generator's seeded position across the whole
-            // sample, moved within a region around it by the Morph knob,
-            // played at the sample's overall loudness.
-            let morph = if p.morph >= 0.0 { (p.morph as f64 - 0.5) * MORPH_REGION } else { 0.0 };
-            let at = (ev.start as f64 / u16::MAX as f64 + morph).rem_euclid(1.0).min(0.999);
-            // Reversed (D43): the note plays its own stretch, from where it
-            // would end back to where it starts (the offset counts from the end).
-            if slot.stream && ev.has(flags::REVERSE) && gate_ticks.is_finite() {
-                let stretch = gate_ticks * self.spt * rate / slot.len().max(1) as f64;
-                (((1.0 - at - stretch).rem_euclid(1.0)).min(0.999), slot.sample.level_gain(at))
-            } else {
-                (at, slot.sample.level_gain(at))
+    /// The gain that brings what the note plays on its `layers` to its
+    /// sample's loudness before the effects (D64); 1 for a sample without
+    /// one.
+    fn note_gain(&self, ev: &LiveEvent, layers: &[Option<SlotDef>; MAX_LAYERS], group: u8, gate_ticks: f64, copy: &UnisonCopy) -> f32 {
+        let Some(lufs) = layers[0].as_ref().and_then(|s| s.sample.note_lufs) else { return 1.0 };
+        let cc = self.cc_now();
+        let t = level::Timing { sr: self.sr, ts: self.ts, spt: self.spt, params: &self.params, cc_cutoff_oct: ModConfig::sum(&self.params.modulation.cutoff_cc, &cc) / 1200.0 };
+        let mut power = 0.0;
+        for slot in layers.iter().flatten() {
+            let v = self.voice_init(ev, slot, group, gate_ticks, copy);
+            if let Some(p) = level::note_power(&v, &slot.sample, &t) {
+                power += p * slot.gain * slot.gain;
             }
-        };
-        // A unison copy starts its own share of a period further in (D38).
-        let offset = if pitched && copy.phase > 0.0 {
-            let period = 1.0 / (440.0 * ((ev.key as f64 - 69.0) / 12.0).exp2());
-            (offset + copy.phase as f64 * period * self.sr as f64 * rate / slot.len().max(1) as f64).min(0.999)
-        } else {
-            offset
-        };
-        // The note's loop section (D43), in the sample's frames from where
-        // the note starts there.
-        let section = (held && ev.loop_len > 0 && !ev.has(flags::REVERSE))
-            .then(|| {
-                let per_tick = self.spt * rate;
-                let lo = slot.start as f64 + offset * slot.len() as f64 + ev.loop_at as f64 * per_tick;
-                let xfade = LOOP_XFADE_SECS as f64 * self.ts as f64 * rate;
-                Section { lo, len: ev.loop_len as f64 * per_tick, xfade, ping_pong: ev.has(flags::PING_PONG) }
-            })
-            .filter(|s| s.len >= 2.0 && s.lo + s.len < slot.end as f64 - 8.0);
-        let init = VoiceInit {
-            age: self.age,
-            group,
-            note_id: ev.note_id,
-            held,
-            gate_ticks,
-            looping: held && (ev.has(flags::LOOP) || slot.loop_range.is_some()),
-            reverse: ev.has(flags::REVERSE),
-            start: slot.start,
-            end: slot.end,
-            offset,
-            rate,
-            detune_cents: detune,
-            gain: slot.gain * vel * accent * copy.gain * level,
-            pan_offset: ev.pan as f32 / 127.0 + slot.pan + copy.pan,
-            cutoff_offset: ev.cutoff as f32 / 127.0,
-            // A gliding cutoff starts where the newest voice's is now.
-            cutoff_start: if p.cutoff_glide > 0.0 {
-                self.voices
-                    .iter()
-                    .filter(|v| v.st.active)
-                    .max_by_key(|v| v.st.age)
-                    .map_or(ev.cutoff as f32 / 127.0, |v| v.st.cutoff_now())
-            } else {
-                ev.cutoff as f32 / 127.0
-            },
-            attack: if ev.attack != 0 { attack_secs(ev.attack) } else { p.attack },
-            // Stabs only (user, 2026-10-21: every 8th got the blip and the
-            // full Density line sounded staccato).
-            pitch_env: if slot.pitched && ev.kind == EventKind::NoteOn && ev.has(flags::STAB) {
-                pitch_env(gate_ticks * self.spt / self.ts as f64 * p.pitch_env_time as f64)
-            } else {
-                None
-            },
-            decay,
-            sustain,
-            punch: if stab { p.punch } else { 0.0 },
-            body: if !stab && pitched && held { p.held_punch } else { 0.0 },
-            loop_range: slot.loop_range,
-            loop_sustain: slot.loop_sustain,
-            section,
-            zone_mods: slot.zone_mods,
-            root_key: pitched.then_some(slot.root_key),
-            root_rate,
-        };
+        }
+        if power > 0.0 { level::match_gain(power, lufs) } else { 1.0 }
+    }
+
+    /// Start one voice of a note on `slot`, at the note's `gain`.
+    fn start_voice(&mut self, ev: &LiveEvent, slot: &SlotDef, group: u8, gate_ticks: f64, copy: &UnisonCopy, gain: f32) {
+        let mut init = self.voice_init(ev, slot, group, gate_ticks, copy);
+        self.age += 1;
+        init.age = self.age;
+        init.gain *= gain;
         let data = slot.sample.clone();
 
         // A free slot, else (all spares busy) cut the oldest voice, preferring
@@ -714,6 +634,112 @@ impl Sampler {
             {
                 old.st.choke(fade);
             }
+        }
+    }
+
+    /// What a voice of a note on `slot` starts with.
+    fn voice_init(&self, ev: &LiveEvent, slot: &SlotDef, group: u8, gate_ticks: f64, copy: &UnisonCopy) -> VoiceInit {
+        let p = &self.params;
+        let pitched = slot.pitched && ev.key != 0;
+        let semis = if pitched { ev.key as f64 - slot.root_key as f64 } else { 0.0 };
+        let root_rate = (-(slot.root_cents as f64) / 1200.0).exp2() * (slot.sample.sample_rate() as f64 / self.sr as f64);
+        let detune = copy.cents as f64;
+        let rate = root_rate * (semis / 12.0 + (ev.cents as f64 + detune) / 1200.0).exp2();
+
+        // Velocity scales the matched level (D64), the lane's depth of it.
+        let vel = 1.0 - p.velocity_depth * (1.0 - (ev.vel.min(127) as f32 / 127.0).powf(p.velocity_curve));
+        let accent = if ev.has(flags::ACCENT) { p.accent_gain } else { 1.0 };
+        let held = (ev.gate > 0 || ev.kind == EventKind::NoteOn) && !slot.one_shot;
+        let stab = ev.has(flags::STAB);
+        let (decay, sustain) = if ev.decay != 0 {
+            (decay_secs(ev.decay), 0.0)
+        } else if stab {
+            (p.decay, 0.0)
+        } else {
+            (p.decay, p.sustain)
+        };
+        // Notes start at the slot start, except on streams (mudpies), where
+        // the generator picks the position. Pack zones may set their own
+        // start (SFZ `offset`, plus its CC).
+        let offset = if ev.kind == EventKind::NoteOn && !slot.stream {
+            let cc = self.cc_now();
+            let cc_frames = (ModConfig::sum(&p.modulation.offset_cc, &cc) + ZoneMod::sum(&slot.zone_mods, &cc, ZoneTarget::Offset)) as f64;
+            ((slot.start_offset as f64 + cc_frames) / slot.len().max(1) as f64).clamp(0.0, 0.999)
+        } else {
+            // A stream: the generator's seeded position across the whole
+            // sample, moved within a region around it by the Morph knob.
+            let morph = if p.morph >= 0.0 { (p.morph as f64 - 0.5) * MORPH_REGION } else { 0.0 };
+            let at = (ev.start as f64 / u16::MAX as f64 + morph).rem_euclid(1.0).min(0.999);
+            // Reversed (D43): the note plays its own stretch, from where it
+            // would end back to where it starts (the offset counts from the end).
+            if slot.stream && ev.has(flags::REVERSE) && gate_ticks.is_finite() {
+                let stretch = gate_ticks * self.spt * rate / slot.len().max(1) as f64;
+                ((1.0 - at - stretch).rem_euclid(1.0)).min(0.999)
+            } else {
+                at
+            }
+        };
+        // A unison copy starts its own share of a period further in (D38).
+        let offset = if pitched && copy.phase > 0.0 {
+            let period = 1.0 / (440.0 * ((ev.key as f64 - 69.0) / 12.0).exp2());
+            (offset + copy.phase as f64 * period * self.sr as f64 * rate / slot.len().max(1) as f64).min(0.999)
+        } else {
+            offset
+        };
+        // The note's loop section (D43), in the sample's frames from where
+        // the note starts there.
+        let section = (held && ev.loop_len > 0 && !ev.has(flags::REVERSE))
+            .then(|| {
+                let per_tick = self.spt * rate;
+                let lo = slot.start as f64 + offset * slot.len() as f64 + ev.loop_at as f64 * per_tick;
+                let xfade = LOOP_XFADE_SECS as f64 * self.ts as f64 * rate;
+                Section { lo, len: ev.loop_len as f64 * per_tick, xfade, ping_pong: ev.has(flags::PING_PONG) }
+            })
+            .filter(|s| s.len >= 2.0 && s.lo + s.len < slot.end as f64 - 8.0);
+        VoiceInit {
+            age: 0,
+            group,
+            note_id: ev.note_id,
+            held,
+            gate_ticks,
+            looping: held && (ev.has(flags::LOOP) || slot.loop_range.is_some()),
+            reverse: ev.has(flags::REVERSE),
+            start: slot.start,
+            end: slot.end,
+            offset,
+            rate,
+            detune_cents: detune,
+            gain: slot.gain * vel * accent * copy.gain,
+            pan_offset: ev.pan as f32 / 127.0 + slot.pan + copy.pan,
+            cutoff_offset: ev.cutoff as f32 / 127.0,
+            // A gliding cutoff starts where the newest voice's is now.
+            cutoff_start: if p.cutoff_glide > 0.0 {
+                self.voices
+                    .iter()
+                    .filter(|v| v.st.active)
+                    .max_by_key(|v| v.st.age)
+                    .map_or(ev.cutoff as f32 / 127.0, |v| v.st.cutoff_now())
+            } else {
+                ev.cutoff as f32 / 127.0
+            },
+            attack: if ev.attack != 0 { attack_secs(ev.attack) } else { p.attack },
+            // Stabs only (user, 2026-10-21: every 8th got the blip and the
+            // full Density line sounded staccato).
+            pitch_env: if slot.pitched && ev.kind == EventKind::NoteOn && ev.has(flags::STAB) {
+                pitch_env(gate_ticks * self.spt / self.ts as f64 * p.pitch_env_time as f64)
+            } else {
+                None
+            },
+            decay,
+            sustain,
+            punch: if stab { p.punch } else { 0.0 },
+            body: if !stab && pitched && held { p.held_punch } else { 0.0 },
+            loop_range: slot.loop_range,
+            loop_sustain: slot.loop_sustain,
+            section,
+            zone_mods: slot.zone_mods,
+            root_key: pitched.then_some(slot.root_key),
+            root_rate,
         }
     }
 

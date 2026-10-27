@@ -974,3 +974,65 @@ fn loop_sections_follow_the_tempo() {
     // rate) from just before the section.
     assert!((2700.0..4900.0).contains(&lo) && (7400.0..9601.0).contains(&top), "{lo}..{top}");
 }
+
+/// A sample whose notes come matched to −12 LUFS (D64): a buzz with a slow
+/// swell in level, so where a note starts matters.
+fn matched_buzz(secs: f32) -> Shared<SampleData> {
+    let n = (secs * SR as f32) as usize;
+    let s: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / SR as f32;
+            let swell = 0.1 + 0.9 * (0.5 + 0.5 * (t * 0.7).sin());
+            swell * 0.4 * ((t * 110.0).fract() * 2.0 - 1.0)
+        })
+        .collect();
+    shared(SampleData::from_channels(&s, &s, SR, 45).with_note_lufs(-12.0))
+}
+
+/// The loudness of `out` from its start to where its 2 ms level falls 20 dB
+/// under its loudest, or its gate ends at `gate` frames (the release aside).
+fn heard_lufs(out: &[StereoSample], gate: usize) -> f64 {
+    let win = SR as usize / 500;
+    let lvl: Vec<f32> = out.chunks(win).map(|c| c.iter().map(|s| s.left * s.left).sum::<f32>() / c.len() as f32).collect();
+    let top = lvl.iter().cloned().fold(0.0, f32::max);
+    let end = lvl.iter().rposition(|&l| l >= top * 0.01).map_or(out.len(), |k| ((k + 1) * win).min(out.len())).min(gate);
+    crate::loudness::measure_hit_lufs(&out[..end], SR as f64)
+}
+
+#[test]
+fn stabs_held_notes_and_quiet_stretches_play_at_the_samples_loudness() {
+    // User, 2026-10-27: short stabs came out very silent. Every note plays
+    // its stretch at the sample's loudness before the effects.
+    let data = matched_buzz(6.0);
+    let play = |ev: LiveEvent, params: LaneSamplerParams| {
+        let mut s = Sampler::new(SR, 8);
+        s.set_bank(bank(vec![(0, SlotDef::whole(data.clone()).streamed())]));
+        s.set_params(params);
+        s.handle_event(&ev, 0);
+        heard_lufs(&render(&mut s, 48_000, 10.0), ev.gate as usize * 10)
+    };
+    let held = LiveEvent { kind: EventKind::NoteOn, key: 45, vel: 127, gate: 3000, note_id: 1, ..Default::default() };
+    let p = flat_params();
+    for start in [0u16, 20_000, 45_000] {
+        let a = play(LiveEvent { start, ..held }, p);
+        let b = play(LiveEvent { start, gate: 200, flags: flags::STAB, ..held }, LaneSamplerParams { decay: 0.12, ..p });
+        for l in [a, b] {
+            assert!((l + 12.0).abs() < 2.0, "start {start}: held {a:.1}, stab {b:.1} LUFS");
+        }
+    }
+}
+
+#[test]
+fn velocity_scales_the_matched_level_by_the_lanes_depth() {
+    let data = matched_buzz(2.0);
+    let level = |vel: u8, depth: f32| {
+        let mut s = Sampler::new(SR, 8);
+        s.set_bank(bank(vec![(0, SlotDef::whole(data.clone()).streamed())]));
+        s.set_params(LaneSamplerParams { velocity_depth: depth, ..flat_params() });
+        s.handle_event(&LiveEvent { kind: EventKind::NoteOn, key: 45, vel, gate: 3000, note_id: 1, ..Default::default() }, 0);
+        heard_lufs(&render(&mut s, 24_000, 10.0), 30_000)
+    };
+    let (full, half, soft) = (level(127, 1.0), level(64, 1.0), level(64, 0.6));
+    assert!((full - half - 6.0).abs() < 1.0, "half velocity at depth 1: {full:.1} -> {half:.1}");
+    assert!(soft > half + 1.5 && soft < full, "a shallower depth scales less: {soft:.1}");
+}

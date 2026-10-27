@@ -347,7 +347,8 @@ impl Default for MeshParams {
             variation: knob_at("Variation", fresh.knob()),
             swing: knob_at("Groove", fresh.knob()),
             shape: knob_at("Shape", fresh.knob()),
-            morph: knob_at("Morph", fresh.knob()),
+            // User, 2026-10-27: Morph starts off.
+            morph: knob_at("Morph", 0.0),
             spread: knob_at("Spread", fresh.knob()),
             slide: knob_at("Slide", fresh.knob()),
             tone: knob_at("Tone", fresh.knob()),
@@ -356,8 +357,8 @@ impl Default for MeshParams {
             neuro: knob_at("Neuro", 0.0),
             tail: EnumParam::new("Tail", Tail::seeded(sound as u32)),
             splice: knob_at("Splice", 0.5),
-            // MUSICAL: tune by ear.
-            squash: knob_at("Squash", 0.3),
+            // The middle plays the sound seed's Squash (D66).
+            squash: knob_at("Squash", 0.5),
             style: EnumParam::new("Style", DrumStyle::Seed),
             mode: EnumParam::new("Mode", Mode::Drums),
             sound_seed: IntParam::new("Sound seed", sound, IntRange::Linear { min: 0, max: MAX_SEED }),

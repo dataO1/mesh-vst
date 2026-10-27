@@ -19,10 +19,8 @@ use std::time::Duration;
 
 use basedrop::Shared;
 use mesh_vst_core::gc::gc_handle;
-use mesh_vst_core::calibrate;
 use mesh_vst_core::kit::{mudpie_bank, share, DrumKit};
-use mesh_vst_core::macros::{self, LaneSettings};
-use mesh_vst_core::role::Role;
+use mesh_vst_core::macros::LaneSettings;
 use mesh_vst_core::library::Library;
 use mesh_vst_core::loader::{self, DrumPicks, Slot};
 use mesh_vst_core::pattern::PatternLane;
@@ -38,7 +36,7 @@ const POLL: Duration = Duration::from_millis(15);
 /// replaces the settings file's folders.
 pub const LIBRARY_ENV: &str = "MESH_VST_LIBRARY";
 
-/// Which kit to load, and the settings to calibrate its loudness for.
+/// Which kit to load, and the settings it was asked for.
 /// `Copy`, so the audio thread can send it without allocating.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Request {
@@ -47,8 +45,8 @@ pub enum Request {
     Bass(LaneSettings, u32),
 }
 
-/// A kit ready to play, with the output gain that brings it to its
-/// loudness target (G5) for `settings`.
+/// A kit ready to play, with the lane's output gain (D64: a constant, the
+/// notes come matched) and the `settings` it was asked for.
 pub enum Ready {
     Drums { lane: Box<PatternLane>, bank: Shared<SampleBank>, loop_bpm: Option<f64>, gain: f32, settings: LaneSettings, generation: u32 },
     Bass { bank: Shared<SampleBank>, gain: f32, settings: LaneSettings, generation: u32 },
@@ -215,7 +213,7 @@ impl Drop for Worker {
 }
 
 /// The worker's state: the library and the kits it last loaded, so a seed
-/// or form change only calibrates again.
+/// or form change only builds the lane again.
 struct Job {
     sample_rate: u32,
     state: Arc<Mutex<KitState>>,
@@ -248,7 +246,6 @@ impl Job {
     }
 
     fn load(&mut self, r: Request) -> Option<Ready> {
-        let sr = self.sample_rate;
         let generation = match r {
             Request::Drums(_, g) | Request::Bass(_, g) => g,
         };
@@ -269,16 +266,7 @@ impl Job {
                 let (_, kit, loop_bpm) = self.drums.as_ref()?;
                 let (layout, bank) = kit.build();
                 let bank = Shared::new(&gc_handle(), bank);
-                let lufs = calibrate::lane_lufs(
-                    PatternLane::drums(layout, 1, seed),
-                    bank.clone(),
-                    macros::drum_params(),
-                    &settings,
-                    *loop_bpm,
-                    sr,
-                    crate::DRUM_VOICES,
-                );
-                let gain = calibrate::trim_gain(Role::Drums, lufs);
+                let gain = crate::LANE_GAIN;
                 let lane = Box::new(PatternLane::drums(layout, 1, seed));
                 Some(Ready::Drums { lane, bank, loop_bpm: *loop_bpm, gain, settings, generation })
             }
@@ -290,7 +278,7 @@ impl Job {
                 }
                 let (_, sample) = self.bass.as_ref()?;
                 let bank = Shared::new(&gc_handle(), mudpie_bank(sample.clone()));
-                let gain = calibrate::bass_trim(|| PatternLane::bass(1, seed), bank.clone(), macros::mudpie_params(), &settings, sr, crate::BASS_VOICES);
+                let gain = crate::LANE_GAIN;
                 Some(Ready::Bass { bank, gain, settings, generation })
             }
         }
