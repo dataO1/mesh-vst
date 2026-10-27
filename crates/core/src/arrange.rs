@@ -84,7 +84,7 @@ pub struct FormSpec {
 // beats, at most 4 bars; A and B mostly 1 or 2 bars). Lengths and weights
 // of the main phrases (A, B) and of the fills (C, D).
 const MAIN_LENGTHS: [(u8, f32); 4] = [(2, 0.15), (4, 0.35), (8, 0.35), (16, 0.15)];
-const FILL_LENGTHS: [(u8, f32); 4] = [(1, 0.15), (2, 0.35), (4, 0.35), (8, 0.15)];
+const FILL_LENGTHS: [(u8, f32); 4] = [(2, 0.15), (4, 0.35), (8, 0.35), (16, 0.15)];
 // MUSICAL: tune by ear (user, 2026-10-21: low Shape shorter phrases, cells;
 // high Shape longer ones; a bias, not a mapping). How far Shape at either
 // end tilts a length's weight, per octave of length off the middle.
@@ -157,7 +157,8 @@ struct Plan {
     name: &'static str,
     /// Cycle shapes the seed picks from, per motive: its letters in order.
     shapes: &'static [&'static str],
-    /// The marks of A and B in X and in Y (`?` a slot the seed fills).
+    /// The marks of A and B in X and in Y: `'`, `*` and the character's
+    /// operators ([`varies`]).
     x: [&'static str; 2],
     y: [&'static str; 2],
     /// Chance Y plays X's split the other way round (else its own), and
@@ -174,18 +175,19 @@ struct Plan {
 // asks and B answers; the second motive is another one: the split, the
 // other patterns, operators, the sound; the plans are characters). X
 // keeps to its slots, the character shows in Y.
-// Marks: the operators, `'` and `*`; `?` slots the seed fills.
+// Marks: the character's operators (D63: they play on some of a letter's
+// patterns, more of them up Variation), `'` and `*`.
 const PLANS: [Plan; 10] = [
-    Plan { name: "steady roller", shapes: &["AB", "ABA"], x: ["", "?"], y: ["?", "?a"], flip: 0.5, sound: 0.3, alternate: 0.5, head: "" },
-    Plan { name: "question and answer", shapes: &["AB"], x: ["q", "a"], y: ["q?", "a?"], flip: 0.7, sound: 0.2, alternate: 0.7, head: "C" },
-    Plan { name: "slow build", shapes: &["AB", "ABA"], x: ["", ""], y: ["?", "p?"], flip: 0.3, sound: 0.4, alternate: 0.1, head: "" },
-    Plan { name: "two-step cells", shapes: &["AB", "ABA"], x: ["", "?"], y: ["j", "z?"], flip: 0.5, sound: 0.3, alternate: 0.5, head: "C" },
-    Plan { name: "breakdown", shapes: &["AB"], x: ["", "?"], y: ["h", "h?"], flip: 0.4, sound: 0.5, alternate: 0.3, head: "" },
-    Plan { name: "B-led", shapes: &["BA", "BAB"], x: ["?", ""], y: ["?a", "?"], flip: 0.5, sound: 0.3, alternate: 0.5, head: "" },
-    Plan { name: "cells and fragments", shapes: &["AB", "ABA"], x: ["", "?"], y: ["j?", "F"], flip: 0.5, sound: 0.3, alternate: 0.5, head: "C" },
-    Plan { name: "space", shapes: &["AB"], x: ["", "?"], y: ["g", "g?"], flip: 0.4, sound: 0.3, alternate: 0.4, head: "" },
-    Plan { name: "switch-up", shapes: &["AB"], x: ["", "?"], y: ["r", "i"], flip: 0.6, sound: 0.4, alternate: 0.6, head: "" },
-    Plan { name: "bounce", shapes: &["ABA", "AB"], x: ["", "?"], y: ["u?", "z"], flip: 0.5, sound: 0.3, alternate: 0.5, head: "C" },
+    Plan { name: "steady roller", shapes: &["AB", "ABA"], x: ["", ""], y: ["", "a"], flip: 0.5, sound: 0.3, alternate: 0.5, head: "" },
+    Plan { name: "question and answer", shapes: &["AB"], x: ["q", "a"], y: ["q", "a"], flip: 0.7, sound: 0.2, alternate: 0.7, head: "C" },
+    Plan { name: "slow build", shapes: &["AB", "ABA"], x: ["", ""], y: ["", "p"], flip: 0.3, sound: 0.4, alternate: 0.1, head: "" },
+    Plan { name: "two-step cells", shapes: &["AB", "ABA"], x: ["", ""], y: ["j", "z"], flip: 0.5, sound: 0.3, alternate: 0.5, head: "C" },
+    Plan { name: "breakdown", shapes: &["AB"], x: ["", ""], y: ["h", "h"], flip: 0.4, sound: 0.5, alternate: 0.3, head: "" },
+    Plan { name: "B-led", shapes: &["BA", "BAB"], x: ["", ""], y: ["a", ""], flip: 0.5, sound: 0.3, alternate: 0.5, head: "" },
+    Plan { name: "cells and fragments", shapes: &["AB", "ABA"], x: ["", ""], y: ["j", "F"], flip: 0.5, sound: 0.3, alternate: 0.5, head: "C" },
+    Plan { name: "space", shapes: &["AB"], x: ["", ""], y: ["g", "g"], flip: 0.4, sound: 0.3, alternate: 0.4, head: "" },
+    Plan { name: "switch-up", shapes: &["AB"], x: ["", ""], y: ["r", "i"], flip: 0.6, sound: 0.4, alternate: 0.6, head: "" },
+    Plan { name: "bounce", shapes: &["ABA", "AB"], x: ["", ""], y: ["u", "z"], flip: 0.5, sound: 0.3, alternate: 0.5, head: "C" },
 ];
 
 /// Plans there are.
@@ -210,17 +212,35 @@ const DRUM_CYCLES: [(u16, f32); 2] = [(32, 0.4), (64, 0.6)];
 const DRUM_B: f32 = 0.3;
 const DRUM_B_SHARE: f32 = 0.125;
 
+// MUSICAL: tune by ear (user, 2026-10-27: operators per pattern, not over
+// the whole form: sets of none, one or several, the seed's; at the breaking
+// points others, every second pattern of a letter, the last of four in a
+// 16-bar section; at Variation 0 almost none, more up it). The rules a
+// letter of a motive may draw, the chance each plays at Variation 0 and 1,
+// the chance the character's operators play on all the letter's patterns.
+const RULES: usize = 4;
+const RULE_CHANCE: (f32, f32) = (0.02, 0.55);
+const CHARACTER: (f32, f32) = (0.08, 0.9);
+/// Where a rule plays, and its weight.
+const SPOTS: [(Spot, f32); 5] = [(Spot::Second, 1.0), (Spot::Fourth, 0.7), (Spot::Last, 1.2), (Spot::First, 0.4), (Spot::Seam, 0.9)];
+/// Chance a rule's set grows by a second and a third operator, at
+/// Variation 1 (scaled by it); chance a rule replaces the operators before it
+/// (else it adds to them); chance it takes one of the character's.
+const MORE_OPS: [f32; 2] = [0.65, 0.35];
+const REPLACE: f32 = 0.5;
+const CHARACTER_PICK: f32 = 0.3;
+/// The operators a drum rule draws from.
+const DRUM_OPS: [Op; 9] = [Op::Mutate, Op::Displacement, Op::Hemiola, Op::Fragment, Op::DoubleTime, Op::Reverse, Op::Truncation, Op::Question, Op::HalfTime];
+
 // MUSICAL: tune by ear (user, 2026-10-21: Variation scales the form's
-// variation too, at 0 a little, at 1 the full set). Share of `?` slots the
-// seed fills, chance of an extra fill at a 4-bar seam inside a section, at
-// Variation 0 and 1.
-const SLOT_FILL: (f32, f32) = (0.25, 0.85);
+// variation too, at 0 a little, at 1 the full set). Chance of an extra fill
+// at a 4-bar seam inside a section, at Variation 0 and 1.
 const EXTRA_FILL: (f32, f32) = (0.04, 0.3);
 /// Chance the form opens with its plan's pickup, and its longest length.
 const HEAD_CHANCE: f32 = 0.6;
 const HEAD_BEATS: u8 = 4;
-/// Longest extra fill (beats).
-const EXTRA_BEATS: u8 = 4;
+/// An extra fill's lengths in bars and their weights.
+const EXTRA_BARS: [(u16, f32); 2] = [(1, 0.7), (2, 0.3)];
 /// Chance an extra fill is D (else C).
 const EXTRA_D: f32 = 0.3;
 
@@ -232,35 +252,95 @@ enum Seam {
     Pass,
 }
 
-// MUSICAL: tune by ear (user, 2026-10-26: fills at the seams; C a short
-// one at each motive's end, D a longer one at the pass's, each its own
-// pattern; inside a long motive the 16-bar seams rarely fill, briefly).
-/// Longest seam fill per kind of seam (inner, motive, pass; beats).
-const SEAM_BEATS: [u8; 3] = [2, 4, 8];
+// MUSICAL: tune by ear (user, 2026-10-26: fills at the seams; C at each
+// motive's end, D a longer one at the pass's, each its own pattern; inside a
+// long motive the 16-bar seams rarely fill. 2026-10-27: fills usually 1 to
+// 8 bars, the longer at the breaking points every 32 and 64 bars).
+/// A seam fill's lengths in bars and their weights per kind of seam (inner,
+/// motive or 32 bars, pass).
+const SEAM_BARS: [[(u16, f32); 3]; 3] = [[(1, 0.7), (2, 0.3), (2, 0.0)], [(1, 0.2), (2, 0.45), (4, 0.35)], [(2, 0.2), (4, 0.5), (8, 0.3)]];
 /// Chance an inner seam plays its fill, at Variation 0 and 1.
 const INNER_SEAM: (f32, f32) = (0.15, 0.4);
 // MUSICAL: tune by ear (user, 2026-10-21: the seam fill kinds are seeded
-// too; C the mild fill, D the aggressive one, the bigger change at 64).
+// too; C the mild fill, D the aggressive one, the bigger change at 64;
+// 2026-10-27: at Variation 0 almost no operators).
 /// Chance a seam draws its kind from its pool (else the plain letter), at
 /// Variation 0 and 1, and how much more often in the second pass.
-const SEAM_DRAW: (f32, f32) = (0.35, 0.8);
+const SEAM_DRAW: (f32, f32) = (0.1, 0.8);
 const SECOND_SEAM: f32 = 0.15;
 /// The kinds of the C seams (motive ends, inner) and of the D seam.
 const C_KINDS: &[&str] = &["C", "C*", "Cx", "CF", "Cj", "Cz", "Cg", "Ch"];
 const D_KINDS: &[&str] = &["D", "D*", "Dx", "D*x", "Dz", "D*F", "Dj"];
 
 // MUSICAL: tune by ear (user, 2026-10-26: not enough operators and variety
-// in the line at the seams). The operators the part before a seam may
-// play (the bass, the drums); chance a motive's or the pass's seam turns
-// the line around at Variation 0 and 1 (an inner seam half as often), the
-// second pass's more; chance the pass's end adds a push.
+// in the line at the seams; 2026-10-27: at Variation 0 almost no
+// operators). The operators the part before a seam may play (the bass, the
+// drums); chance a motive's or the pass's seam turns the line around at
+// Variation 0 and 1 (an inner seam half as often), the second pass's more;
+// chance the pass's end adds a push.
 const TURNS: [Op; 8] = [Op::DoubleTime, Op::Passing, Op::Fragment, Op::Sequence, Op::OctaveUp, Op::Retrograde, Op::Hemiola, Op::CallResponse];
 const DRUM_TURNS: [Op; 4] = [Op::DoubleTime, Op::Fragment, Op::Hemiola, Op::Displacement];
-const TURN_CHANCE: (f32, f32) = (0.5, 0.95);
+const TURN_CHANCE: (f32, f32) = (0.05, 0.9);
 const SECOND_TURN: f32 = 0.1;
 const PASS_PUSH: f32 = 0.5;
 /// Beats before a seam the turnaround plays.
 const TURN_BEATS: u16 = BEATS_PER_BAR;
+
+/// Which of a letter's patterns in a section a rule plays on (D63). A
+/// pattern is one 4-bar window of the letter at most, so a long part varies
+/// in its windows, not all through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Spot {
+    /// Every one (the character's operators).
+    All,
+    /// Every second.
+    Second,
+    /// Every fourth.
+    Fourth,
+    /// The section's last.
+    Last,
+    /// The section's first, after the seam.
+    First,
+    /// The last before a breaking point (a motive's end, 32 bars, the pass's).
+    Seam,
+}
+
+impl Spot {
+    /// Whether pattern `k` of `n` in a section plays it; `seam` when the
+    /// section ends at a breaking point.
+    fn hits(self, k: u16, n: u16, seam: bool) -> bool {
+        match self {
+            Spot::All => true,
+            Spot::Second => k % 2 == 1,
+            Spot::Fourth => k % 4 == 3,
+            Spot::Last => k + 1 == n,
+            Spot::First => k == 0,
+            Spot::Seam => seam && k + 1 == n,
+        }
+    }
+}
+
+/// A rule (D63): where it plays, its operators, whether it replaces the
+/// ones before it.
+#[derive(Debug, Clone, Copy)]
+struct Vary {
+    spot: Spot,
+    ops: OpChain,
+    replace: bool,
+}
+
+impl Vary {
+    const NONE: Vary = Vary { spot: Spot::All, ops: OpChain::EMPTY, replace: false };
+}
+
+/// Add `op` to `chain` unless it is there or works against a tempo
+/// operator there (half and double time).
+fn add(chain: &mut OpChain, op: Op) {
+    let tempo = |o: Op| matches!(o, Op::HalfTime | Op::DoubleTime);
+    if !chain.contains(op) && !(tempo(op) && chain.iter().any(tempo)) {
+        chain.push(op);
+    }
+}
 
 /// A plan token: a letter, its marks, which of its patterns plays (D60);
 /// `?` in `ops` is a slot.
@@ -316,9 +396,10 @@ struct Mods {
     /// Seed of which operator each letter plays per kind of place: the fill
     /// seed, the same for both passes and every attempt (snapshotted).
     snap: u32,
-    /// Share of slots a melodic operator fills (Variation), chance of an
-    /// extra fill.
-    slot: f32,
+    /// The Variation share, the chance each of a letter's rules plays
+    /// ([`RULE_CHANCE`], more in the second pass), chance of an extra fill.
+    variation: f32,
+    vary: f32,
     extra: f32,
     /// Chance a seam draws its kind from its pool ([`C_KINDS`], [`D_KINDS`]),
     /// and an inner seam plays at all.
@@ -330,8 +411,8 @@ struct Mods {
     pass: u8,
     /// The second pass's recipe ([`Recipe`]): from section `recut_from` on
     /// A and B play these re-cuts on top; from `swap_from` A and B trade
-    /// places; from `answer_from` B plays `answer` on top; a filled slot
-    /// becomes a push (`x` `y` `p`) at chance `escalate`; section
+    /// places; from `answer_from` B plays `answer` on top; a rule adds a
+    /// push (`x` `p` `F`) at chance `escalate`; section
     /// `hook_back` returns to the opening's unit halfway; the last 4 bars
     /// double up; the opening section thins out.
     recut: [Option<Op>; 2],
@@ -368,7 +449,7 @@ enum Recipe {
 // MUSICAL: tune by ear (user, 2026-10-21: the second 64 bars transform the
 // first, Variation sets how far). The recipes and their weights; how far a
 // recipe reaches (its extent) at Variation 0 and 1; what every second pass
-// adds to the slots and fills.
+// adds to the rules' chance (scaled by Variation) and the fills.
 const RECIPES: [(Recipe, f32); 7] = [
     (Recipe::SwitchUp, 1.5),
     (Recipe::Escalate, 1.5),
@@ -379,7 +460,7 @@ const RECIPES: [(Recipe, f32); 7] = [
     (Recipe::ThinDrop, 0.7),
 ];
 const SECOND_EXTENT: (f32, f32) = (0.35, 1.0);
-const SECOND_SLOT: f32 = 0.25;
+const SECOND_VARY: f32 = 0.1;
 const SECOND_EXTRA: f32 = 0.15;
 /// Re-cuts of a switch-up, new answers, pushes.
 const RECUTS: [Op; 5] = [Op::Retrograde, Op::Inversion, Op::Reverse, Op::RetroInversion, Op::Displacement];
@@ -392,8 +473,8 @@ fn pick<T: Copy>(h: u64, from: &[T]) -> T {
 
 impl Mods {
     /// No recipe.
-    fn plain(salt: u32, slot: f32, extra: f32, seam: f32, inner: f32) -> Self {
-        Self { salt, slot, extra, seam, inner, recut_from: SECTIONS, swap_from: SECTIONS, answer_from: SECTIONS, ..Self::default() }
+    fn plain(salt: u32, variation: f32, vary: f32, extra: f32, seam: f32, inner: f32) -> Self {
+        Self { salt, variation, vary, extra, seam, inner, recut_from: SECTIONS, swap_from: SECTIONS, answer_from: SECTIONS, ..Self::default() }
     }
 
     /// Apply `recipe` at extent `e` (0..1), seeded by `h`.
@@ -411,7 +492,7 @@ impl Mods {
             }
             Recipe::Escalate => {
                 self.escalate = 0.3 + 0.6 * e;
-                self.slot += 0.15 * e;
+                self.vary += 0.15 * e;
                 self.extra += 0.2 * e;
             }
             Recipe::OrderSwap => self.swap_from = from,
@@ -564,13 +645,13 @@ impl FormBuilder {
         // One phrase per letter and pattern for the whole form.
         let lengths = [0u8, 1].map(|v| Letter::ALL.map(|l| letter_phrase(spec, l, v)));
         let v = share(spec.variation);
-        let (slot, extra) = (lerp(SLOT_FILL, v), lerp(EXTRA_FILL, v));
+        let (vary, extra) = (lerp(RULE_CHANCE, v), lerp(EXTRA_FILL, v));
         let seam = lerp(SEAM_DRAW, v);
         let inner = lerp(INNER_SEAM, v);
         // The motives come from the seeds alone (snapshotted: a rule broken
         // draws the slots and fills again, never the structure).
         let first_shape = Layout::draw(spec, plan, fill, lane, None);
-        let mut first = Mods::plain(salt(fill), slot, extra, seam, inner);
+        let mut first = Mods::plain(salt(fill), v, vary, extra, seam, inner);
         first.snap = fill;
         first.turn = lerp(TURN_CHANCE, v);
         let head = rng::chance(rng::hash(fill, lane, 0, 0, S_HEAD), HEAD_CHANCE).then_some(plan.head).and_then(tok);
@@ -581,7 +662,7 @@ impl FormBuilder {
         // further up Variation.
         let sec = salt(spec.seeds.second);
         let second_shape = Layout::draw(spec, plan, sec, lane, Some(&first_shape));
-        let mut second = Mods::plain(sec, slot + SECOND_SLOT, extra + SECOND_EXTRA, (seam + SECOND_SEAM).min(1.0), (inner + SECOND_SEAM).min(1.0));
+        let mut second = Mods::plain(sec, v, vary + SECOND_VARY * v, extra + SECOND_EXTRA, (seam + SECOND_SEAM).min(1.0), (inner + SECOND_SEAM).min(1.0));
         second.snap = fill;
         second.turn = (lerp(TURN_CHANCE, v) + SECOND_TURN).min(1.0);
         second.pass = 1;
@@ -707,9 +788,10 @@ fn changes(pass: &[Beat; PASS_BEATS as usize], cycles: &[u16; SECTIONS]) -> u32 
     let mut most = 0;
     for (s, &cycle) in cycles.iter().enumerate() {
         let base = s * SECTION_BEATS as usize;
+        let free = last_window(pass, s);
         for w in 1..WINDOWS - 1 {
             let from = base + w * WINDOW_BEATS as usize;
-            if from < base + cycle as usize {
+            if from < base + cycle as usize || w >= free {
                 continue;
             }
             let (mut runs, mut inside) = (0, false);
@@ -727,6 +809,13 @@ fn changes(pass: &[Beat; PASS_BEATS as usize], cycles: &[u16; SECTIONS]) -> u32 
         }
     }
     most
+}
+
+/// The window of section `s` that plays its last main beat: from there on
+/// the line turns towards the seam and its fill, free of the one-change rule.
+fn last_window(pass: &[Beat; PASS_BEATS as usize], s: usize) -> usize {
+    let base = s * SECTION_BEATS as usize;
+    (0..SECTION_BEATS as usize).rev().find(|&i| !pass[base + i].filler).map_or(0, |i| i / WINDOW_BEATS as usize)
 }
 
 /// Share of beats that play as the beat one hook period before them
@@ -768,10 +857,10 @@ fn segment(t: &Tok, lengths: &[[Phrase; 4]; 2], beats: u16, skip: u16) -> Segmen
     }
 }
 
-/// Lay motive `mo`'s cycle over pass beats `from..to`, again and again from
-/// `from`, the last cycle clipped, its tokens as pass `m` plays them in
-/// section `s`.
-fn lay(out: &mut Vec<Segment>, mo: &Motive, lengths: &[[Phrase; 4]; 2], m: &Mods, s: usize, from: u16, to: u16) {
+/// The patterns of motive `mo` laid over pass beats `from..to`, again and
+/// again from `from`, the last cycle clipped: each part, in 4-bar windows at
+/// most, as `f(token, beats, beats into its phrase)`.
+fn patterns(mo: &Motive, from: u16, to: u16, mut f: impl FnMut(Tok, u16, u16)) {
     let mut cs = from;
     while cs < to {
         let ce = (cs + mo.cycle).min(to);
@@ -781,13 +870,95 @@ fn lay(out: &mut Vec<Segment>, mo: &Motive, lengths: &[[Phrase; 4]; 2], m: &Mods
                 break;
             }
             let beats = beats.min(ce - at);
-            if out.len() < out.capacity() {
-                out.push(segment(&m.token(t, s), lengths, beats, skip));
+            let mut done = 0;
+            while done < beats {
+                let b = (beats - done).min(WINDOW_BEATS);
+                f(t, b, skip + done);
+                done += b;
             }
             at += beats;
         }
         cs = ce;
     }
+}
+
+/// Lay motive `mo` over pass beats `from..to` ([`patterns`]), its tokens
+/// as pass `m` plays them in section `s`, each pattern with the operators of
+/// the rules that hit it ([`varies`]); `seam` when the span ends at a
+/// breaking point.
+#[allow(clippy::too_many_arguments)]
+fn lay(out: &mut Vec<Segment>, mo: &Motive, lengths: &[[Phrase; 4]; 2], m: &Mods, s: usize, from: u16, to: u16, seam: bool, lane: u8) {
+    let rules = [0, 1].map(|k| varies(mo, k, m, lane));
+    let ab = |t: &Tok| (t.letter == Letter::B) as usize;
+    let mut n = [0u16; 2];
+    patterns(mo, from, to, |t, _, _| n[ab(&t)] += 1);
+    let mut k = [0u16; 2];
+    patterns(mo, from, to, |mut t, beats, skip| {
+        let i = ab(&t);
+        let (rules, count) = &rules[i];
+        for r in &rules[..*count] {
+            if r.spot.hits(k[i], n[i], seam) {
+                if r.replace {
+                    t.ops = r.ops;
+                } else {
+                    r.ops.iter().for_each(|op| add(&mut t.ops, op));
+                }
+            }
+        }
+        k[i] += 1;
+        if out.len() < out.capacity() {
+            out.push(segment(&m.token(t, s), lengths, beats, skip));
+        }
+    });
+}
+
+/// The rules letter `k` (0 A, 1 B) of motive `mo` plays in pass `m` (D63):
+/// the character's operators on all its patterns, and up to [`RULES`] more,
+/// each at chance `m.vary` against the seed's draw (more Variation keeps
+/// the rules and adds to them), each with its spot and a set of one to
+/// three operators, one more at a breaking point.
+fn varies(mo: &Motive, k: usize, m: &Mods, lane: u8) -> ([Vary; RULES + 1], usize) {
+    let mut out = [Vary::NONE; RULES + 1];
+    let mut n = 0;
+    let h = |r: u8, j: u32| rng::derive(rng::hash(mo.seed, lane, k as u8, r, S_VARY), j);
+    let character = mo.character[k];
+    if !character.is_empty() && rng::chance(h(0, 0), lerp(CHARACTER, m.variation)) {
+        out[0] = Vary { spot: Spot::All, ops: character, replace: false };
+        n = 1;
+    }
+    let weights = SPOTS.map(|s| s.1);
+    for r in 1..=RULES as u8 {
+        if !rng::chance(h(r, 0), m.vary) {
+            continue;
+        }
+        let spot = SPOTS[rng::weighted_pick(h(r, 1), &weights).unwrap_or(0)].0;
+        let draw = |j: u32| {
+            if !character.is_empty() && rng::chance(h(r, 10 + j), CHARACTER_PICK) {
+                character.iter().nth(rng::below(h(r, 20 + j), character.len() as u32) as usize).unwrap_or(Op::Mutate)
+            } else if lane == 1 {
+                pick(h(r, 30 + j), &DRUM_OPS)
+            } else {
+                let place = Place { period_end: false, repeat: matches!(spot, Spot::Second | Spot::Fourth), before_change: matches!(spot, Spot::Last | Spot::Seam) };
+                ops::seeded_melodic(h(r, 30 + j), place)
+            }
+        };
+        let mut ops = OpChain::EMPTY;
+        add(&mut ops, draw(0));
+        if spot == Spot::Seam {
+            add(&mut ops, draw(3));
+        }
+        for (j, more) in MORE_OPS.iter().enumerate() {
+            if rng::chance(h(r, 2 + j as u32), more * m.variation) {
+                add(&mut ops, draw(1 + j as u32));
+            }
+        }
+        if rng::chance(h(r, 5), m.escalate) {
+            add(&mut ops, pick(h(r, 6), &PUSHES));
+        }
+        out[n] = Vary { spot, ops, replace: rng::chance(h(r, 7), REPLACE) };
+        n += 1;
+    }
+    (out, n)
 }
 
 /// Put `fill` over pass beats `at..at + fill.beats`: the segments under it
@@ -842,7 +1013,15 @@ fn overwrite(out: &mut Vec<Segment>, at: u16, fill: Segment) {
     }
 }
 
-/// Build one pass of `plan` into `out`; returns each section's cycle.
+/// A length in beats from `table` (bars and their weights).
+fn bars(h: u64, table: &[(u16, f32)]) -> u16 {
+    let mut weights = [0.0f32; 4];
+    for (w, b) in weights.iter_mut().zip(table) {
+        *w = b.1;
+    }
+    table[rng::weighted_pick(h, &weights[..table.len()]).unwrap_or(0)].0 * BEATS_PER_BAR
+}
+
 /// Build one pass of `shape` into `out`; returns each section's cycle.
 fn build_pass(out: &mut Vec<Segment>, shape: &Layout, lengths: &[[Phrase; 4]; 2], head: Option<Tok>, m: &Mods, lane: u8) -> [u16; SECTIONS] {
     out.clear();
@@ -851,35 +1030,37 @@ fn build_pass(out: &mut Vec<Segment>, shape: &Layout, lengths: &[[Phrase; 4]; 2]
         let mo = &shape.motives[shape.order[s]];
         let base = s as u16 * SECTION_BEATS;
         cycles[s] = mo.cycle;
+        let kind = shape.seam(s);
+        let breaks = kind != Seam::Inner;
         if m.hook_back == Some(s) {
             // Cut short: the opening's motive comes back halfway.
             let half = base + SECTION_BEATS / 2;
             let hook = &shape.motives[shape.order[0]];
-            lay(out, mo, lengths, m, s, base, half);
-            lay(out, hook, lengths, m, s, half, base + SECTION_BEATS);
+            lay(out, mo, lengths, m, s, base, half, false, lane);
+            lay(out, hook, lengths, m, s, half, base + SECTION_BEATS, breaks, lane);
             cycles[s] = mo.cycle.max(hook.cycle).min(SECTION_BEATS / 2);
         } else {
-            lay(out, mo, lengths, m, s, base, base + SECTION_BEATS);
+            lay(out, mo, lengths, m, s, base, base + SECTION_BEATS, breaks, lane);
         }
-        // Extra fills at the 4-bar seams inside the section.
+        // The seam: C at a motive's end and at 32 bars, D at the pass's, now
+        // and then a short C inside a motive.
+        let seam = seam_tok(kind, s, m, lane).map(|t| (t, bars(rng::hash(m.salt, lane, s as u8, 1, S_SEAM), &SEAM_BARS[kind as usize])));
+        let seam_at = base + SECTION_BEATS - seam.map_or(0, |x| x.1);
+        // Extra fills at the 4-bar seams inside the section, clear of the
+        // seam's (one fill each).
         for w in 1..WINDOWS as u16 {
             let at = base + w * WINDOW_BEATS;
             let h = rng::hash(m.salt, lane, s as u8, w as u8, S_EXTRA);
-            if !rng::chance(h, m.extra) {
+            if at >= seam_at || !rng::chance(h, m.extra) {
                 continue;
             }
             let letter = if rng::chance(rng::derive(h, 1), EXTRA_D) { Letter::D } else { Letter::C };
             let t = Tok { letter, ..Tok::PLAIN };
-            let beats = lengths[0][letter.index() as usize].beats.min(EXTRA_BEATS) as u16;
+            let beats = bars(rng::derive(h, 2), &EXTRA_BARS);
             overwrite(out, at - beats, segment(&t, lengths, beats, 0));
         }
-        // The seam: C at a motive's end, D at the pass's, now and then a
-        // short C inside a motive.
-        let kind = shape.seam(s);
-        if let Some(t) = seam_tok(kind, s, m, lane) {
-            let most = SEAM_BEATS[kind as usize] as u16;
-            let beats = (lengths[0][t.letter.index() as usize].beats as u16).clamp(1, most);
-            overwrite(out, base + SECTION_BEATS - beats, segment(&t, lengths, beats, 0));
+        if let Some((t, beats)) = seam {
+            overwrite(out, seam_at, segment(&t, lengths, beats, 0));
         }
     }
     // The pickup the form opens with.
@@ -897,7 +1078,7 @@ fn build_pass(out: &mut Vec<Segment>, shape: &Layout, lengths: &[[Phrase; 4]; 2]
             at += seg.beats;
         }
     }
-    resolve(out, &cycles, m, lane);
+    resolve(out, &cycles);
     turnarounds(out, shape, m, lane);
     merge(out);
     cycles
@@ -971,12 +1152,15 @@ fn seam_tok(kind: Seam, s: usize, m: &Mods, lane: u8) -> Option<Tok> {
 }
 
 /// A motive (D61): its cycle, the parts that fill it (token, beats, beats
-/// into its phrase it enters).
+/// into its phrase it enters); the seed of its rules and the character's
+/// operators of A and B (D63).
 #[derive(Debug, Clone, Copy)]
 struct Motive {
     cycle: u16,
     parts: [(Tok, u16, u16); 3],
     n: usize,
+    seed: u32,
+    character: [OpChain; 2],
 }
 
 /// A pass's motives: X and Y, their length and which plays in each section.
@@ -1022,12 +1206,12 @@ impl Layout {
         Self { motives, order, bars }
     }
 
-    /// The seam section `s` ends at.
+    /// The seam section `s` ends at; 32 bars break like a motive's end.
     fn seam(&self, s: usize) -> Seam {
         let end = (s as u16 + 1) * SECTION_BEATS / BEATS_PER_BAR;
         if s + 1 == SECTIONS {
             Seam::Pass
-        } else if end % self.bars == 0 {
+        } else if end % self.bars.min(32) == 0 {
             Seam::Motive
         } else {
             Seam::Inner
@@ -1054,7 +1238,7 @@ fn motive(plan: &Plan, which: usize, cycle: u16, a: u16, h: u64, sound: bool, dr
     let marks = if which == 0 { plan.x } else { plan.y };
     let beats_of = |l: Letter| if l == Letter::A { a } else { cycle - a };
     let count = |l: Letter| shape.iter().filter(|&&c| letter_of(c) == Some(l)).count() as u16;
-    let mut mo = Motive { cycle, parts: [(Tok::PLAIN, 0, 0); 3], n: 0 };
+    let mut mo = Motive { cycle, parts: [(Tok::PLAIN, 0, 0); 3], n: 0, seed: rng::derive(h, 1) as u32, character: [OpChain::EMPTY; 2] };
     // A letter twice in the cycle splits its beats and goes on in its
     // phrase the second time.
     let mut played = [0u16; 2];
@@ -1069,6 +1253,8 @@ fn motive(plan: &Plan, which: usize, cycle: u16, a: u16, h: u64, sound: bool, dr
         }
         let mut t = Tok { letter: l, variant: which as u8, swap: sound, ..Tok::PLAIN };
         apply_marks(&mut t, marks[k]);
+        // The operators play by the rules, not on every pattern.
+        mo.character[k] = std::mem::take(&mut t.ops);
         mo.parts[mo.n] = (t, beats, played[k]);
         mo.n += 1;
         played[k] += beats;
@@ -1109,46 +1295,23 @@ fn merge(out: &mut Vec<Segment>) {
     out.truncate(kept);
 }
 
-/// Fill the slots and keep the rules (music theory §5): a slot plays at
-/// Variation's chance an operator by its place (or none); inside a section
-/// each cycle repeats the one before but for at most one change. (D57: the
-/// rhythm is the chain's; the form places no rhythm operators.)
-fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
+/// Keep the rules (music theory §5): inside a section each cycle repeats the
+/// one before but for at most one change, up to the window of its last main
+/// beat ([`last_window`]).
+fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS]) {
     let mut starts = [0u16; MAX_PASS_SEGMENTS + 8];
+    let mut free = [0usize; SECTIONS];
     let mut at = 0u16;
     for (i, s) in out.iter().enumerate() {
         starts[i] = at;
+        if s.letter.class() == SeedClass::Main {
+            let last = at + s.beats - 1;
+            let sec = (last / SECTION_BEATS) as usize;
+            free[sec.min(SECTIONS - 1)] = ((last % SECTION_BEATS) / WINDOW_BEATS) as usize;
+        }
         at += s.beats;
     }
     let n = out.len();
-    for i in 0..n {
-        let start = starts[i];
-        let end = start + out[i].beats;
-        let next = out.get(i + 1).copied();
-        let place = Place {
-            period_end: end % WINDOW_BEATS == 0,
-            repeat: i > 0 && out[i - 1].letter == out[i].letter,
-            before_change: end % SECTION_BEATS == 0 || next.is_some_and(|x| x.letter.class() != out[i].letter.class()),
-        };
-        let h = rng::hash(m.salt, lane, (start / BEATS_PER_BAR) as u8, (start % 256) as u8, S_SLOT);
-        // Which operator is fixed by the seed (user, 2026-10-21: snapshotted,
-        // not drawn again per slot): per letter and kind of place. The knobs
-        // only decide how many of the slots play it.
-        let kind = place.before_change as u8 | (place.period_end as u8) << 1 | (place.repeat as u8) << 2;
-        let snap = rng::hash(m.snap, lane, 1 + out[i].letter.index(), kind, S_SNAP);
-        let mut chain = OpChain::default();
-        for (k, op) in out[i].ops.iter().enumerate() {
-            if op != Op::Seeded {
-                chain.push(op);
-                continue;
-            }
-            if rng::chance(rng::derive(h, k as u32), m.slot) {
-                let push = rng::chance(rng::derive(snap, 2 + 4 * k as u32), m.escalate);
-                chain.push(if push { pick(rng::derive(snap, 3 + 4 * k as u32), &PUSHES) } else { ops::seeded_melodic(rng::derive(snap, 1 + 4 * k as u32), place) });
-            }
-        }
-        out[i].ops = chain;
-    }
     // One change per cycle against the one before it, in the section.
     let mut changed = [false; SECTIONS * WINDOWS];
     for i in 0..n {
@@ -1156,7 +1319,7 @@ fn resolve(out: &mut [Segment], cycles: &[u16; SECTIONS], m: &Mods, lane: u8) {
         let s = (start / SECTION_BEATS) as usize;
         let w = ((start % SECTION_BEATS) / WINDOW_BEATS) as usize;
         let cycle = cycles[s.min(SECTIONS - 1)];
-        if seg.letter.class() == SeedClass::Filler || w + 1 == WINDOWS || start % SECTION_BEATS < cycle {
+        if seg.letter.class() == SeedClass::Filler || w + 1 == WINDOWS || w >= free[s.min(SECTIONS - 1)] || start % SECTION_BEATS < cycle {
             continue;
         }
         // The segment of its letter one cycle before (under its beats, when a
@@ -1284,10 +1447,12 @@ fn derive(out: &mut Vec<Segment>, host: &[Segment], own: &[Segment], relation: f
             }
         }
         let ((host_fill, host_varied), (own_fill, own_varied)) = (window_shape(host, from), window_shape(own, from));
+        // The line to hold: the window's last main part, or before it when a
+        // long fill takes all of it.
+        let main = out.iter().rev().find(|s| s.letter.class() == SeedClass::Main).or_else(|| own.iter().find(|s| s.letter.class() == SeedClass::Main)).copied();
         let window = &mut out[start..];
         if host_fill && own_fill && rng::chance(rng::derive(h, 1), p) {
             // The host fills: hold the line through it.
-            let main = window.iter().rev().find(|s| s.letter.class() == SeedClass::Main).copied();
             if let Some(m) = main {
                 for s in window.iter_mut().filter(|s| s.letter.class() == SeedClass::Filler) {
                     *s = Segment { beats: s.beats, ..m };
@@ -1333,19 +1498,18 @@ const S_OFFSET: u32 = 0xF82;
 const S_PLAN: u32 = 0xF83;
 const S_EXTRA: u32 = 0xF86;
 const S_HEAD: u32 = 0xF87;
-const S_SLOT: u32 = 0xF88;
 const S_RECIPE: u32 = 0xF89;
 const S_ATTEMPT: u32 = 0xF8A;
 const S_FOLLOW: u32 = 0xF8B;
 const S_B_STEP: u32 = 0xF8C;
 const S_SEAM: u32 = 0xF8D;
-const S_SNAP: u32 = 0xF90;
 const S_MOTIVE: u32 = 0xF91;
 const S_CYCLE: u32 = 0xF92;
 const S_SPLIT: u32 = 0xF93;
 const S_SOUND: u32 = 0xF94;
 const S_SHAPE: u32 = 0xF95;
 const S_TURN: u32 = 0xF96;
+const S_VARY: u32 = 0xF97;
 
 
 
@@ -1375,8 +1539,7 @@ mod tests {
             for l in Letter::ALL {
                 for drums in [false, true] {
                     let p = phrase(seed, l, 0, 2, drums);
-                    let max = if l.class() == SeedClass::Main { 16 } else { 8 };
-                    assert!(p.beats.is_power_of_two() && p.beats <= max && p.beats >= 1, "{p:?}");
+                    assert!(p.beats.is_power_of_two() && (2..=16).contains(&p.beats), "{p:?}");
                     assert!(p.offset < p.beats);
                     assert_eq!(p.offset % 2, 0, "even beats keep the kick's beats");
                     if drums {
@@ -1491,29 +1654,34 @@ mod tests {
 
     #[test]
     fn c_ends_each_motive_and_d_the_pass() {
-        // User, 2026-10-26: C a short fill at a motive's end, D a longer one
-        // at the pass's, each its own pattern; inner seams rare and brief.
+        // User, 2026-10-26: C a fill at a motive's end, D a longer one at the
+        // pass's, each its own pattern; inner seams rare and brief.
+        // 2026-10-27: fills 1 to 8 bars, the longer at 32 and 64 bars.
         let mut b = FormBuilder::new();
         let mut f = Form::generated();
-        let (mut kinds, mut last_d, mut ends, mut inner) = (std::collections::BTreeSet::new(), 0u32, (0u32, 0u32), (0u32, 0u32, 0u32));
+        let (mut kinds, mut last_d, mut ends, mut inner, mut pass) = (std::collections::BTreeSet::new(), 0u32, (0u32, 0u32), (0u32, 0u32, 0u32), 0u32);
         for seed in 0..200 {
             b.build(&spec(seed, 2, 2), &mut f);
-            let bars = b.motive_bars()[0];
+            let bars = b.motive_bars()[0].min(32);
             let fills = seam_fills(f.pattern());
-            last_d += fills[SECTIONS - 1].is_some_and(|x| x.0 == Letter::D) as u32;
+            if let Some(x) = fills[SECTIONS - 1].filter(|x| x.0 == Letter::D) {
+                last_d += 1;
+                pass += x.3 as u32;
+                assert!((8..=32).contains(&x.3), "seed {seed}: {f}");
+            }
             for (s, fill) in fills.iter().enumerate().take(SECTIONS - 1) {
                 let end = (s as u16 + 1) * 16;
                 if end % bars == 0 {
                     ends.0 += 1;
                     let x = fill.unwrap_or_else(|| panic!("seed {seed}: no fill at bar {end}: {f}"));
                     assert_eq!(x.0, Letter::C, "seed {seed}: {f}");
-                    assert!(x.3 <= SEAM_BEATS[1] as u16);
+                    assert!((4..=16).contains(&x.3), "seed {seed}: {f}");
                     kinds.insert(format!("{:?}", (x.1, x.2)));
                     ends.1 += x.3 as u32;
                 } else {
                     inner.0 += 1;
                     if let Some(x) = fill {
-                        assert!(x.3 <= SEAM_BEATS[0] as u16 || x.0 == Letter::D, "seed {seed}: {f}");
+                        assert!(x.3 <= 8 || x.0 == Letter::D, "seed {seed}: {f}");
                         inner.1 += 1;
                         inner.2 += x.3 as u32;
                     }
@@ -1521,6 +1689,7 @@ mod tests {
             }
         }
         assert!(last_d >= 195, "the pass ends on D: {last_d} of 200");
+        assert!(pass > last_d * 14 && ends.1 > ends.0 * 8, "D about 4 bars, C about 2: {pass} {ends:?}");
         assert!(kinds.len() >= 4, "the motive seams take several kinds: {kinds:?}");
         assert!(inner.1 * 2 < inner.0, "inner seams fill rarely: {inner:?}");
         assert!(inner.2 * ends.0 < ends.1 * inner.1.max(1), "and shorter: {inner:?} vs {ends:?}");
@@ -1740,36 +1909,74 @@ mod tests {
         assert!(reps[300] > 0.5 && reps[300] < 0.9, "median repetition {}", reps[300]);
     }
 
+    /// Share of the main beats of `pass` that play an operator.
+    fn varied_share(pass: &[Segment]) -> f32 {
+        let (mut varied, mut mains) = (0u32, 0u32);
+        for s in pass.iter().filter(|s| s.letter.class() == SeedClass::Main) {
+            mains += s.beats as u32;
+            varied += if s.ops.is_empty() { 0 } else { s.beats as u32 };
+        }
+        varied as f32 / mains.max(1) as f32
+    }
+
     #[test]
-    fn a_letter_plays_one_operator_per_kind_of_place() {
-        // User, 2026-10-21: snapshotted randomness: the seed fixes each
-        // letter's operator, Variation only how many slots play it.
-        let mut seg = Segment::new(Letter::A, 4, 0);
-        seg.ops.push(Op::Seeded);
-        let played = |seed: u32, slot: f32| {
-            let mut pass: Vec<Segment> = (0..PASS_BEATS / 4).map(|k| Segment { letter: if k % 8 < 4 { Letter::A } else { Letter::B }, ..seg }).collect();
-            let mut m = Mods::plain(seed, slot, 0.0, 0.0, 0.0);
-            m.snap = seed;
-            resolve(&mut pass, &[WINDOW_BEATS; SECTIONS], &m, 0);
-            pass.iter().map(|s| (s.letter, s.ops.iter().next())).collect::<Vec<_>>()
-        };
-        for seed in 0..40 {
-            let (low, high) = (played(seed, 0.3), played(seed, 0.8));
-            // Raising Variation adds slots and keeps the ones played.
-            for (a, b) in low.iter().zip(&high) {
-                if a.1.is_some() {
-                    assert_eq!(a, b, "seed {seed}");
+    fn variation_0_plays_almost_no_operators() {
+        // User, 2026-10-27: at Variation 0 almost no operators, more up it.
+        let mean = |variation: u8, drums: bool| (0..200).map(|seed| varied_share(built(&FormSpec { drums, ..spec(seed, variation, 2) }).pattern())).sum::<f32>() / 200.0;
+        for drums in [false, true] {
+            let m: Vec<f32> = (0..BANDS).map(|v| mean(v, drums)).collect();
+            assert!(m[0] < 0.05, "drums {drums}: {m:?}");
+            assert!(m.windows(2).all(|w| w[1] >= w[0]) && m[4] > 0.25, "drums {drums}: {m:?}");
+        }
+    }
+
+    #[test]
+    fn operators_play_per_pattern_not_over_the_whole_form() {
+        // User, 2026-10-27: per pattern its own set of operators, none, one
+        // or several; others at the breaking points.
+        let mut b = FormBuilder::new();
+        let mut f = Form::generated();
+        let (mut whole, mut sets, mut several, mut forms) = (0, std::collections::HashSet::new(), 0, 0);
+        for seed in 0..200 {
+            b.build(&spec(seed, 3, 2), &mut f);
+            for l in [Letter::A, Letter::B] {
+                let chains: Vec<OpChain> = f.pattern().iter().filter(|s| s.letter == l).map(|s| s.ops).collect();
+                if chains.len() < 4 {
+                    continue;
+                }
+                forms += 1;
+                // The same operators on all its patterns.
+                whole += (!chains[0].is_empty() && chains.iter().all(|c| *c == chains[0])) as u32;
+                for c in &chains {
+                    sets.insert(*c);
+                    several += (c.len() > 1) as u32;
                 }
             }
-            // Per letter few operators (one per kind of place).
-            for l in [Letter::A, Letter::B] {
-                let mut ops: Vec<Op> = high.iter().filter(|(x, o)| *x == l && o.is_some()).filter_map(|(_, o)| *o).collect();
-                ops.sort_by_key(|o| o.as_char());
-                ops.dedup();
-                assert!(ops.len() <= 4, "seed {seed} {l:?}: {ops:?}");
-            }
-            assert!(high.iter().filter(|x| x.1.is_some()).count() > low.iter().filter(|x| x.1.is_some()).count());
         }
+        assert!(whole * 10 < forms, "{whole} of {forms} letters play one set all through");
+        assert!(sets.len() > 60 && several > 100, "{} sets, {several} of several", sets.len());
+    }
+
+    #[test]
+    fn more_variation_keeps_the_rules_and_adds() {
+        // Snapshotted (user, 2026-10-21): the seed fixes each rule; Variation
+        // only decides how many play.
+        let (mut low_n, mut high_n) = (0, 0);
+        for seed in 0..200u32 {
+            let layout = Layout::draw(&spec(seed, 2, 2), &PLANS[seed as usize % PLANS.len()], seed, 0, None);
+            for mo in &layout.motives {
+                for k in 0..2 {
+                    let rules = |v: f32| varies(mo, k, &Mods::plain(seed, v, lerp(RULE_CHANCE, v), 0.0, 0.0, 0.0), 0);
+                    let ((low, ln), (high, hn)) = (rules(0.25), rules(1.0));
+                    (low_n, high_n) = (low_n + ln, high_n + hn);
+                    for x in &low[..ln] {
+                        let kept = high[..hn].iter().any(|y| y.spot == x.spot && y.replace == x.replace && x.ops.iter().all(|op| y.ops.contains(op)));
+                        assert!(kept, "seed {seed}: {x:?} gone at Variation 1");
+                    }
+                }
+            }
+        }
+        assert!(high_n > 2 * low_n, "{low_n} rules at 0.25, {high_n} at 1");
     }
 
     #[test]

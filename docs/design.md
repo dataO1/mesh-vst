@@ -885,6 +885,28 @@ drive external effects.
     designed decay at the top (`STAB_DECAY_STRETCH`).
   - **B's identity.** The drums' B and D play another style than A and C (seeded), at
     any Contrast. That breaks D49's "at 0 B plays A's settings" for the style alone.
+- **D63** **Operators per pattern, longer fills** (2026-10-27, user: "operators are always
+  applied to the whole form. that's not the idea"; C and D far too short, usually 1 to 8
+  bars).
+  - **Rules, not marks.** Each letter of a motive draws up to 4 rules from the motive's seed.
+    A rule has a spot and a set of one to three operators: every second pattern of the
+    letter, every fourth, the section's last, its first, or the last before a breaking
+    point (with one more operator). A rule replaces the operators before it or adds to them.
+    A pattern is one 4-bar window of the letter at most, so a long drum A varies window by
+    window, not all through. The plan's marks are now the character's operators: they play
+    on all the letter's patterns at a chance from 8 % (Variation 0) to 90 %, and the rules
+    draw from them now and then. The `?` slots are gone.
+  - **Variation** sets each rule's chance (2 % to 55 %) and how many operators a set holds.
+    The seed's draw is fixed, so more Variation keeps the rules and adds to them. At 0 the
+    first pass plays operators on under 5 % of its main beats. The turnarounds (5 % to 90 %)
+    and the seam kinds with operators (10 % to 80 %) start low too. The second pass's extra
+    rule chance scales with Variation.
+  - **Fill lengths in bars.** Inner seams 1 or 2, a motive's end and every 32 bars 1, 2 or 4
+    (mostly 2), the pass's end 2, 4 or 8 (mostly 4). Extra fills 1 or 2 bars, never touching
+    the seam's fill. The fill phrases are 2 to 16 beats like the main ones. The bars from the
+    last main beat to the seam are free of the one-change rule (the run-up into the fill).
+  - A Splice counter follower holding the line through a fill takes the last main part
+    before the window when the fill takes the whole window.
 - **Cost** (2026-10-23, clap-validator's parameter fuzz ran 48 s against its 45 s limit):
   the multiband distortion measures a pass's makeup again only when its drive moves 0.1 dB,
   the Squash makes its band settings only when the amount or the tempo changes, and the
