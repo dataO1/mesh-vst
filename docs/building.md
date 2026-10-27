@@ -26,6 +26,11 @@ Copy the bundles to `~/.clap` and `~/.vst3` (Linux) or `C:\Program Files\Common 
 `C:\Program Files\Common Files\VST3` (Windows). The Linux bundles are built by Nix and link against
 its libraries; on other distributions they need a glibc at least as new as nixpkgs'.
 
+Releases: in the devshell, `cargo release <version> --execute` sets the workspace version,
+commits, tags `v<version>` and pushes. The tag starts the `release` workflow on GitHub
+(`.github/workflows/release.yml`), which builds `nix build .#release` and publishes the Linux and
+Windows zips (CLAP and VST3) as a GitHub release.
+
 Single renders without a DAW:
 
 ```sh

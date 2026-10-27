@@ -6,3 +6,6 @@ publish = false
 
 [dependencies]
 nice-plug-xtask = "0.1.1"
+
+[package.metadata.release]
+release = false

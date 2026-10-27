@@ -1,0 +1,39 @@
+# On a version tag (cargo release pushes `v<version>`): build the CLAP and
+# VST3 bundles for Linux and Windows through the flake and publish them as a
+# GitHub release.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Rust toolchain, the GUI crates and the Windows cross build need
+      # more room than the runner leaves free.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build the bundles
+        run: nix build .#release -L
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: result/*.zip
+          generate_release_notes: true

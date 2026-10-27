@@ -1,0 +1,11 @@
+# cargo-release (`cargo release <version> --execute`): one version for the
+# workspace, a tag `v<version>` pushed to GitHub, where the release workflow
+# builds the CLAP and VST3 bundles and publishes them. Nothing goes to
+# crates.io.
+shared-version = true
+consolidate-commits = true
+allow-branch = ["main"]
+publish = false
+push = true
+tag-name = "v{{version}}"
+pre-release-commit-message = "release: {{version}}"

@@ -275,7 +275,7 @@
         };
 
         devShells.default = craneLib.devShell {
-          packages = [ pkgs.pkg-config clap-validator ] ++ libs;
+          packages = [ pkgs.pkg-config clap-validator pkgs.cargo-release ] ++ libs;
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath libs;
           RUST_BACKTRACE = "1";
           shellHook = ''
