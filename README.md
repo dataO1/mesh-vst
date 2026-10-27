@@ -12,60 +12,37 @@ M E S H // V S T
 
 ---
 
-mesh is controlled chaos. It finds patterns and arranges them for you: you set how wild,
-the seed decides the details. Hold a note, and a seed turns into a groove: breakbeat drums or a
-bass line cut from a mudpie of your own samples, in time and in key. Roll again and something
-else appears. Most rolls you skip. Some you keep and build a track on.
+mesh is controlled chaos. You hold a note and it plays: breakbeat drums, or a bass line made
+from a sound of your own, always in time and in key. It does not wait for you to write
+anything. It finds the grooves and lays them out into a whole track arrangement, with
+build-ups, breaks and returns, while you listen and steer.
 
-The chaos has rules. Every pattern answers another, every arrangement follows a form, and the
-same seed always plays the same thing. A handful of knobs each move many things at once, so you
-steer the whole instead of placing notes.
+Roll the dice and you hear something new. Most rolls you skip. Some you keep and build a track
+on. Every roll can be found again, so what you keep stays yours.
 
 <p align="center"><img src="docs/img/drums.png" alt="drums" width="820"></p>
 
-```
-// drums     kick, snare, hats, cymbals, percussion and a chopped break
-             style · shape · morph · tone · heat
+### what you do
 
-// bass      one mudpie sample, scrubbed, pitched and filtered into a line
-             shape · morph · spread · slide · heat · neuro
-
-// both      density · contrast · variation · groove · squash
-             seeds for the sound, the pattern, the phrases, the fills and the second pass
-```
+- **steer, don't write.** A few knobs, each moving many things at once: how busy, how far the
+  parts drift apart, how much changes over time, how it swings, how hard it hits. Their middle
+  is always the machine's own suggestion.
+- **keep what you like.** Lock a sound, lock a groove, pin the parts that work and roll the
+  rest.
+- **step in when you want.** Open a groove and change it by hand, or take the arrangement into
+  your DAW and play it from your own clip. The machine keeps its character either way.
 
 <p align="center"><img src="docs/img/bass.png" alt="bass" width="820"></p>
 
-### chaos in the patterns
+### what it feels like
 
-- **found, not written.** Each letter (A, B, C, D) is a pattern the seed finds: a groove from the
-  drum styles, a riff from your MIDI clips or the generator. Roll a letter, pin the ones you like.
-- **question and answer.** A asks, B answers. Contrast sets how far apart they sit: at full,
-  stabby against sustained, busy against sparse, another drum style.
-- **edit when you want to.** The EDIT view shows any pattern's whole source: move notes, pick the
-  window that loops, snap to the grid. Everything after it (Density, Groove, the operators)
-  still plays on top.
-
-### chaos in the arrangement
-
-- **cycles and motives.** A and B repeat as a cycle (A+B or A+B+A, the seed picks the split). A
-  motive repeats its cycle over 16, 32 or 64 bars; the second motive plays the letters' other
-  patterns. Fills mark the seams, and the line turns around before them.
-- **a 128-bar form.** Two passes of 64 bars, the second a variation of the first. Variation sets
-  how much changes.
-- **or arrange in your DAW.** Switch FORM to EXT and play the eight patterns (A1 .. D2) from
-  keys 36 to 43; a note's velocity picks its operator. `.MID ↓` writes the plugin's own form as
-  a MIDI file to start from.
-
-### the idea
-
-- **serendipity first.** Every knob's middle is the seed's own suggestion. You steer it, the
-  seed decides the details.
+- **surprise with a shape.** It wanders, but it never loses the thread: ideas come back,
+  answer each other and change at the moments a track would.
 - **limits are the point.** Few controls leave more room to listen.
-- **same seed, same groove.** Everything is deterministic, so loops, bounces and recalls play
-  exactly what you heard. Every parameter is automatable, and undo covers all of it.
 - **your sounds.** Point it at your sample folders. It sorts them into kits by itself, and you
   can drop files onto any slot.
+- **it plays the same twice.** Loops, bounces and recalls play exactly what you heard, every
+  setting can be automated, and undo covers all of it.
 
 Made for producers of breakbeat, jungle, dnb, bass music and anything stranger. Free and open
 source (GPL-3.0), no accounts, no upsell.
