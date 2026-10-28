@@ -125,9 +125,10 @@ const GROOVE_PUSH: [(DrumVoice, i32); 6] = [
 /// Velocity scale of the cymbals' off 16ths and on-beat 8ths at full Groove.
 const GROOVE_OFF_VEL: f32 = 0.55;
 const GROOVE_ON_VEL: f32 = 1.15;
-/// Velocity of snare ghosts (hits below [`GHOST_VEL`]) at full Groove.
+/// Velocity of snare ghosts (hits below [`GHOST_VEL`], the ghost tier of
+/// D68 and below) at full Groove.
 const GROOVE_GHOST_VEL: f32 = 0.7;
-const GHOST_VEL: u8 = 70;
+const GHOST_VEL: u8 = 90;
 
 /// The drums' Groove beyond the swing: each voice pushed or laid back, the
 /// cymbals' accent shape (strong 8ths, soft off 16ths), softer ghosts.
@@ -159,3 +160,45 @@ pub(crate) fn drums(out: &mut BarEvents, amount: f32) {
     out.sort();
 }
 
+
+// MUSICAL: tune by ear (user, 2026-10-27: at Groove 0 almost every hit about
+// 100, at full the 80 to 120 of the tiers and a few outliers). The share of
+// each hit's distance from the centre Groove 0 keeps.
+const SPREAD_CENTRE: f32 = 100.0;
+const SPREAD_LEAST: f32 = 0.1;
+
+/// The drums' velocity spread (D68), the last step on every hit, the
+/// user's patterns too: each velocity's distance from 100 scaled by Groove,
+/// from [`SPREAD_LEAST`] of it at 0 to all of it at full.
+pub(crate) fn spread(out: &mut BarEvents, amount: f32) {
+    let k = SPREAD_LEAST + (1.0 - SPREAD_LEAST) * amount.clamp(0.0, 1.0);
+    for e in out.as_mut_slice().iter_mut().filter(|e| e.vel > 0) {
+        e.vel = (SPREAD_CENTRE + (e.vel as f32 - SPREAD_CENTRE) * k).round().clamp(1.0, 127.0) as u8;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::LiveEvent;
+
+    #[test]
+    fn groove_spreads_the_velocities_around_100() {
+        let vels = [40u8, 80, 100, 120];
+        let at = |amount: f32| {
+            let mut out = BarEvents::default();
+            for (i, v) in vels.iter().enumerate() {
+                out.push(LiveEvent { tick: i as u16 * 96, vel: *v, ..Default::default() });
+            }
+            spread(&mut out, amount);
+            out.as_slice().iter().map(|e| e.vel).collect::<Vec<_>>()
+        };
+        // Full Groove keeps them; Groove 0 holds them about 100, in order.
+        assert_eq!(at(1.0), vels);
+        let flat = at(0.0);
+        assert!(flat.iter().all(|v| (94..=102).contains(v)), "{flat:?}");
+        assert!(flat.windows(2).all(|w| w[0] <= w[1]));
+        let mid = at(0.5);
+        assert!(mid[1] > 80 && mid[1] < 100 && mid[3] > 100 && mid[3] < 120, "{mid:?}");
+    }
+}

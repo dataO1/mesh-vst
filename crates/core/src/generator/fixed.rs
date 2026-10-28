@@ -228,6 +228,7 @@ mod tests {
             letter: 0,
             material_bar: 0,
             user: None,
+            contrast: crate::contrast::CONTRAST_DEFAULT,
         };
         let mut out = BarEvents::default();
         pattern.render_bar(&ctx, &mut out);

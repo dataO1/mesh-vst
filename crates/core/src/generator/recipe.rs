@@ -86,12 +86,18 @@ pub type Ticks = &'static [u16];
 /// Hats of the basic groove: offbeat 8ths.
 pub const HATS_BASE: Ticks = &[48, 144, 240, 336];
 /// Hat patterns of layer `Hats2`.
-pub const HATS_PATTERNS: [Ticks; 5] = [
+pub const HATS_PATTERNS: [Ticks; 10] = [
     &[0, 48, 96, 144, 192, 240, 288, 336],           // 8ths
     &[48, 144, 168, 240, 336, 360],                  // offbeats with 16th pickups
     &[48, 144, 240, 288, 320, 352],                  // offbeats, last beat in triplets
     &[48, 72, 144, 168, 240, 264, 336, 360],         // gallop
     &[0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352], // triplet 8ths
+    // D68: the styles' own.
+    &[0, 24, 48, 72, 96, 120, 144, 168, 192, 216, 240, 264, 288, 312, 336, 360], // 16ths
+    &[0, 24, 72, 96, 120, 168, 192, 216, 264, 288, 312, 360],                    // 16ths with holes
+    &[24, 72, 120, 168, 216, 264, 312, 360],                                     // the off 16ths
+    &[48, 240],                                                                  // two off 8ths
+    &[0, 48, 72, 96, 144, 192, 240, 264, 288, 336],                              // dembow
 ];
 /// Open hat positions (layer `Hats3`).
 pub const OPEN_HAT_TICKS: [u16; 3] = [144, 336, 240];
@@ -214,6 +220,9 @@ pub struct Recipe {
     pub perc_rotation: u8,
     /// Break roles per bar of the phrase.
     pub breaks: [u8; 4],
+    /// The cymbal voices beyond the seed's, in the order high Density
+    /// brings them in (bits per [`DrumVoice`], 0 none).
+    pub extra_cymbals: [u8; 2],
 }
 
 impl Recipe {
@@ -238,6 +247,12 @@ impl Recipe {
         shuffle(&mut cymbals, hs(S_VOICES, 0));
         for choice in [&groove[..], &cymbals[..]] {
             voices |= choice.iter().map(|v| v.bit()).find(|b| voice_allowed & b != 0).unwrap_or(0);
+        }
+        // D68: at high Density the other cymbal voices come in too, in the
+        // seed's order (user, 2026-10-27: below it they fight).
+        let mut extra_cymbals = [0u8; 2];
+        for (slot, v) in extra_cymbals.iter_mut().zip(cymbals.iter().filter(|v| voice_allowed & v.bit() != 0 && voices & v.bit() == 0)) {
+            *slot = v.bit();
         }
 
         // Layer order: kick and snare first (either way round), then the
@@ -307,6 +322,7 @@ impl Recipe {
             perc_pulses: (PERC_PULSES.0 + rng::below(hp(S_PERC, 0), PERC_PULSES.1 - PERC_PULSES.0 + 1)) as u8,
             perc_rotation: rng::below(hp(S_PERC, 1), 16) as u8,
             breaks,
+            extra_cymbals,
         }
     }
 

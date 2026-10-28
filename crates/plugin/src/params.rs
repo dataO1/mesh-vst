@@ -58,31 +58,63 @@ impl Scale {
     }
 }
 
-/// The drum style (D39): a rhythm family from Mesh live, or the pattern
-/// seed's pick.
+/// The drum style (D39, D68): a rhythm family, or the pattern seed's pick.
+/// New styles go at the end (a saved project stores the index).
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrumStyle {
     Seed,
-    #[name = "Half time"]
+    #[name = "DnB · Half time"]
     HalfTime,
-    #[name = "Two step"]
+    #[name = "DnB · Two step"]
     TwoStep,
+    #[name = "DnB · Rolling"]
     Rolling,
+    #[name = "DnB · Jungle"]
     Jungle,
+    #[name = "Breaks · Hardcore"]
     Hardcore,
+    #[name = "DnB · Techstep"]
+    Techstep,
+    #[name = "DnB · Neuro"]
+    Neuro,
+    #[name = "DnB · Jump up"]
+    JumpUp,
+    #[name = "DnB · Minimal"]
+    Minimal,
+    #[name = "Breaks · Rave amen"]
+    RaveAmen,
+    #[name = "Breaks · Nu skool"]
+    NuSkool,
+    #[name = "Breaks · Broken beat"]
+    BrokenBeat,
+    #[name = "Breaks · Electro"]
+    Electro,
+    #[name = "Bass · Dubstep"]
+    Dubstep,
+    #[name = "Bass · Grime"]
+    Grime,
+    #[name = "Bass · UK funky"]
+    UkFunky,
+    #[name = "Bass · Gqom"]
+    Gqom,
+    #[name = "Bass · Jersey club"]
+    JerseyClub,
+    #[name = "Bass · Footwork"]
+    Footwork,
+    #[name = "Bass · Dembow"]
+    Dembow,
+    #[name = "IDM · IDM"]
+    Idm,
+    #[name = "IDM · Drill'n'bass"]
+    DrillNBass,
+    #[name = "IDM · Breakcore"]
+    Breakcore,
 }
 
 impl DrumStyle {
     /// Index into `macros::DRUM_STYLES`, `None` for the seed's pick.
     pub fn index(self) -> Option<u8> {
-        match self {
-            DrumStyle::Seed => None,
-            DrumStyle::HalfTime => Some(0),
-            DrumStyle::TwoStep => Some(1),
-            DrumStyle::Rolling => Some(2),
-            DrumStyle::Jungle => Some(3),
-            DrumStyle::Hardcore => Some(4),
-        }
+        (self as u8).checked_sub(1)
     }
 }
 
@@ -407,5 +439,22 @@ impl Default for MeshParams {
             ui: Default::default(),
             patterns: Default::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod style_tests {
+    use super::*;
+
+    #[test]
+    fn every_style_names_its_generator_style() {
+        let names = DrumStyle::variants();
+        assert_eq!(names.len(), mesh_vst_core::macros::DRUM_STYLES.len() + 1);
+        for (i, style) in mesh_vst_core::macros::DRUM_STYLES.iter().enumerate() {
+            let label = names[i + 1].rsplit("· ").next().unwrap_or("").to_lowercase().replace([' ', '\''], "_");
+            assert_eq!(&label, style, "variant {}", i + 1);
+            assert_eq!(DrumStyle::from_index(i + 1).index(), Some(i as u8));
+        }
+        assert_eq!(DrumStyle::Seed.index(), None);
     }
 }

@@ -304,6 +304,12 @@
             nix build .#release            zips of both
             cargo xtask bundle mesh-vst --release   target/bundled (devshell)
 
+          Release (run nix flake check first, CI runs no tests)
+            cargo release patch --execute  bump, commit, tag v<version>, push; the tag makes CI build
+                                           both zips (CLAP and VST3) into a GitHub release
+            cargo release 0.1.0 --execute  the same with an explicit version
+            gh workflow run release.yml    rebuild the zips without a new tag
+
           Library folders: ~/.config/mesh-vst/settings.json, the SET panel, or MESH_VST_LIBRARY=dir
           Design and progress: docs/design.md
           EOF

@@ -65,10 +65,17 @@ pub enum Op {
     CallResponse,
     /// `?`: the seed picks one, by where the segment sits in the form.
     Seeded,
+    /// Velocity operators, the drums only (D68): `<` a swell (the hits grow
+    /// over the window), `>` a fade, `O` the off 8ths lead, `L` the 16th
+    /// before each beat leads.
+    Swell,
+    Fade,
+    Offbeat,
+    Push,
 }
 
 impl Op {
-    pub const ALL: [Op; 23] = [
+    pub const ALL: [Op; 27] = [
         Op::Retrograde,
         Op::Inversion,
         Op::Sequence,
@@ -92,6 +99,10 @@ impl Op {
         Op::Fragment,
         Op::CallResponse,
         Op::Seeded,
+        Op::Swell,
+        Op::Fade,
+        Op::Offbeat,
+        Op::Push,
     ];
 
     pub fn as_char(self) -> char {
@@ -119,6 +130,10 @@ impl Op {
             Op::Fragment => 'F',
             Op::CallResponse => 'K',
             Op::Seeded => '?',
+            Op::Swell => '<',
+            Op::Fade => '>',
+            Op::Offbeat => 'O',
+            Op::Push => 'L',
         }
     }
 
@@ -680,8 +695,35 @@ fn apply_one(op: Op, k: u8, notes: &mut Vec<SpanNote>, ctx: &OpCtx) {
         }
         Op::CallResponse => call_response(notes, ctx),
         Op::Mutate => mutate(notes, ctx, k),
-        // Pitch operators on the drums.
+        Op::Swell | Op::Fade | Op::Offbeat | Op::Push if ctx.drums => accents(op, notes, ctx),
+        // Pitch operators on the drums, the velocity ones elsewhere.
         _ => {}
+    }
+}
+
+// MUSICAL: tune by ear (user, 2026-10-27: velocity operators on the drums).
+// How far a velocity operator moves the hits, from Variation 0 to full.
+const ACCENT_DEPTH: (f32, f32) = (0.12, 0.3);
+
+/// The drums' velocity operators (D68) over the window (a bar at least):
+/// a swell or a fade through it, the off 8ths or the 16th before each beat
+/// leading while the beats step back.
+fn accents(op: Op, notes: &mut [SpanNote], ctx: &OpCtx) {
+    let d = ACCENT_DEPTH.0 + (ACCENT_DEPTH.1 - ACCENT_DEPTH.0) * ctx.amount.clamp(0.0, 1.0);
+    let (from, to) = window(ctx, BAR);
+    let len = (to - from).max(1) as f32;
+    for n in notes.iter_mut().filter(|n| is_note(n) && n.ev.vel > 0 && in_window(n, (from, to))) {
+        let t = (n.at - from) as f32 / len;
+        let step = (n.at % BAR) / STEP;
+        let f = match op {
+            Op::Swell => 1.0 - d + 1.5 * d * t,
+            Op::Fade => 1.0 + 0.5 * d - 1.5 * d * t,
+            Op::Offbeat if step % 4 == 2 => 1.0 + 0.6 * d,
+            Op::Push if step % 4 == 3 => 1.0 + 0.6 * d,
+            Op::Offbeat | Op::Push if step % 4 == 0 => 1.0 - 0.4 * d,
+            _ => 1.0,
+        };
+        n.ev.vel = (n.ev.vel as f32 * f).round().clamp(1.0, 127.0) as u8;
     }
 }
 
@@ -1147,6 +1189,33 @@ mod tests {
                 assert_ne!(seeded_melodic(rng::derive(i, 4), place), Op::Seeded);
             }
         }
+    }
+
+    #[test]
+    fn velocity_operators_shape_the_drums_only() {
+        // Sixteenths over two bars at 100.
+        let hits: Vec<SpanNote> = (0..32u32)
+            .map(|i| SpanNote { at: i * STEP, seq: i, ev: LiveEvent { kind: EventKind::Trigger, vel: 100, ..Default::default() } })
+            .collect();
+        let run_drums = |op: Op| {
+            let mut v = Vec::with_capacity(64);
+            v.extend_from_slice(&hits);
+            let mut chain = OpChain::default();
+            chain.push(op);
+            apply(&chain, &mut v, &OpCtx { drums: true, ..ctx(1.0) });
+            v
+        };
+        let vel = |v: &[SpanNote], i: usize| v[i].ev.vel;
+        let swell = run_drums(Op::Swell);
+        assert!(vel(&swell, 0) < vel(&swell, 31));
+        let fade = run_drums(Op::Fade);
+        assert!(vel(&fade, 0) > vel(&fade, 31));
+        let off = run_drums(Op::Offbeat);
+        assert!(vel(&off, 2) > 100 && vel(&off, 0) < 100);
+        let push = run_drums(Op::Push);
+        assert!(vel(&push, 3) > 100 && vel(&push, 4) < 100);
+        // A pitched lane keeps its velocities.
+        assert!(run(Op::Swell, 1.0, &line()).iter().all(|n| n.ev.vel == 100));
     }
 
     #[test]

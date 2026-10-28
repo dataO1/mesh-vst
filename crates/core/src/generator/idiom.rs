@@ -101,6 +101,10 @@ pub fn drum_archetypes(order: &[String], idiom: Option<&IdiomSpec>) -> (Vec<Arch
             let known = builtin.is_some();
             let mut arch = builtin.unwrap_or_else(|| Archetype::blank(name));
             let mapped = idiom.is_some_and(|i| apply_maps(&mut arch, i));
+            if mapped {
+                // Style data plays its maps as written.
+                arch.style = None;
+            }
             if !known && !mapped {
                 unknown.push(name.to_string());
             }

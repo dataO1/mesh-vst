@@ -42,11 +42,12 @@ use std::collections::BTreeMap;
 
 use super::blocks::{
     blend_levels, defaults_from_spec, euclid, lerp, level_unit, option, param, ratchet, reveals,
-    roll_velocity, step_tick, swing_offset, tier_for_level, tier_for_metric, trigger, velocity,
-    LevelMap, PhraseRng, Tier, VEL_NORMAL,
+    roll_velocity, step_tick, swing_offset, tier_for_level, tier_for_metric, trigger, LevelMap,
+    PhraseRng, Tier, VEL_JITTER,
 };
 use super::layout::{DrumLayout, DrumVoice, HATS_BASE, PERC_BASE, RIDE_BASE, SHAKER_BASE, TOP_BASE};
 use super::recipe::{self, break_role, Layer, Recipe};
+use super::styles;
 use super::{BarCtx, LaneGenerator, MAX_GEN_PARAMS};
 use crate::event::{flags, BarEvents, EventKind, LiveEvent};
 use crate::rng;
@@ -85,11 +86,20 @@ const P_TONE: usize = 12;
 // MUSICAL: first draft, tune by ear. Defaults: two-step at medium density
 // with 8th hats, a few ghosts, little percussion, the break in order (Morph
 // starts off, user 2026-10-27).
-pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [0.25, 0.5, 0.5, 0.3, 0.2, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5];
+pub const PARAM_DEFAULTS: [f32; MAX_GEN_PARAMS] = [1.0 / 22.0, 0.5, 0.5, 0.3, 0.2, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5];
 
 
-/// Archetype order used when the lane gives none (research §7.2).
-pub const DEFAULT_ARCHETYPE_ORDER: [&str; 5] = ["half_time", "two_step", "rolling", "jungle", "hardcore"];
+/// Archetype order used when the lane gives none: the styles of D68, the
+/// five of D39 (research §7.2) first.
+pub const DEFAULT_ARCHETYPE_ORDER: [&str; 23] = {
+    let mut names = [""; 23];
+    let mut i = 0;
+    while i < names.len() {
+        names[i] = super::styles::STYLES[i].name;
+        i += 1;
+    }
+    names
+};
 
 // RNG streams (private to the drum lane).
 const S_VEL_KICK: u32 = 0x100;
@@ -139,32 +149,32 @@ const S_KIT_CHOP: u32 = 0x1E0;
 // MUSICAL: first draft, tune by ear. Backbone importance per step (A1).
 // Anchors (>= 230) are the research §7.2 backbones; lower levels are extra
 // hits that `density` reveals. Levels below 128 stay hidden at density 0.5.
-const HALF_TIME_KICK: [u8; 16] = [255, 0, 0, 0, 0, 0, 70, 0, 0, 0, 100, 0, 0, 0, 120, 0];
-const HALF_TIME_SNARE: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 50];
-const TWO_STEP_KICK: [u8; 16] = [255, 0, 0, 0, 0, 0, 80, 0, 0, 0, 250, 0, 0, 60, 0, 0];
-const TWO_STEP_SNARE: [u8; 16] = [0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 70];
-const ROLLING_KICK: [u8; 16] = [255, 0, 0, 0, 0, 0, 0, 150, 0, 0, 250, 0, 0, 0, 100, 0];
-const ROLLING_SNARE: [u8; 16] = [0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 90];
-const JUNGLE_KICK: [u8; 16] = [255, 0, 200, 0, 0, 0, 0, 0, 0, 0, 230, 180, 0, 0, 0, 0];
-const JUNGLE_SNARE: [u8; 16] = [0, 0, 0, 0, 255, 0, 0, 150, 0, 160, 0, 0, 240, 0, 0, 140];
-const HARDCORE_KICK: [u8; 16] = [255, 0, 0, 0, 250, 0, 0, 0, 250, 0, 0, 0, 250, 0, 100, 0];
-const HARDCORE_SNARE: [u8; 16] = [0, 0, 0, 0, 230, 0, 0, 0, 0, 0, 0, 0, 230, 0, 0, 0];
+pub(super) const HALF_TIME_KICK: [u8; 16] = [255, 0, 0, 0, 0, 0, 70, 0, 0, 0, 100, 0, 0, 0, 120, 0];
+pub(super) const HALF_TIME_SNARE: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 50];
+pub(super) const TWO_STEP_KICK: [u8; 16] = [255, 0, 0, 0, 0, 0, 80, 0, 0, 0, 250, 0, 0, 60, 0, 0];
+pub(super) const TWO_STEP_SNARE: [u8; 16] = [0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 70];
+pub(super) const ROLLING_KICK: [u8; 16] = [255, 0, 0, 0, 0, 0, 0, 150, 0, 0, 250, 0, 0, 0, 100, 0];
+pub(super) const ROLLING_SNARE: [u8; 16] = [0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 90];
+pub(super) const JUNGLE_KICK: [u8; 16] = [255, 0, 200, 0, 0, 0, 0, 0, 0, 0, 230, 180, 0, 0, 0, 0];
+pub(super) const JUNGLE_SNARE: [u8; 16] = [0, 0, 0, 0, 255, 0, 0, 150, 0, 160, 0, 0, 240, 0, 0, 140];
+pub(super) const HARDCORE_KICK: [u8; 16] = [255, 0, 0, 0, 250, 0, 0, 0, 250, 0, 0, 0, 250, 0, 100, 0];
+pub(super) const HARDCORE_SNARE: [u8; 16] = [0, 0, 0, 0, 230, 0, 0, 0, 0, 0, 0, 0, 230, 0, 0, 0];
 
 // MUSICAL: first draft, tune by ear. Hat importance: offbeat 8ths first,
 // then beats, then 16ths.
-const HATS_8THS: [u8; 16] = [150, 50, 235, 60, 150, 50, 235, 70, 150, 50, 235, 60, 150, 50, 235, 80];
-const HATS_RIDE: [u8; 16] = [220, 90, 235, 100, 220, 90, 235, 110, 220, 90, 235, 100, 220, 90, 235, 120];
-const HATS_SPARSE: [u8; 16] = [120, 40, 200, 50, 120, 40, 200, 50, 120, 40, 200, 50, 120, 40, 200, 60];
-const HATS_OFFBEAT: [u8; 16] = [100, 40, 245, 60, 100, 40, 245, 60, 100, 40, 245, 60, 100, 40, 245, 70];
-const HATS_HALF: [u8; 16] = [200, 40, 120, 50, 180, 40, 120, 60, 200, 40, 120, 50, 180, 40, 150, 70];
+pub(super) const HATS_8THS: [u8; 16] = [150, 50, 235, 60, 150, 50, 235, 70, 150, 50, 235, 60, 150, 50, 235, 80];
+pub(super) const HATS_RIDE: [u8; 16] = [220, 90, 235, 100, 220, 90, 235, 110, 220, 90, 235, 100, 220, 90, 235, 120];
+pub(super) const HATS_SPARSE: [u8; 16] = [120, 40, 200, 50, 120, 40, 200, 50, 120, 40, 200, 50, 120, 40, 200, 60];
+pub(super) const HATS_OFFBEAT: [u8; 16] = [100, 40, 245, 60, 100, 40, 245, 60, 100, 40, 245, 60, 100, 40, 245, 70];
+pub(super) const HATS_HALF: [u8; 16] = [200, 40, 120, 50, 180, 40, 120, 60, 200, 40, 120, 50, 180, 40, 150, 70];
 
 // MUSICAL: first draft, tune by ear. Ghost-snare importance, strongest
 // around the snares.
-const GHOST_TWO_STEP: [u8; 16] = [0, 60, 40, 100, 0, 70, 110, 190, 30, 170, 60, 90, 0, 80, 120, 150];
-const GHOST_ROLLING: [u8; 16] = [0, 90, 60, 150, 0, 110, 160, 220, 40, 210, 90, 140, 0, 120, 170, 200];
-const GHOST_HALF: [u8; 16] = [0, 40, 60, 90, 70, 50, 100, 140, 0, 90, 110, 150, 80, 70, 160, 180];
-const GHOST_JUNGLE: [u8; 16] = [0, 80, 0, 140, 0, 120, 170, 0, 90, 0, 0, 100, 0, 150, 190, 0];
-const GHOST_HARDCORE: [u8; 16] = [0, 50, 90, 110, 0, 60, 100, 160, 0, 60, 100, 120, 0, 70, 130, 170];
+pub(super) const GHOST_TWO_STEP: [u8; 16] = [0, 60, 40, 100, 0, 70, 110, 190, 30, 170, 60, 90, 0, 80, 120, 150];
+pub(super) const GHOST_ROLLING: [u8; 16] = [0, 90, 60, 150, 0, 110, 160, 220, 40, 210, 90, 140, 0, 120, 170, 200];
+pub(super) const GHOST_HALF: [u8; 16] = [0, 40, 60, 90, 70, 50, 100, 140, 0, 90, 110, 150, 80, 70, 160, 180];
+pub(super) const GHOST_JUNGLE: [u8; 16] = [0, 80, 0, 140, 0, 120, 170, 0, 90, 0, 0, 100, 0, 150, 190, 0];
+pub(super) const GHOST_HARDCORE: [u8; 16] = [0, 50, 90, 110, 0, 60, 100, 160, 0, 60, 100, 120, 0, 70, 130, 170];
 
 // MUSICAL: first draft, tune by ear. Top loop and percussion.
 /// Chop mutation probability of the top loop per step at `chop = 1`.
@@ -272,6 +282,9 @@ pub struct Archetype {
     pub ghost: LevelMap,
     /// `None` = procedural Euclid percussion.
     pub perc: Option<LevelMap>,
+    /// The style ([`styles::STYLES`]) whose rules the seed plays (D68):
+    /// `None` plays the maps as written (style data, the buildup).
+    pub style: Option<u8>,
 }
 
 impl Archetype {
@@ -285,32 +298,16 @@ impl Archetype {
             hats: LevelMap::empty(),
             ghost: LevelMap::empty(),
             perc: None,
-        }
-    }
-
-    fn from_tables(name: &str, kick: [u8; 16], snare: [u8; 16], hats: [u8; 16], ghost: [u8; 16]) -> Self {
-        Self {
-            name: name.to_string(),
-            buildup: false,
-            kick: LevelMap::bar(kick),
-            snare: LevelMap::bar(snare),
-            hats: LevelMap::bar(hats),
-            ghost: LevelMap::bar(ghost),
-            perc: None,
+            style: None,
         }
     }
 
     /// The built-in archetype of that name, if any.
     pub fn builtin(name: &str) -> Option<Self> {
-        Some(match name {
-            "half_time" => Self::from_tables(name, HALF_TIME_KICK, HALF_TIME_SNARE, HATS_HALF, GHOST_HALF),
-            "two_step" => Self::from_tables(name, TWO_STEP_KICK, TWO_STEP_SNARE, HATS_8THS, GHOST_TWO_STEP),
-            "rolling" => Self::from_tables(name, ROLLING_KICK, ROLLING_SNARE, HATS_RIDE, GHOST_ROLLING),
-            "jungle" => Self::from_tables(name, JUNGLE_KICK, JUNGLE_SNARE, HATS_SPARSE, GHOST_JUNGLE),
-            "hardcore" => Self::from_tables(name, HARDCORE_KICK, HARDCORE_SNARE, HATS_OFFBEAT, GHOST_HARDCORE),
-            "buildup" => Self { buildup: true, ..Self::blank(name) },
-            _ => return None,
-        })
+        if name == "buildup" {
+            return Some(Self { buildup: true, ..Self::blank(name) });
+        }
+        styles::index_of(name).map(|i| styles::archetype(&styles::STYLES[i]))
     }
 
     /// The built-in archetypes in research order.
@@ -673,6 +670,80 @@ fn kit_chop(chop: f32, rng: &PhraseRng, until: usize, out: &mut BarEvents) {
     }
 }
 
+/// The hat pattern ([`recipe::HATS_PATTERNS`]) the recipe's pick plays in
+/// `style` (D68); without one the five of D39.
+fn hat_pattern(style: Option<u8>, pick: usize) -> usize {
+    match style {
+        Some(i) => {
+            let own = styles::STYLES[i as usize % styles::STYLES.len()].hat_patterns;
+            own[pick % own.len()]
+        }
+        None => pick % 5,
+    }
+}
+
+// MUSICAL: tune by ear (user, 2026-10-27: Contrast low, the cymbal layers
+// play on top of each other; high, they take turns). Contrast where taking
+// turns starts and where it is full, the most of a non-owner's hits that
+// go, and how much more often the hats own an 8th than the others.
+const INTERPLAY_FROM: (f32, f32) = (0.2, 1.0);
+const INTERPLAY_MAX: f32 = 0.9;
+const INTERPLAY_HAT_WEIGHT: f32 = 2.0;
+/// Density from which the seed's second and third cymbal voices sound.
+const EXTRA_CYMBALS_FROM: [f32; 2] = [0.7, 0.85];
+const TOP_VOICES: [DrumVoice; 4] = [DrumVoice::Hats, DrumVoice::Ride, DrumVoice::Shaker, DrumVoice::Top];
+const S_INTERPLAY: u32 = 0x1F0;
+
+/// The cymbal layers that sound (`mask`) take turns at `contrast`: each 8th
+/// before `until` has an owner (seeded), the others' hits there go at the
+/// turn-taking amount. Accents (the crash) stay.
+fn interplay(contrast: f32, mask: u8, rng: &PhraseRng, until: usize, out: &mut BarEvents) {
+    let amount = INTERPLAY_MAX * smooth(INTERPLAY_FROM.0, INTERPLAY_FROM.1, contrast);
+    let top = |e: &LiveEvent| matches!(e.kind, EventKind::Trigger | EventKind::NoteOn) && DrumVoice::of_target(e.target).is_some_and(|v| TOP_VOICES.contains(&v));
+    let mut playing = [false; TOP_VOICES.len()];
+    for e in out.as_slice().iter().filter(|e| top(e)) {
+        if let Some(i) = DrumVoice::of_target(e.target).and_then(|v| TOP_VOICES.iter().position(|t| *t == v)) {
+            playing[i] = mask & TOP_VOICES[i].bit() != 0;
+        }
+    }
+    if amount <= 0.0 || playing.iter().filter(|p| **p).count() < 2 {
+        return;
+    }
+    let weights: [f32; TOP_VOICES.len()] = std::array::from_fn(|i| if !playing[i] { 0.0 } else if i == 0 { INTERPLAY_HAT_WEIGHT } else { 1.0 });
+    let owners: [usize; STEPS_PER_BAR / 2] = std::array::from_fn(|w| rng::weighted_pick(rng.at(w as u8, S_INTERPLAY), &weights).unwrap_or(0));
+    let until_tick = until as u16 * TICKS_PER_STEP;
+    out.retain(|_, e| {
+        if !top(e) || e.tick >= until_tick || e.has(flags::ACCENT) {
+            return true;
+        }
+        let Some(vi) = DrumVoice::of_target(e.target).and_then(|v| TOP_VOICES.iter().position(|t| *t == v)) else { return true };
+        let step = (e.tick / TICKS_PER_STEP) as usize % STEPS_PER_BAR;
+        owners[step / 2] == vi || !rng.chance(step as u8, S_INTERPLAY + 1 + vi as u32, amount)
+    });
+}
+
+/// The letter's velocity motive (D68) on every hit: the backbone voices and
+/// the cymbals each by their row, the second half bar by the second motive.
+fn apply_motive(def: &styles::StyleDef, ctx: &BarCtx, variation: f32, tiers: f32, out: &mut BarEvents) {
+    let (first, second) = styles::motive_at(def, ctx.seed, ctx.lane, ctx.fill, variation);
+    for e in out.as_mut_slice().iter_mut().filter(|e| matches!(e.kind, EventKind::Trigger | EventKind::NoteOn) && e.vel > 0) {
+        let step = (e.tick / TICKS_PER_STEP) as usize % STEPS_PER_BAR;
+        let m = if step >= STEPS_PER_BAR / 2 { &second } else { &first };
+        let top = DrumVoice::of_target(e.target).is_some_and(|v| TOP_VOICES.contains(&v));
+        let offset = if top { m.top[step] } else { m.back[step] } as f32 * tiers.clamp(0.0, 1.0);
+        e.vel = (e.vel as f32 + offset).round().clamp(1.0, 127.0) as u8;
+    }
+}
+
+/// The kick and snare levels of `a` for this bar: its style's seeded
+/// backbone (D68), else its maps as written.
+fn backbone_levels(a: &Archetype, ctx: &BarCtx) -> ([u8; STEPS_PER_BAR], [u8; STEPS_PER_BAR]) {
+    match a.style {
+        Some(i) => styles::seeded_backbone(&styles::STYLES[i as usize % styles::STYLES.len()], ctx.seed, ctx.lane),
+        None => (a.kick.bar_levels(ctx.bar_in_phrase), a.snare.bar_levels(ctx.bar_in_phrase)),
+    }
+}
+
 /// The steps the kick and the snare hit in `out`.
 fn backbone_masks(out: &BarEvents) -> (u16, u16) {
     let (mut kick, mut snare) = (0u16, 0u16);
@@ -738,7 +809,27 @@ fn scaled(vel: u8, amount: f32) -> u8 {
 /// Velocity of a hit at `tick` by its metric position (off-grid ticks: normal).
 fn tick_velocity(tick: u16, rand: f32, tiers: f32) -> u8 {
     let tier = if tick % TICKS_PER_STEP == 0 { tier_for_metric((tick / TICKS_PER_STEP) as usize) } else { Tier::Normal };
-    velocity(tier, rand, tiers)
+    drum_velocity(tier, rand, tiers)
+}
+
+// MUSICAL: tune by ear (user, 2026-10-27: most hits about 100, ghosts and
+// fillers about 80, accents about 120, a few outliers below). The drum
+// tiers (the softer moves on top of them make the outliers).
+const DRUM_GHOST: u8 = 80;
+pub(crate) const DRUM_NORMAL: u8 = 100;
+const DRUM_ACCENT: u8 = 120;
+
+/// A drum hit's velocity for a tier with seeded variation; `amount` (rule
+/// A5) 0 plays every hit at [`DRUM_NORMAL`].
+fn drum_velocity(tier: Tier, rand: f32, amount: f32) -> u8 {
+    let base = match tier {
+        Tier::Accent => DRUM_ACCENT,
+        Tier::Normal => DRUM_NORMAL,
+        Tier::Ghost => DRUM_GHOST,
+    } as f32;
+    let amount = amount.clamp(0.0, 1.0);
+    let v = lerp(DRUM_NORMAL as f32, base, amount) + (rand * 2.0 - 1.0) * VEL_JITTER * amount;
+    v.round().clamp(1.0, 127.0) as u8
 }
 
 /// Target of the `n`-th set bit of `mask` (a pool pick), from `base`.
@@ -886,7 +977,7 @@ impl DrumGenerator {
                 bb.kick |= bit(s);
                 if let Some(target) = l.kick {
                     let tier = tier_for_level(k);
-                    let mut ev = trigger(step_tick(s), target, velocity(tier, rng.unit(s as u8, S_VEL_KICK), self.rules.tiers));
+                    let mut ev = trigger(step_tick(s), target, drum_velocity(tier, rng.unit(s as u8, S_VEL_KICK), self.rules.tiers));
                     if tier == Tier::Accent {
                         ev.flags |= flags::ACCENT;
                     }
@@ -898,7 +989,7 @@ impl DrumGenerator {
                 let tier = tier_for_level(sn);
                 let target = if tier == Tier::Ghost { l.ghost.or(l.snare) } else { l.snare };
                 if let Some(target) = target {
-                    let mut ev = trigger(step_tick(s), target, velocity(tier, rng.unit(s as u8, S_VEL_SNARE), self.rules.tiers));
+                    let mut ev = trigger(step_tick(s), target, drum_velocity(tier, rng.unit(s as u8, S_VEL_SNARE), self.rules.tiers));
                     if tier == Tier::Accent {
                         ev.flags |= flags::ACCENT;
                     }
@@ -918,7 +1009,7 @@ impl DrumGenerator {
             let s = FILL_START_STEP + i;
             let ramp = lerp(FILL_RAMP_START, 1.0, i as f32 / (cell.len() - 1) as f32);
             let r = key.unit(s as u8, S_FILL_VEL);
-            let scaled = |tier: Tier| ((velocity(tier, r, self.rules.tiers) as f32 * ramp).round() as u8).max(1);
+            let scaled = |tier: Tier| ((drum_velocity(tier, r, self.rules.tiers) as f32 * ramp).round() as u8).max(1);
             match code {
                 Fill::Rest => {}
                 Fill::Kick => {
@@ -966,8 +1057,8 @@ impl DrumGenerator {
         let s = STEPS_PER_BAR - 1;
         let r = rng.bar.unit(s as u8, S_PICKUP);
         let vel = lerp(
-            velocity(Tier::Ghost, r, self.rules.tiers) as f32,
-            velocity(Tier::Normal, r, self.rules.tiers) as f32,
+            drum_velocity(Tier::Ghost, r, self.rules.tiers) as f32,
+            drum_velocity(Tier::Normal, r, self.rules.tiers) as f32,
             p.variation,
         )
         .round() as u8;
@@ -1077,7 +1168,7 @@ impl DrumGenerator {
             let on_backbone = (ty == SliceType::Kick && bb.kick & bit(s) != 0)
                 || (ty == SliceType::Snare && bb.snare & bit(s) != 0);
             let mut vel = lerp(
-                VEL_NORMAL as f32,
+                DRUM_NORMAL as f32,
                 BREAK_VEL + (rng.unit(s as u8, S_BRK_VEL) * 2.0 - 1.0) * BREAK_VEL_JITTER,
                 self.rules.tiers,
             );
@@ -1103,7 +1194,7 @@ impl DrumGenerator {
 
     /// Hats: offbeat 8ths in the basic groove, the seed's pattern from layer
     /// `Hats2`, 16ths and the open hat from `Hats3`.
-    fn hats(&self, ctx: &BarCtx, p: &Params, r: &Recipe, rng: &PhraseRng, bb: &Backbone, out: &mut BarEvents) {
+    fn hats(&self, ctx: &BarCtx, p: &Params, r: &Recipe, style: Option<u8>, rng: &PhraseRng, bb: &Backbone, out: &mut BarEvents) {
         let l = &self.layout;
         let Some(closed) = pick_bit(l.hats_closed, HATS_BASE, pick(ctx, S_PICK_CLOSED)) else { return };
         let open_hat = pick_bit(l.hats_open, HATS_BASE, pick(ctx, S_PICK_OPEN));
@@ -1115,7 +1206,7 @@ impl DrumGenerator {
         let mut n_ticks = 0;
         for s in 0..STEPS_PER_BAR {
             let seed_pat = rng.unit(s as u8, S_FEEL_PRESENCE) < p2;
-            let src: &[u16] = if seed_pat { recipe::HATS_PATTERNS[r.hats] } else { recipe::HATS_BASE };
+            let src: &[u16] = if seed_pat { recipe::HATS_PATTERNS[hat_pattern(style, r.hats)] } else { recipe::HATS_BASE };
             for &t in src.iter().filter(|&&t| (t / TICKS_PER_STEP) as usize == s) {
                 if n_ticks < merged.len() {
                     merged[n_ticks] = t;
@@ -1142,11 +1233,11 @@ impl DrumGenerator {
                 if used & bit(s) != 0 || bb.locked & bit(s) != 0 || rng.unit(s as u8, S_FEEL_PRESENCE + 1) >= p3 {
                     continue;
                 }
-                let vel = velocity(Tier::Ghost, rng.unit(s as u8, S_HAT), self.rules.tiers);
+                let vel = drum_velocity(Tier::Ghost, rng.unit(s as u8, S_HAT), self.rules.tiers);
                 push(out, step_tick(s) + swing_offset(s, p.swing), closed, vel);
             }
             if let Some(open) = open_hat.filter(|_| rng.unit(0, S_FEEL_PRESENCE + 2) < p3) {
-                let vel = velocity(Tier::Normal, rng.unit(0, S_HAT_OPEN), self.rules.tiers);
+                let vel = drum_velocity(Tier::Normal, rng.unit(0, S_HAT_OPEN), self.rules.tiers);
                 push(out, r.open_hat, open, vel);
             }
         }
@@ -1165,7 +1256,7 @@ impl DrumGenerator {
             if bb.locked & bit(s) != 0 || !reveals(level_unit(lv.ghost[s]), d, GHOST_CHAOS, rng.unit(su, S_GHOST)) {
                 continue;
             }
-            let vel = velocity(Tier::Ghost, rng.unit(su, S_GHOST_VEL), self.rules.tiers);
+            let vel = drum_velocity(Tier::Ghost, rng.unit(su, S_GHOST_VEL), self.rules.tiers);
             out.push(trigger(step_tick(s) + swing_offset(s, p.swing), target, vel));
         }
     }
@@ -1186,7 +1277,7 @@ impl DrumGenerator {
             }
             let k = rng::below(rng.at(su, S_PERC_PICK), picks);
             let target = PERC_BASE + ((first + k * 7) % l.perc_count as u32) as u8;
-            let vel = velocity(tier_for_metric(s), rng.unit(su, S_PERC_VEL), self.rules.tiers);
+            let vel = drum_velocity(tier_for_metric(s), rng.unit(su, S_PERC_VEL), self.rules.tiers);
             out.push(trigger(step_tick(s), target, scaled(vel, p.perc)));
         }
     }
@@ -1198,7 +1289,7 @@ impl DrumGenerator {
             .then(|| pick_bit(l.crashes as u32, RIDE_BASE, pick(ctx, S_PICK_CRASH)))
             .flatten();
         if let Some(crash) = crash {
-            let mut ev = trigger(0, crash, velocity(Tier::Accent, rng.unit(0, S_RIDE_VEL), self.rules.tiers));
+            let mut ev = trigger(0, crash, drum_velocity(Tier::Accent, rng.unit(0, S_RIDE_VEL), self.rules.tiers));
             ev.flags |= flags::ACCENT;
             out.push(ev);
         }
@@ -1279,7 +1370,7 @@ impl DrumGenerator {
         let l = &self.layout;
         let bar = ctx.bar_in_phrase.min(3) as usize;
         if let (Some(kick), 0) = (l.kick, bar) {
-            let mut ev = trigger(0, kick, velocity(Tier::Accent, 0.5, self.rules.tiers));
+            let mut ev = trigger(0, kick, drum_velocity(Tier::Accent, 0.5, self.rules.tiers));
             ev.flags |= flags::ACCENT;
             out.push(ev);
         }
@@ -1288,7 +1379,7 @@ impl DrumGenerator {
         let mut tick = 0u16;
         while tick < TICKS_PER_BAR && !(last && tick >= BUILDUP_SILENT_TICK) {
             let progress = (bar as f32 * TICKS_PER_BAR as f32 + tick as f32) / (4.0 * TICKS_PER_BAR as f32);
-            let vel = lerp(VEL_NORMAL as f32, lerp(BUILDUP_VEL_START, 127.0, progress), self.rules.tiers);
+            let vel = lerp(DRUM_NORMAL as f32, lerp(BUILDUP_VEL_START, 127.0, progress), self.rules.tiers);
             out.push(trigger(tick, target, vel.round().clamp(1.0, 127.0) as u8));
             tick += if last && tick >= BUILDUP_32ND_TICK { TICKS_PER_STEP / 2 } else { BUILDUP_INTERVAL[bar] };
         }
@@ -1317,9 +1408,13 @@ impl LaneGenerator for DrumGenerator {
             return;
         }
         let bar = ctx.bar_in_phrase;
+        // D68: a styled archetype plays one of its backbones with the
+        // letter's own extra hits.
+        let (ak, asn) = backbone_levels(a, ctx);
+        let (bk, bsn) = backbone_levels(b, ctx);
         let mut lv = BarLevels {
-            kick: blend_levels(&a.kick.bar_levels(bar), &b.kick.bar_levels(bar), t),
-            snare: blend_levels(&a.snare.bar_levels(bar), &b.snare.bar_levels(bar), t),
+            kick: blend_levels(&ak, &bk, t),
+            snare: blend_levels(&asn, &bsn, t),
             hats: blend_levels(&a.hats.bar_levels(bar), &b.hats.bar_levels(bar), t),
             ghost: blend_levels(&a.ghost.bar_levels(bar), &b.ghost.bar_levels(bar), t),
         };
@@ -1397,12 +1492,19 @@ impl LaneGenerator for DrumGenerator {
             let roles = recipe.breaks[ctx.bar_in_phrase as usize & 3];
             self.break_layer(ctx, &p, &rng, &bb, roles, fill_from, wants_pickup && !picked_up, out);
         }
-        self.hats(ctx, &p, &recipe, &rng, &bb, out);
+        let style = (if t < 0.5 { a } else { b }).style;
+        self.hats(ctx, &p, &recipe, style, &rng, &bb, out);
         self.ghosts(&p, &recipe, &rng, &lv, &bb, out);
         self.perc(ctx, &p, &recipe, &rng, &bb, out);
         self.ride(ctx, &p, &recipe, &rng, out);
         self.shaker(ctx, &p, &recipe, &rng, out);
         self.top(ctx, &p, &recipe, &rng, out);
+        // D68: the cymbal layers stack or take turns (Contrast), then the
+        // letter's velocity motive.
+        interplay(ctx.contrast, self.voice_mask(ctx), &rng, fill_from, out);
+        if let Some(i) = style {
+            apply_motive(&styles::STYLES[i as usize % styles::STYLES.len()], ctx, p.variation, self.rules.tiers, out);
+        }
         if self.rules.feel {
             metric_trim(p.density, p.tone, &ctx.focus, &rng, fill_from, out);
             let add_vel = if self.rules.tiers > 0.0 { FEEL_ADD_VEL } else { 1.0 };
@@ -1426,6 +1528,12 @@ impl LaneGenerator for DrumGenerator {
                 on &= !layer.voice().bit();
             }
         }
+        // D68: the other cymbal voices at high Density.
+        for (extra, from) in r.extra_cymbals.iter().zip(EXTRA_CYMBALS_FROM) {
+            if p.density >= from {
+                on |= extra;
+            }
+        }
         on
     }
 
@@ -1446,6 +1554,11 @@ mod tests {
     use crate::generator::test_util::{assert_well_formed, ctx, render};
 
     const EMPTY: [u8; 16] = [0; 16];
+
+    /// The `style` value of style `i` (D68).
+    fn sv(i: f32) -> f32 {
+        i / (DEFAULT_ARCHETYPE_ORDER.len() - 1) as f32
+    }
 
     fn generator() -> DrumGenerator {
         DrumGenerator::with_layout(DrumLayout::standard())
@@ -1555,6 +1668,64 @@ mod tests {
     }
 
     #[test]
+    fn high_density_brings_in_more_cymbal_voices() {
+        let g = generator();
+        let cymbals = DrumVoice::Ride.bit() | DrumVoice::Shaker.bit() | DrumVoice::Top.bit();
+        let count = |seed: u32, d: f32| (g.voice_mask(&ctx(seed, 0, &params(|p| p[P_DENSITY] = d), &EMPTY)) & cymbals).count_ones();
+        let (mut low, mut high) = (0, 0);
+        for seed in 0..40 {
+            assert!(count(seed, 0.5) <= 1, "seed {seed}: one cymbal voice below high Density");
+            low += count(seed, 0.5);
+            high += count(seed, 1.0);
+        }
+        assert!(high > low + 40, "{low} .. {high}");
+    }
+
+    #[test]
+    fn contrast_lets_the_cymbal_layers_take_turns() {
+        let layout = DrumLayout::empty().with_backbone(3).with_hats(2, 2).with_rides(0b11, 0).with_shakers(2).with_tops(&[16], 0);
+        let g = DrumGenerator::with_layout(layout);
+        let p = params(|p| p[P_DENSITY] = 1.0);
+        // Steps where two cymbal voices hit together, over seeds.
+        let stacked = |contrast: f32| -> usize {
+            (0..40)
+                .map(|seed| {
+                    let mut c = ctx(seed, 0, &p, &EMPTY);
+                    c.contrast = contrast;
+                    let mask = g.voice_mask(&c);
+                    let mut per_step = [0u8; STEPS_PER_BAR];
+                    for e in render(&g, &c).as_slice() {
+                        if DrumVoice::of_target(e.target).is_some_and(|v| TOP_VOICES.contains(&v) && mask & v.bit() != 0) {
+                            per_step[(e.tick / TICKS_PER_STEP) as usize % STEPS_PER_BAR] |= DrumVoice::of_target(e.target).map_or(0, |v| v.bit());
+                        }
+                    }
+                    per_step.iter().filter(|m| m.count_ones() > 1).count()
+                })
+                .sum()
+        };
+        assert!(stacked(0.0) > 2 * stacked(1.0), "{} vs {}", stacked(0.0), stacked(1.0));
+    }
+
+    #[test]
+    fn a_style_plays_its_own_velocity_motives() {
+        let g = kit_only();
+        let vels = |seed: u32, fill: bool| {
+            let p = params(|_| {});
+            let mut c = ctx(seed, 0, &p, &EMPTY);
+            c.fill = fill;
+            render(&g, &c).as_slice().iter().map(|e| (e.tick, e.vel)).collect::<Vec<_>>()
+        };
+        // Seeds roll other accents; a letter plays alike in every bar.
+        let shapes: std::collections::BTreeSet<_> = (0..20).map(|s| vels(s, false).iter().map(|v| v.1).collect::<Vec<_>>()).collect();
+        assert!(shapes.len() > 10);
+        assert_eq!(vels(3, false), vels(3, false));
+        // Most hits sit in the tiers' range, a few softer moves below it.
+        let all: Vec<u8> = (0..20).flat_map(|seed| vels(seed, false)).map(|v| v.1).collect();
+        let inside = all.iter().filter(|v| (70..=127).contains(*v)).count();
+        assert!(inside * 10 >= all.len() * 8, "{inside} of {}", all.len());
+    }
+
+    #[test]
     fn every_seed_plays_break_or_percussion() {
         let g = with_rules(DrumRules { feel: true, ..DrumRules::default() });
         let groove = DrumVoice::Break.bit() | DrumVoice::Perc.bit();
@@ -1575,7 +1746,7 @@ mod tests {
             let ev = bar(&g, seed, 0, &PARAM_DEFAULTS);
             let kicks = steps(&ev, 0);
             assert!(kicks.contains(&0) && kicks.contains(&10), "kick, seed {seed}: {kicks:?}");
-            assert!(kicks.len() <= 3, "seed {seed}: {kicks:?}");
+            assert!(kicks.len() <= 4, "seed {seed}: {kicks:?}");
             assert!(steps(&ev, 1).contains(&4) && steps(&ev, 1).contains(&12), "snare, seed {seed}");
         }
     }
@@ -1586,7 +1757,8 @@ mod tests {
         let g = kit_only();
         let p = params(|p| p[P_STYLE] = 0.0);
         let ev = bar(&g, 3, 0, &p);
-        assert_eq!(steps(&ev, 0), [0]);
+        assert_eq!(steps(&ev, 0)[0], 0);
+        assert!(!steps(&ev, 0).iter().any(|s| [4, 8, 12].contains(s)));
         assert!(steps(&ev, 1).contains(&8));
         assert!(!steps(&ev, 1).contains(&4));
     }
@@ -1596,23 +1768,23 @@ mod tests {
         let g = kit_only();
         let at = |style: f32| bar(&g, 1, 0, &params(|p| p[P_STYLE] = style));
         // Rolling keeps the two-step backbone and adds a kick.
-        let rolling = at(0.5);
-        assert_eq!(steps(&rolling, 0), [0, 7, 10]);
-        // Jungle: amen-style K 1, 3, 11, 12.
-        assert_eq!(steps(&at(0.75), 0), [0, 2, 10, 11]);
+        let has = |ev: &[LiveEvent], want: &[usize]| want.iter().all(|s| steps(ev, 0).contains(s));
+        assert!(has(&at(sv(2.0)), &[0, 7, 10]));
+        // Jungle: amen-style K 1, 3, 11.
+        assert!(has(&at(sv(3.0)), &[0, 2, 10]));
         // Hardcore: four on the floor.
-        assert_eq!(steps(&at(1.0), 0), [0, 4, 8, 12]);
+        assert!(has(&at(sv(4.0)), &[0, 4, 8, 12]));
     }
 
     #[test]
     fn half_time_flag_forces_the_feel() {
         let g = kit_only();
-        for style in [0.25, 0.75, 1.0] {
+        for style in [sv(1.0), sv(3.0), sv(4.0)] {
             let p = params(|p| p[P_STYLE] = style);
             let mut c = ctx(5, 0, &p, &EMPTY);
             c.half_time = true;
             let out = render(&g, &c);
-            assert_eq!(steps(out.as_slice(), 0), [0], "style {style}");
+            assert_eq!(steps(out.as_slice(), 0)[0], 0, "style {style}");
             let snares = steps(out.as_slice(), 1);
             assert!(snares.contains(&8) && !snares.contains(&4) && !snares.contains(&12));
         }
@@ -1622,7 +1794,7 @@ mod tests {
     fn blend_and_hard_switch() {
         // Halfway between half-time and two-step.
         let p = params(|p| {
-            p[P_STYLE] = 0.125;
+            p[P_STYLE] = sv(0.5);
             p[P_DENSITY] = 0.9;
             p[P_GHOST] = 0.0;
         });
@@ -1635,14 +1807,14 @@ mod tests {
         assert!(steps(&b, 1).contains(&4) && steps(&b, 1).contains(&8));
         // Hard switch at the midpoint is exactly the upper neighbour.
         let two_step = bar(&hard, 1, 0, &params(|q| {
-            q[P_STYLE] = 0.25;
+            q[P_STYLE] = sv(1.0);
             q[P_DENSITY] = 0.9;
             q[P_GHOST] = 0.0;
         }));
         assert_eq!(h, two_step);
         assert_ne!(b, h);
         // On an archetype both modes agree.
-        let on = params(|q| q[P_STYLE] = 0.5);
+        let on = params(|q| q[P_STYLE] = sv(2.0));
         assert_eq!(bar(&blended, 1, 0, &on), bar(&hard, 1, 0, &on));
     }
 
@@ -1782,7 +1954,7 @@ mod tests {
         let g = generator();
         let at = |seed: u32, m: f32| {
             let p = params(|p| {
-                p[P_STYLE] = 0.25;
+                p[P_STYLE] = sv(1.0);
                 p[P_VARIATION] = 0.0;
                 p[P_MUTATE] = m;
             });
@@ -1805,7 +1977,7 @@ mod tests {
         let layout = DrumLayout::empty().with_backbone(3).with_perc(2);
         let g = DrumGenerator::with_layout(layout);
         for seed in 0..30u32 {
-            for style in [0.0, 0.25, 0.4, 0.5, 0.75, 1.0] {
+            for style in [0.0, sv(1.0), sv(1.6), sv(2.0), sv(3.0), sv(4.0)] {
                 let p = params(|p| {
                     p[P_STYLE] = style;
                     p[P_DENSITY] = 1.0;
@@ -1917,11 +2089,13 @@ mod tests {
                 let p = params(|p| {
                     p[P_DENSITY] = 1.0;
                     p[P_CHOP] = 0.5;
+                    // D68: ghosts sit near the backbone's velocities; none here.
+                    p[P_GHOST] = 0.0;
                 });
                 let ev = bar(&g, seed, b, &p);
-                // Kicks and the backbeat-level snares (overlay ghosts share the snare sample).
+                // Kicks and snares.
                 let mut backbone = steps(&ev, 0);
-                backbone.extend(ev.iter().filter(|e| e.target == 1 && e.vel >= VEL_NORMAL - 10).map(|e| (e.tick / TICKS_PER_STEP) as usize));
+                backbone.extend(ev.iter().filter(|e| e.target == 1).map(|e| (e.tick / TICKS_PER_STEP) as usize));
                 for (step, _) in slices(&g, &ev) {
                     let in_tail = b == 3 && step >= 8;
                     assert!(in_tail || !backbone.contains(&step), "slice on backbone step {step} (seed {seed}, bar {b})");
@@ -2022,7 +2196,7 @@ mod tests {
         let g = generator();
         let types = g.layout().slices().to_vec();
         for seed in 0..30 {
-            for style in [0.0, 0.25, 0.5, 1.0] {
+            for style in [0.0, sv(1.0), sv(2.0), sv(4.0)] {
                 let p = params(|p| {
                     p[P_STYLE] = style;
                     p[P_CHOP] = 1.0;
@@ -2086,8 +2260,8 @@ mod tests {
         });
         let ev = bar(&g, 2, 0, &p);
         let max_of = |t: u8| ev.iter().filter(|e| e.target == t).map(|e| e.vel).max().unwrap();
-        // Ghosts (target 2) sit well below the backbone snare.
-        assert!((max_of(2) as f32) < max_of(1) as f32 * 0.5);
+        // Ghosts (target 2) sit below the backbone snare (D68: about 80).
+        assert!(max_of(2) < max_of(1));
         // Hats vary by metric position.
         let hat_vels: std::collections::BTreeSet<u8> = ev.iter().filter(|e| e.target == 8).map(|e| e.vel / 16).collect();
         assert!(hat_vels.len() >= 2);
@@ -2096,7 +2270,7 @@ mod tests {
             p[P_DENSITY] = 1.0;
             p[P_HATS] = AMOUNT_VEL_REF;
         });
-        assert!(bar(&flat, 2, 0, &p_flat).iter().all(|e| e.vel == VEL_NORMAL));
+        assert!(bar(&flat, 2, 0, &p_flat).iter().all(|e| e.vel == DRUM_NORMAL));
     }
 
     #[test]
@@ -2169,8 +2343,8 @@ mod tests {
 
     const GOLDEN_SEED_1: &str = "\
 K X.........X.....
-S ....X.......X...
-h ..x...xo..x...xo
+S ....X.......X..x
+h ..x...x...x.Xxx.
 o ................
 ";
 

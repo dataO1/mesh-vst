@@ -139,7 +139,7 @@ drive external effects.
 - **D39** Drum **Style**: a stepped, automatable parameter. Options: Seed (the pattern seed
   picks), Half time, Two step, Rolling, Jungle, Hardcore. These are the Mesh live archetypes,
   each played exactly, not blended. Morph no longer moves the style. It chops and rewrites
-  inside it.
+  inside it. D68 makes them seeded rules and adds 18 more.
 - **D41** Bass **rhythm cells** (2026-10-20): a seeded share of the bass line's beats is replaced by a
   cell from another grid: 16th and 32nd ratchets, 8th, 16th and quarter triplets, dotted notes,
   held beats into a 16th pickup, a note held over two beats, triplets into a held note. The
@@ -936,8 +936,8 @@ drive external effects.
     stabs within 1 dB of the middle Shape, Heat and Squash within 1 dB from off to full,
     Neuro within 1.5.
   - **Density and Splice** change no gain: both act on the notes (which and how many play,
-    their lengths), and each note comes matched. Splice's rework onto melody, operators and
-    style is its own round.
+    their lengths), and each note comes matched. A rework onto melody, operators and style was
+    planned and dropped (2026-10-27, user: Splice sounds good as is).
   - **Splice softens before it cuts** (user: the gaps cut too hard off the centre). A hit
     against the setting that has nowhere to move plays softer (up to 60 % of its velocity
     off, the further out of the focus the more); it drops only with the knob past half its
@@ -981,6 +981,44 @@ drive external effects.
     scales their depth 0.6 .. 1.5 (was 0.4 .. 1.2).
   - The Neuro make-up table measured again: at full the chain now loses about 3 dB (was
     6 .. 8).
+- **D68** **Drum styles as seeded rules, velocity grooves** (2026-10-27, user: more styles,
+  niche ones that break the beat, all in 4/4; every roll feels different inside its style;
+  velocities form a groove with a motive, never random). Additions to D39, D57 and D62: the
+  layers, Density's trim and bursts, the recipe, Morph, Tone, fills and operators work as
+  before on what the style now draws.
+  - **23 styles** in four families. Drum and bass: half time, two step, rolling, jungle
+    (D39), techstep, neuro, jump up, minimal. Breaks: hardcore (D39), rave amen, nu skool,
+    broken beat, electro. Bass music: dubstep, grime, UK funky, gqom, jersey club,
+    footwork, dembow. IDM: IDM, drill'n'bass, breakcore. Only hardcore keeps a kick on every
+    beat; dembow's beats 2 and 4 come in with Density. The Seed setting picks among all,
+    unweighted; the Style list names each by its family.
+  - **A style** is a few written kick and snare backbones (the first of the D39 five is its
+    table from before), the steps where a seed may add a hit (levels 70 .. 175, so Density
+    brings them in), its hat and ghost maps, the hat patterns it plays (five more:
+    straight 16ths, 16ths with holes, the off 16ths, two off 8ths, dembow) and its velocity
+    motives. The letter seed draws the backbone, the added hits and the motives, so B (and
+    a new seed) plays the style differently. Style data (idioms) plays its maps as written.
+  - **B** plays a style of A's family (was any style), with its own seed.
+  - **Velocity tiers** on the drums: ghosts and fillers about 80, hits 100, accents 120
+    (was 42, 96, 120); the softer moves (stutters, bursts, the break under the kit, fades
+    in) stay below as outliers. The level follows on a fixed curve (1.55): 80 about 3 dB
+    under 100, 120 about 2.5 dB over it. The seeded accent depth is gone on the drums;
+    accents lift up to 1.6 dB with Groove.
+  - **Velocity motives:** 20 accent shapes (backbeat, offbeat lift, swells, call and
+    response, threes and fives across the bar, shuffle, anticipation, …), each a row for the
+    backbone voices and one for the cymbals; a style lists 5 to 9. The letter seed picks one;
+    with Variation the second half bar answers with another; a fill bar's second half takes
+    a lift into the next bar. Seeded humanising stays at ±2.
+  - **Groove spreads the velocities** as the last step on every drum hit, the user's
+    patterns too: each velocity's distance from 100 times 0.1 at Groove 0 up to all of it at
+    full. Groove keeps its swing, pushes, rolls and the cymbals' accent shape.
+  - **The cymbal layers:** above Density 0.7 a second cymbal voice (ride, shaker or top
+    loop, the seed's order) sounds, above 0.85 a third (was one with the hats; below, they
+    fight). Contrast parts them: at 0 they stack, towards 1 each 8th has a seeded owner (the
+    hats twice as likely) and the others' hits there go (up to 90 %); the crash stays.
+  - **Velocity operators** (drums only, in the drums' operator pool of D63): `<` a swell,
+    `>` a fade, `O` the off 8ths lead, `L` the 16th before each beat leads (12 .. 30 % by
+    Variation).
 - **Cost** (2026-10-23, clap-validator's parameter fuzz ran 48 s against its 45 s limit):
   the multiband distortion measures a pass's makeup again only when its drive moves 0.1 dB,
   the Squash makes its band settings only when the amount or the tempo changes, and the
@@ -1137,6 +1175,26 @@ drive external effects.
     follow live per-note state.
   - **Precedent.** Commercial modulation plugins (LFOTool, MidiShaper) use MIDI CC. No known
     product uses an audio control bus.
+- **R6** Break slicing on onsets (2026-10-27, open; for D29, G4). Nothing built yet.
+  - **Detector.** Log spectral flux with a 3-bin max filter (SuperFlux) and peak picking,
+    written in pure Rust on `realfft` (about 200 lines), run at library scan time. madmom's
+    defaults: 2048-sample frames, 100–200 fps, 24 bands per octave, threshold 0.5, onsets under
+    30 ms merged. On pitched sets SuperFlux scores about 0.88 F1, a CNN about 0.87–0.90, plain
+    flux 0.62–0.81. No published figure for drum breaks.
+  - **Rejected.** CNN onset models: their weights are CC BY-NC-SA and need an inference runtime
+    (tract, candle). aubio: GPL (fits) but C, a build in the flake and mingw, last release 2021.
+    The pure-Rust onset crates (cochlea-features, taktus, moenarch) are from 2026 and unproven.
+  - **Snapping** (own design, no tool publishes one): merge onsets under 30 ms (flams), give
+    each the nearest 16th or 32nd of the known bar length, keep its real time as the slice
+    start, mark weak onsets near off-beat 32nds as ghost candidates, end each slice at the next
+    onset (at least a 32nd). Grid positions with no onset play as inside a slice (`Other`).
+  - **Classifying.** No commercial slicer (ReCycle, Live, Serato Sample, BreakTweaker)
+    classifies slices. Isolated-hit studies reach 75–90 % on kick, snare and hat, hats weakest.
+    For breaks: band energies plus the position in the bar (snares on 2 and 4) and the level
+    against the loop's loudest snare (ghost or snare). Needs a hand-labelled set of 3–4 breaks
+    (amen, think, apache) to measure.
+  - **Code.** `break_layer` assumes equal slices (the slice of a 16th is `q * spb / 16`); it
+    needs a step-to-slice table built from the onsets in place of `GRID_BREAK` (`kit.rs`).
 
 ## 4. Open questions
 
@@ -1161,8 +1219,10 @@ drive external effects.
   it needs a drag per platform (XDND, OLE, NSDraggingSession).
 - Name the slot keys in the DAW's piano roll (D60): CLAP's note-name extension and VST3's
   pitch names, which nice-plug does not offer yet (an upstream change, not a vendored copy);
-  then check which hosts show them (Bitwig, Reaper).
-- Slicing breaks on detected onsets (D29).
+  then check which hosts show them (Bitwig, Reaper). As of 2026-10-27 neither nice-plug (0.4.2,
+  Codeberg main) nor nih-plug has it, with no issue or PR; the VST3 wrapper's TODO reads "once
+  someone requests it". Parked.
+- Slicing breaks on detected onsets (D29, research R6).
 - Pitching tonal drums to the key (D7).
 - Velocity as timbre (R3).
 - Generic DAW key read via the VST3 chord and scale context (D11).
@@ -1179,7 +1239,7 @@ suggested settings. Turning a knob or automating it moves away from that center.
 | **Contrast** | how far B moves from A (A plays the knobs): 0 the same settings, 1 the other side of the question and answer on every axis, in seeded directions; C and D around A and B (D49) | the same, with the drum axes |
 | *Permute* (parameter, no knob since D49) | half-beat chunks of the bar swap places (seeded, downbeat stays; 0 = as generated) | the same |
 | **Variation** | how far the operators go and how many slots play one; the mix of the Groove's moves (one way per letter at 0, each note its own at 1) and where a subdivision's window sits (D57); how many long notes loop (D43); scales the seeded accents, stab drive and filter sweep; how far B, C and D move Morph off A's (D52); Variation itself plays as set | rewrites, fills, ghost notes; scales the seeded accents and velocity range; the operators as on the bass |
-| **Groove** | how often and how far notes move off the grid (pushes, pulls, 64th steps; rare and mild at the middle, often and up to an 8th at the top) and their lengths nudge, and how often notes recurse (a subdivision with the skeleton's own pattern, or a doubling; about 1 in 10 at the middle, 1 in 3 at the top, D57); the lane's own times in triplets, straight or dotted (D45) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts; rolls and flams (D57, rarer than the bass's recursion); the lane's own times in triplets, straight or dotted (D45) |
+| **Groove** | how often and how far notes move off the grid (pushes, pulls, 64th steps; rare and mild at the middle, often and up to an 8th at the top) and their lengths nudge, and how often notes recurse (a subdivision with the skeleton's own pattern, or a doubling; about 1 in 10 at the middle, 1 in 3 at the top, D57); the lane's own times in triplets, straight or dotted (D45) | the feel: swing of every off 16th, each voice pushed or laid back (snare late, hats and shakers early), the cymbals' accent shape, more and softer ghosts; rolls and flams (D57, rarer than the bass's recursion); the velocity spread, about 100 at 0 to 80 .. 120 at full (D68); the lane's own times in triplets, straight or dotted (D45) |
 | **Shape** | stabby to sustained: the attack (5 ms .. 100 ms, D52), length (short stabs at 0, shortened at most 60 % of the way since D59, as written in the middle, held at full; Density's splits and fills then play as short subdivided hits at low Shape, 2026-10-21), expression, filter bite, the release (a 1/64 at 0, the designed 16th in the middle, a dotted 32nd at full, on a curve that holds the level and falls fast at the end, D59; held notes sustain at −1 dB, 2026-10-20, with a share of the stab drive); at full every note holds into the next (legato, no stabs) except the figures (held fill runs), which keep their lengths; stabs come in runs (D57), a held note's start or end sometimes a stab | tight to open: choke (at full Shape a retrigger fades over about 400 ms), loop hold, decay (it shortens every voice, the kick too, and lengthens none); the attack stays instant at every setting; a transient shaper lifts the attack a little below the middle and the sustain above it; from the middle up a release tail grows per voice: the snare up to a dotted 8th, the hats and cymbals half as long and a little weaker, the kick a faint dotted 32nd, the loops none; by the switch next to Shape or the sound seed: VOC (the hits' spectrum shapes noise, band by band), SPEC (spectral sustain, each bin fades from its peak), NOISE (three noise bands follow the hits) |
 | **Morph** | mudpie scrub position | straight to chopped (break chop, rewrites) inside the Style; a ring modulator above 400 Hz (the lows stay clean) fades in from a fifth to at most 30 %, its seeded carrier rising an octave and turning from sine to square |
 | **Spread** | width: octave lifts, jump size, notes above the home root spread in stereo (the sub stays centred), deeper filter LFO and envelope | — |

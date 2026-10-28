@@ -381,7 +381,7 @@ pub fn ring(sound_seed: u32, morph: f32) -> (f32, f32, f32) {
 }
 
 /// The drum styles, in the generator's archetype order (design D39).
-pub const DRUM_STYLES: [&str; 5] = crate::generator::drums::DEFAULT_ARCHETYPE_ORDER;
+pub const DRUM_STYLES: [&str; 23] = crate::generator::drums::DEFAULT_ARCHETYPE_ORDER;
 const S_STYLE: u32 = 0xC41;
 
 /// The style a pattern seed picks when the user leaves it to the seed.
@@ -408,8 +408,13 @@ pub fn apply(role: Role, v: &Knobs, accent: f32, lane: &mut PatternLane, sampler
     sampler.feel = crate::tempo::feel(v.swing);
 }
 
+// MUSICAL: tune by ear (user, 2026-10-27: the differences noticeable, not
+// obvious; compression and saturation follow).
+const DRUM_VELOCITY_CURVE: f32 = 1.55;
+const DRUM_ACCENT_GAIN_MAX: f32 = 1.2;
+
 // MUSICAL: first draft of the drum macros, tune by ear.
-fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
+fn apply_drums(v: &Knobs, _accent: f32, lane: &mut PatternLane, p: &mut LaneSamplerParams) {
     lane.set_param("density", v.density);
     lane.set_param("variation", v.variation);
     // Groove: the swing, each voice's push and pull, the accent shape
@@ -429,9 +434,11 @@ fn apply_drums(v: &Knobs, accent: f32, lane: &mut PatternLane, p: &mut LaneSampl
     // Morph: straight .. chopped, inside the style the Style setting picks.
     lane.set_param("chop", v.morph);
     lane.set_param("mutate", (0.6 * v.variation + 0.4 * v.morph).min(1.0));
-    // Accent: wider dynamics and harder accents.
-    p.velocity_curve = lerp(1.0, 2.2, accent);
-    p.accent_gain = lerp(1.1, 2.0, accent);
+    // D68: the hits' velocities carry the dynamics (Groove spreads them),
+    // on a fixed curve: a ghost at 80 about 3 dB under a hit at 100, an
+    // accent at 120 about 2.5 dB over it. Accents lift a little with Groove.
+    p.velocity_curve = DRUM_VELOCITY_CURVE;
+    p.accent_gain = lerp(1.0, DRUM_ACCENT_GAIN_MAX, v.swing);
     // Shape: tight and dry .. the hits whole. It shortens every voice but
     // lengthens none: the release tails above its middle do that, per voice
     // (`tail::VoiceTails`).
@@ -645,18 +652,25 @@ mod style_tests {
 
     #[test]
     fn each_style_plays_its_own_rhythm_and_the_seed_picks_one() {
+        // D68: the seed rolls each style's backbone, so two styles may meet
+        // on a seed; over a few seeds each pair plays apart.
         let mut bars = Vec::new();
         for style in 0..DRUM_STYLES.len() as u8 {
-            let mut lane = PatternLane::drums(DrumLayout::standard(), 5, 5);
-            let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: 5, pattern_seed: 5, form: None, rate: 0, mode: 0, style: Some(style), contrast: 0.5, unison: Default::default(), clips: false };
-            configure(&mut lane, LaneSamplerParams::default(), &s);
-            let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
-            lane.render(0, MusicalKey::new(0, true), &mut out, &mut scratch);
-            bars.push(out.events.as_slice().iter().map(|e| (e.tick, e.target)).collect::<Vec<_>>());
+            let mut per_seed = Vec::new();
+            for seed in 1..=8 {
+                let mut lane = PatternLane::drums(DrumLayout::standard(), seed, seed);
+                let s = LaneSettings { knobs: Knobs::CENTERED, sound_seed: seed, pattern_seed: seed, form: None, rate: 0, mode: 0, style: Some(style), contrast: 0.5, unison: Default::default(), clips: false };
+                configure(&mut lane, LaneSamplerParams::default(), &s);
+                let (mut out, mut scratch) = (RenderedBar::default(), Scratch::default());
+                lane.render(0, MusicalKey::new(0, true), &mut out, &mut scratch);
+                per_seed.push(out.events.as_slice().iter().map(|e| (e.tick, e.target)).collect::<Vec<_>>());
+            }
+            bars.push(per_seed);
         }
         for i in 0..bars.len() {
             for j in i + 1..bars.len() {
-                assert_ne!(bars[i], bars[j], "styles {i} and {j}");
+                let apart = bars[i].iter().zip(&bars[j]).filter(|(a, b)| a != b).count();
+                assert!(apart >= 6, "styles {i} and {j} apart on {apart} of 8 seeds");
             }
         }
         let picks: std::collections::BTreeSet<u8> = (0..200).map(seeded_style).collect();

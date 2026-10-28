@@ -230,7 +230,22 @@ const MORE_OPS: [f32; 2] = [0.65, 0.35];
 const REPLACE: f32 = 0.5;
 const CHARACTER_PICK: f32 = 0.3;
 /// The operators a drum rule draws from.
-const DRUM_OPS: [Op; 9] = [Op::Mutate, Op::Displacement, Op::Hemiola, Op::Fragment, Op::DoubleTime, Op::Reverse, Op::Truncation, Op::Question, Op::HalfTime];
+const DRUM_OPS: [Op; 13] = [
+    Op::Mutate,
+    Op::Displacement,
+    Op::Hemiola,
+    Op::Fragment,
+    Op::DoubleTime,
+    Op::Reverse,
+    Op::Truncation,
+    Op::Question,
+    Op::HalfTime,
+    // D68: the velocity operators.
+    Op::Swell,
+    Op::Fade,
+    Op::Offbeat,
+    Op::Push,
+];
 
 // MUSICAL: tune by ear (user, 2026-10-21: Variation scales the form's
 // variation too, at 0 a little, at 1 the full set). Chance of an extra fill

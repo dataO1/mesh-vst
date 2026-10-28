@@ -460,9 +460,9 @@ fn suite(entry: &PluginEntry, library: Option<PathBuf>, out: &Path) -> Result<Re
     let (held, tail) = (released.rms_db(0.0, bar), released.rms_db(bar + 0.8, released.secs()));
     rep.check("a release goes silent after the tails", held > -45.0 && tail < -90.0, format!("before {held:.1} dBFS, after {tail:.1} dBFS"));
 
-    // Every drum style plays and sounds different (D39).
+    // Every drum style plays and sounds different (D39, D68).
     let mut styles: Vec<Audio> = Vec::new();
-    for i in 1..=5 {
+    for i in 1..=23 {
         let a = render(entry, &Render { params: vec![("Style".into(), i as f64)], ..base.clone() })?;
         rep.healthy(&format!("drum style {i} plays"), &a);
         styles.push(a);

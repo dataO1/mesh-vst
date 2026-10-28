@@ -43,6 +43,7 @@ pub(crate) fn ctx<'a>(
         letter: 0,
         material_bar: bar_in_phrase as u16,
         user: None,
+        contrast: crate::contrast::CONTRAST_DEFAULT,
     }
 }
 

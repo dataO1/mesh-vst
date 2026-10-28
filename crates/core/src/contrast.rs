@@ -68,8 +68,14 @@ pub fn letter_style(style: f32, pattern_seed: u32, lane: u8, letter: Letter) -> 
     }
     let last = (STYLES - 1) as f32;
     let own = (style.clamp(0.0, 1.0) * last).round() as usize;
-    let step = 1 + rng::below(rng::hash(letter_seed(pattern_seed, lane, Letter::B), lane, 0, 0, S_STYLE), STYLES as u32 - 1) as usize;
-    ((own + step) % STYLES) as f32 / last
+    // D68: a style of A's family (user, 2026-10-27: B related, with its
+    // own seed, accents and velocities).
+    let related = crate::generator::styles::related(own).count() as u32;
+    if related == 0 {
+        return style;
+    }
+    let n = rng::below(rng::hash(letter_seed(pattern_seed, lane, Letter::B), lane, 0, 0, S_STYLE), related) as usize;
+    crate::generator::styles::related(own).nth(n).unwrap_or(own) as f32 / last
 }
 
 const S_RATE_STEP: u32 = 0xD49;

@@ -17,6 +17,7 @@ pub mod fixed;
 pub mod idiom;
 pub mod layout;
 pub mod recipe;
+pub mod styles;
 #[cfg(test)]
 pub(crate) mod test_util;
 
@@ -79,6 +80,9 @@ pub struct BarCtx<'a> {
     /// The pattern the user edited for this letter (D60): it is the
     /// skeleton, bar `material_bar` of its looping window.
     pub user: Option<&'a crate::slots::UserPattern>,
+    /// The lane's Contrast (D49): the drums' cymbal layers take turns with
+    /// it (D68).
+    pub contrast: f32,
 }
 
 /// One lane's pattern generator.

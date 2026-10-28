@@ -693,6 +693,8 @@ impl PatternLane {
             // R12 Cleanup.
             crate::chain::cleanup(out);
         } else {
+            // D68: Groove spreads the hits' velocities, as the last step.
+            crate::chain::groove::spread(out, knob_swing);
             out.sort();
         }
         voices
@@ -885,6 +887,7 @@ impl PatternLane {
             letter: pos.letter.index(),
             material_bar: (c.bar % (u16::MAX as u64 + 1)) as u16,
             user: r.user,
+            contrast: self.contrast,
         }
     }
 
@@ -1048,7 +1051,7 @@ impl PatternLane {
             limit as u64,
             (front.exponent as u8 as u64) | (self.rate as u8 as u64) << 8,
             front.groove.to_bits() as u64 | (front.permute.to_bits() as u64) << 32,
-            front.swing.to_bits() as u64,
+            front.swing.to_bits() as u64 | (base.contrast.to_bits() as u64) << 32,
             self.patterns_version,
         ] {
             key = mix(key, v);
